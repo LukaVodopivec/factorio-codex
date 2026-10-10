@@ -104,7 +104,8 @@ describe("package auto-queue", () => {
     expect(plans.map((plan: any) => plan.source)).toEqual(["package:iron-a", "package:iron-b"]);
     expect(plans[0]).toMatchObject({ steps: furnaces("iron-a").steps, final_observation_radius: 15, observation_detail: "none" });
     expect(call).toHaveBeenCalledWith("can_place", { placements: [{ item: "stone-furnace", position: { x: 1.5, y: 2.5 }, direction: undefined }], surface: "nauvis" });
-    expect(call).toHaveBeenCalledWith("build_layout", { site: { near: { x: 0, y: 0 } }, entities: [{ name: "stone-furnace", dx: 0, dy: 0 }], check_only: true });
+    expect(call).toHaveBeenCalledWith("build_layout", { site: { near: { x: 0, y: 0 } }, entities: [{ name: "stone-furnace", dx: 0, dy: 0 }], check_only: true,
+      reserved: [{ name: "stone-furnace", x: 1.5, y: 2.5 }], list_placed: true });
     expect(readPackageQueue(dir)?.packages).toMatchObject({ "iron-a": { status: "queued", plan_id: 41, revision: 3, tick: 900 },
       "iron-b": { status: "queued", plan_id: 42 } });
     expect(fs.statSync(path.join(dir, "package-queue.json")).mode & 0o777).toBe(0o600);
@@ -604,11 +605,50 @@ describe("package auto-queue", () => {
       : { ok: false, collisions: [{ code: "PLACE_BLOCKED", reason: "can't place boiler at (4.5, 4) — item-on-ground at (4.5, 4) is in the way" },
         { code: "PLACE_BLOCKED", reason: "a later collision" }], free_position: { x: 9, y: 4 } } });
     await createPackageQueue(() => dir, bridge).tick();
-    expect(call).toHaveBeenCalledWith("blueprint_place", { name: "smelter", position: { x: 4, y: 4 }, check_only: true });
+    expect(call).toHaveBeenCalledWith("blueprint_place", { name: "smelter", position: { x: 4, y: 4 }, check_only: true, reserved: [], list_placed: true });
     expect(queuedPlans(call).map((plan: any) => plan.source)).toEqual(["package:open"]);
     expect(packageFailures(dir)[0]).toMatchObject({ package_id: "blocked",
       reason: "check failed: blueprint_place smelter at (4, 4): the position is blocked: can't place boiler at (4.5, 4) — item-on-ground"
         + " at (4.5, 4) is in the way; the nearest free position is (9, 4)" });
+  });
+
+  it("gives each dry run what the package's earlier steps place, so a later step over an earlier one fails its check", async () => {
+    const layout = (x: number) => ({ action: "build_layout", anchor: { x, y: 0 }, entities: [{ name: "assembling-machine-1", dx: 1.5, dy: 1.5 }],
+      connections: [{ kind: "belt", prototype: "transport-belt", from: { dx: 0, dy: 0 }, to: { dx: 0, dy: 4 } }] });
+    const blueprint = { action: "blueprint_place", name: "feed", position: { x: 20, y: 0 } };
+    const platform = { action: "build_layout", platform: "Dawn", anchor: { x: 0, y: 0 }, entities: [{ name: "thruster", dx: 0, dy: 3 }] };
+    const steps = [{ action: "place_entity", x: 1.5, y: 2.5, name: "stone-furnace", direction: 4 }, layout(10), blueprint, platform, layout(30)];
+    const { call } = fakeBridge({
+      build_layout: (params) => params.platform !== undefined ? { placed: {}, failed: {} }
+        : params.anchor.x === 10 ? { placed: [{ name: "assembling-machine-1", x: 11.5, y: 1.5, direction: 0 }, { name: "transport-belt", x: 10.5, y: 0.5, direction: 8 }], failed: {} }
+        : { placed: {}, failed: [{ index: 0, code: "BLOCKED", reason: "transport-belt at (10.5, 0.5): overlaps an earlier step's transport-belt at (10.5, 0.5)" }] },
+      blueprint_place: () => ({ ok: true, collisions: {}, placed: [{ name: "inserter", x: 20.5, y: 0.5, direction: 4 }] }),
+    });
+    const problem = await coordination.checkPackage({ call } as unknown as Bridge, { ...furnaces("feed"), steps } as any);
+    const sent = (method: string) => call.mock.calls.filter(([name]) => name === method).map(([, params]) => params);
+    expect(sent("build_layout")[0]).toMatchObject({ reserved: [{ name: "stone-furnace", x: 1.5, y: 2.5, direction: 4 }], list_placed: true });
+    expect(sent("blueprint_place")[0].reserved).toHaveLength(3);
+    // A platform step's positions are relative to its hub: no overlay either way.
+    expect(sent("build_layout")[1]).not.toHaveProperty("reserved");
+    expect(sent("build_layout")[2].reserved).toEqual([{ name: "stone-furnace", x: 1.5, y: 2.5, direction: 4 },
+      { name: "assembling-machine-1", x: 11.5, y: 1.5, direction: 0 }, { name: "transport-belt", x: 10.5, y: 0.5, direction: 8 },
+      { name: "inserter", x: 20.5, y: 0.5, direction: 4 }]);
+    expect(problem).toBe("build_layout: BLOCKED transport-belt at (10.5, 0.5): overlaps an earlier step's transport-belt at (10.5, 0.5)");
+  });
+
+  it("names each capture's entity count against the 100 cap when one is over it", async () => {
+    const dir = runDir();
+    const capture = (name: string) => ({ action: "blueprint_capture", name, center: { x: 0, y: 0 }, radius: 6 });
+    writeLedger(dir, 1, [{ ...furnaces("big"), steps: [capture("small"), capture("huge"), { action: "blueprint_place", name: "huge", position: { x: 40, y: 0 } }] }]);
+    const { call, bridge } = fakeBridge({ blueprint_capture: (params) => {
+      if (params.name === "huge") throw new ModError("blueprint_capture: the area holds 137 entities; a blueprint takes at most 100 (capture a smaller area)");
+      return { name: params.name, entities: 37, wires: 0 };
+    } });
+    await createPackageQueue(() => dir, bridge).tick();
+    expect(readPackageQueue(dir)?.packages.big).toMatchObject({ status: "failed",
+      reason: "capture huge failed: blueprint_capture: the area holds 137 entities; a blueprint takes at most 100 (capture a smaller area);"
+        + " captured before it: small 37/100 entities", captured: [{ name: "small", entities: 37, wires: 0 }] });
+    expect(queuedPlans(call)).toEqual([]);
   });
 
   it("fails a package whose layout or blueprint needs an item the body cannot obtain now, naming it", async () => {
@@ -682,7 +722,7 @@ describe("package auto-queue", () => {
     const refused = fakeBridge({ blueprint_capture: () => { throw new ModError("blueprint_capture: no own entities stand in that area"); } });
     await createPackageQueue(() => dir, refused.bridge).tick();
     expect(readPackageQueue(dir)?.packages.bad).toMatchObject({ status: "failed",
-      reason: "capture failed: blueprint_capture: no own entities stand in that area" });
+      reason: "capture smelter failed: blueprint_capture: no own entities stand in that area" });
     expect(queuedPlans(refused.call)).toEqual([]);
     // A package whose check fails keeps what its captures returned.
     writeLedger(dir, 4, [{ ...furnaces("wired"), steps: [capture, reuse] }]);

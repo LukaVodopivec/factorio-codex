@@ -141,9 +141,10 @@ local saved_world = bp.world
 bp.world = crowd
 local blueprints_built = #bp.created
 check(fails(function() capture({ name = "crowd", area = { left_top = { x = -31, y = -31 }, right_bottom = { x = -9, y = -20 } } }) end,
-  "at most 100") and storage.blueprints.by_name.crowd == nil and #bp.created == blueprints_built
-  and counts[#counts].limit == blueprints.MAX_ENTITIES + 2,
-  "a blueprint takes at most 100 entities: a crowded area is refused by a bounded count, before any blueprint is built")
+  "the area holds 101 entities; a blueprint takes at most 100") and storage.blueprints.by_name.crowd == nil
+  and #bp.created == blueprints_built and counts[#counts].limit == blueprints.MAX_SIDE * blueprints.MAX_SIDE + 1,
+  "a blueprint takes at most 100 entities: a crowded area is refused, with its count against the cap, by a count"
+    .. " bounded by the area, before any blueprint is built")
 bp.world = saved_world
 
 -- create_blueprint keeps world positions; the capture shifts them by an even

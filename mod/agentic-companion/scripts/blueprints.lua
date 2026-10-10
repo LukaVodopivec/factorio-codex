@@ -364,18 +364,20 @@ M.capture_job = {
   step = function(job, budget)
     local c = companion.require_companion()
     local area = job.area
-    -- Counted first (bounded by its limit), so a dense area is refused
-    -- before the engine builds a blueprint of all of it. The body is own
-    -- but never captured.
-    local counted = c.surface.count_entities_filtered({ area = area, force = c.force, limit = M.MAX_ENTITIES + 2 })
+    -- Counted first (one engine count, bounded by the area's tiles), so a
+    -- dense area is refused, with its count against the cap, before the
+    -- engine builds a blueprint of all of it. The body is own but never
+    -- captured.
+    local counted = c.surface.count_entities_filtered({ area = area, force = c.force,
+      limit = M.MAX_SIDE * M.MAX_SIDE + 1 })
     local p = c.position
     if p.x >= area.left_top.x and p.x <= area.right_bottom.x and p.y >= area.left_top.y and p.y <= area.right_bottom.y then
       counted = counted - 1
     end
     budget.left = budget.left - 1
     if counted > M.MAX_ENTITIES then
-      error(string.format("blueprint_capture: the area holds more than %d entities; a blueprint takes at most %d"
-        .. " (capture a smaller area)", M.MAX_ENTITIES, M.MAX_ENTITIES), 0)
+      error(string.format("blueprint_capture: the area holds %d entities; a blueprint takes at most %d"
+        .. " (capture a smaller area)", counted, M.MAX_ENTITIES), 0)
     end
     local built = scratch()
     built.create_blueprint({ surface = c.surface, force = c.force, area = area, always_include_tiles = false,

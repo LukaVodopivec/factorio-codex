@@ -355,6 +355,24 @@ local nearest = math.huge
 for _, row in ipairs(smelt.placed) do nearest = math.min(nearest, (row.x - 10.5) ^ 2 + (row.y - 10.5) ^ 2) end
 check(smelt.ok and nearest < 25, "a layout sited near a point is placed around it")
 
+do
+-- A pumpjack sited on crude oil stands centred on the well, whatever its
+-- layout offset (trial 0013: the anchor from its raw dx put a 3x3 pumpjack
+-- one tile off the oil, so no site ever fit).
+resources[#resources + 1] = { valid = true, name = "crude-oil", type = "resource", amount = 300000,
+  position = { x = 20.5, y = 30.5 } }
+local wells_ok, well_rows = true, {}
+for _, offset in ipairs({ { 0, 0 }, { 0.5, 0.5 }, { 1, -1 }, { -2, 3 } }) do
+  local well = check_layout({ check_only = true, site = { near = { x = 22, y = 28 }, on_resource = "crude-oil" },
+    entities = { { name = "pumpjack", dx = offset[1], dy = offset[2] } } })
+  local row = well.ok and well.placed[1]
+  well_rows[#well_rows + 1] = row and string.format("(%.1f, %.1f)", row.x, row.y) or tostring(well.failed[1] and well.failed[1].reason)
+  if not (row and row.x == 20.5 and row.y == 30.5) then wells_ok = false end
+end
+table.remove(resources)
+check(wells_ok, "a pumpjack sited on crude oil stands on the well for every layout offset: " .. table.concat(well_rows, " "))
+end
+
 -- ----------------------------------------------------------- layout checks
 
 local function dry(params)
@@ -370,8 +388,58 @@ check(not unknown.ok and unknown.failed[1].code == "UNKNOWN_ENTITY", "an unknown
 local locked = dry({ anchor = { x = 10, y = 10 }, entities = {
   { name = "assembling-machine-1", dx = 1.5, dy = 1.5, recipe = "locked-thing" },
   { name = "stone-furnace", dx = 5, dy = 1, recipe = "iron-gear-wheel" } } })
-check(not locked.ok and locked.failed[1].code == "RECIPE_LOCKED" and locked.failed[2].code == "RECIPE_NOT_SETTABLE",
-  "locked recipes and recipes on furnaces are named before anything is built")
+check(not locked.ok and locked.failed[1].code == "RECIPE_NOT_SETTABLE" and locked.recipe_locked
+  and locked.recipe_locked[1].code == "RECIPE_LOCKED" and locked.recipe_locked[1].index == 0,
+  "a dry run names a locked recipe as a fact (recipe_locked) and a recipe on a furnace as a failure")
+do
+-- A locked recipe is no failure of a dry run: research may finish first,
+-- so the geometry is still checked (trial 0013 stopped at RECIPE_LOCKED).
+local locked_only = dry({ anchor = { x = 10, y = 10 }, entities = {
+  { name = "assembling-machine-1", dx = 1.5, dy = 1.5, recipe = "locked-thing" } } })
+check(locked_only.ok and #locked_only.placed == 1 and #locked_only.failed == 0
+  and locked_only.recipe_locked[1].reason:match("locked%-thing"),
+  "a dry run with only a locked recipe checks the site and is ok, with recipe_locked as a fact")
+blockers = { { valid = true, name = "stone-wall", type = "wall", position = { x = 11.5, y = 11.5 } } }
+local locked_blocked = dry({ anchor = { x = 10, y = 10 }, entities = {
+  { name = "assembling-machine-1", dx = 1.5, dy = 1.5, recipe = "locked-thing" } } })
+blockers = {}
+check(not locked_blocked.ok and locked_blocked.failed[1].code == "BLOCKED" and locked_blocked.recipe_locked,
+  "behind a locked recipe the geometry still runs: a blocked site is named")
+local locked_build = layout._resolve(character, { anchor = { x = 10, y = 10 }, layouts = { { entities = {
+  { name = "assembling-machine-1", dx = 1.5, dy = 1.5, recipe = "locked-thing" } } } } })
+check(locked_build.failed[1] and locked_build.failed[1].code == "RECIPE_LOCKED",
+  "the build itself still refuses a locked recipe")
+
+-- reserved: what earlier steps of a package will have placed. A dry run
+-- treats it as standing (trial 0013: a feed package's later step routed
+-- through a crossing its earlier step built, and failed ROUTE_BLOCKED).
+local over = dry({ anchor = { x = 30, y = 10 }, entities = { { name = "wooden-chest", dx = 0.5, dy = 0.5 } },
+  reserved = { { name = "stone-furnace", x = 31, y = 11 } } })
+check(not over.ok and over.failed[1].code == "BLOCKED"
+  and over.failed[1].reason:match("overlaps an earlier step's stone%-furnace at %(31, 11%)"),
+  "a placement over an earlier step's reserved footprint fails, naming it")
+local same = dry({ anchor = { x = 30, y = 10 }, entities = { { name = "wooden-chest", dx = 0.5, dy = 0.5 } },
+  reserved = { { name = "wooden-chest", x = 30.5, y = 10.5 } } })
+check(same.ok, "the same entity reserved at the same spot is no overlap")
+local function belt_route(reserved)
+  return dry({ anchor = { x = 30, y = 20 }, entities = { { name = "wooden-chest", dx = 0.5, dy = 0.5 },
+    { name = "iron-chest", dx = 6.5, dy = 0.5 } },
+    connections = { { kind = "belt", prototype = "transport-belt", from = { dx = 1, dy = 0 }, to = { dx = 5, dy = 0 } } },
+    reserved = reserved })
+end
+local straight, around = belt_route(nil), belt_route({ { name = "wooden-chest", x = 33.5, y = 20.5 } })
+local function crosses(answer)
+  for _, row in ipairs(answer.placed or {}) do
+    if row.name == "transport-belt" and math.floor(row.x) == 33 and math.floor(row.y) == 20 then return true end
+  end
+  return false
+end
+check(straight.ok and crosses(straight) and around.ok and not crosses(around) and #around.placed > #straight.placed,
+  "a route goes around an earlier step's reserved footprint")
+local bad_reserved = pcall(check_layout, { check_only = true, anchor = { x = 0, y = 0 },
+  entities = { { name = "wooden-chest", dx = 0.5, dy = 0.5 } }, reserved = { { name = "wooden-chest", x = "a" } } })
+check(not bad_reserved, "a malformed reserved row is refused")
+end
 -- Settings and mirror: checked by prototype before anything is built, then
 -- carried to each placement with the underground end.
 local misfit = dry({ anchor = { x = 10, y = 10 }, entities = {
@@ -437,8 +505,13 @@ check(not lying_walled.ok and lying_walled.failed[1].reason:match("blocked by st
 -- A lying stack never hides the entity's own refusal: a drill over no ore.
 blockers = { blockers[1] }
 local lying_drill = dry({ anchor = { x = 20, y = 20 }, entities = { { name = "burner-mining-drill", dx = 0, dy = 0 } } })
-check(not lying_drill.ok and lying_drill.failed[1].reason:match(": no resource it can mine under it$")
-  and not lying_drill.ground_items, "a drill over a lying stack and no ore is refused for the missing ore")
+check(not lying_drill.ok and lying_drill.failed[1].reason:match(": no resource it can mine under it: its mining area has no copper%-ore or iron%-ore$")
+  and not lying_drill.ground_items, "a drill over a lying stack and no ore is refused for the missing ore, named")
+-- A pumpjack off the well names the oil it lacks, not a blocker.
+local dry_jack = dry({ anchor = { x = 24, y = 20 }, entities = { { name = "pumpjack", dx = 0, dy = 0 } } })
+check(not dry_jack.ok and dry_jack.failed[1].reason:match("its mining area has no crude%-oil$"),
+  "a pumpjack with no oil under it is refused with: its mining area has no crude-oil: "
+    .. tostring(dry_jack.failed[1] and dry_jack.failed[1].reason))
 -- Ore under every tile of a 9x9 footprint, read before a belt on it: the
 -- capped blocker search still reaches the belt.
 entities["test-silo"] = entity("test-silo", "container", 9, 9)

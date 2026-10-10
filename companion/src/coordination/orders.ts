@@ -318,6 +318,13 @@ async function missingPlatform(bridge: Bridge, named: Array<string | number>): P
   return null;
 }
 
+/** A placement an earlier step of a package makes, which a later step's dry run treats as standing. */
+type Reserved = { name: string; x: number; y: number; direction?: number };
+/** The most reserved rows one dry run takes (the mod's bound). */
+const MAX_RESERVED = 600;
+/** A blueprint takes at most this many entities (blueprints.lua MAX_ENTITIES). */
+export const CAPTURE_MAX_ENTITIES = 100;
+
 /** The mod's own placement check for one package; a reason when it fails,
  *  also when its first step is a layout or blueprint that needs an
  *  item the body can neither carry nor obtain now (ITEM_UNOBTAINABLE).
@@ -327,13 +334,28 @@ async function missingPlatform(bridge: Bridge, named: Array<string | number>): P
  *  the mod checks them when they run. Items are like ground: a later step, or
  *  any step while a predecessor's plan is still pending (afterPending), may
  *  use what runs before it builds or carries, so the mod checks those when
- *  they run. */
+ *  they run. Footprints are not: each dry run is given what the steps
+ *  before it place (reserved: place_entity steps and earlier dry runs'
+ *  placed rows), which it treats as standing, so a later step's placement
+ *  or route over an earlier one fails here, not when it runs. */
 export async function checkPackage(bridge: Bridge, entry: BuildPackage, afterPending = false): Promise<string | null> {
   try {
     const cut = entry.steps.findIndex(changesGround);
     const checked = cut < 0 ? entry.steps : entry.steps.slice(0, cut);
     // The only step whose items are checked now.
     const first = afterPending ? undefined : entry.steps.find((step) => step.action !== "blueprint_capture");
+    // What the steps checked so far place, for the dry runs after them (a
+    // platform step's positions are relative to its hub: not overlaid).
+    const reserved: Reserved[] = [];
+    const overlay = (params: { platform?: unknown }) => params.platform === undefined
+      ? { reserved: reserved.slice(-MAX_RESERVED), list_placed: true } : {};
+    const keep = (placed: unknown) => {
+      for (const row of luaArray(placed ?? []) as Array<Partial<Reserved>>) {
+        if (typeof row?.name === "string" && typeof row.x === "number" && typeof row.y === "number") {
+          reserved.push({ name: row.name, x: row.x, y: row.y, ...(typeof row.direction === "number" ? { direction: row.direction } : {}) });
+        }
+      }
+    };
     const places = checked.flatMap((step) => step.action === "place_entity" ? [step] : []);
     for (let start = 0; start < places.length; start += 24) {
       const batch = places.slice(start, start + 24);
@@ -346,10 +368,14 @@ export async function checkPackage(bridge: Bridge, entry: BuildPackage, afterPen
     }
     // Dry runs search over ticks until they have the site or a definite answer.
     for (const step of checked) {
+      if (step.action === "place_entity") {
+        keep([{ name: step.name, x: step.x, y: step.y, direction: step.direction }]);
+        continue;
+      }
       if (step.action === "blueprint_place") {
         const { action, ...params } = step;
         const checked = await bridge.call<{ ok?: boolean; free_position?: { x: number; y: number };
-          collisions?: unknown; unobtainable?: unknown }>(action, { ...params, check_only: true });
+          collisions?: unknown; unobtainable?: unknown; placed?: unknown }>(action, { ...params, check_only: true, ...overlay(params) });
         const collisions = luaArray(checked?.collisions ?? []) as Array<{ reason?: string }>;
         const short = luaArray(checked?.unobtainable ?? []) as Array<{ code?: string; reason?: string }>;
         if (short.length > 0 && step === first) {
@@ -361,14 +387,16 @@ export async function checkPackage(bridge: Bridge, entry: BuildPackage, afterPen
           const free = checked.free_position ? `; the nearest free position is (${checked.free_position.x}, ${checked.free_position.y})` : "";
           return `blueprint_place ${step.name} at (${step.position.x}, ${step.position.y}): the position is blocked${blocker}${free}`;
         }
+        keep(checked?.placed);
         continue;
       }
       if (step.action !== "build_layout") continue;
       const { action, ...params } = step;
-      const checked = await bridge.call<{ failed?: unknown }>(action, { ...params, check_only: true });
+      const checked = await bridge.call<{ failed?: unknown; placed?: unknown }>(action, { ...params, check_only: true, ...overlay(params) });
       const failed = (luaArray(checked?.failed ?? []) as Array<{ code?: string; reason?: string }>)
         .filter((row) => row?.code !== "ITEM_UNOBTAINABLE" || step === first);
       if (failed.length > 0) return `${action}: ${[failed[0]?.code, failed[0]?.reason].filter(Boolean).join(" ")}`;
+      if (params.platform === undefined) keep(checked?.placed);
     }
     return null;
   } catch (error) {
@@ -728,15 +756,21 @@ export function createPackageQueue(runDir: RunDir, bridge: () => Promise<Bridge>
       const kept = () => made.length > 0 ? { captured: [...made] } : {};
       if (!retry) {
         // Captures come first: the package's own steps may place what they capture.
+        let capturing: string | undefined;
         try {
           for (const { action, ...params } of captures) {
+            capturing = params.name;
             const summary = await b.call<{ entities?: number; wires?: number; origin?: unknown }>(action, params);
             const origin = isPoint(summary?.origin) ? { x: summary.origin.x, y: summary.origin.y } : undefined;
             made.push({ name: params.name, entities: summary?.entities ?? 0, wires: summary?.wires ?? 0, ...(origin ? { origin } : {}) });
           }
         } catch (error) {
           if (!(error instanceof ModError)) throw error;
-          record(id, { status: "failed", reason: `capture failed: ${message(error)}`, ...kept() });
+          // Each capture's entity count against the cap: the refusal states
+          // the failed one's, and those made before it follow.
+          const before = made.length > 0
+            ? `; captured before it: ${made.map((m) => `${m.name} ${m.entities}/${CAPTURE_MAX_ENTITIES} entities`).join(", ")}` : "";
+          record(id, { status: "failed", reason: `capture ${capturing} failed: ${message(error)}${before}`, ...kept() });
           continue;
         }
         const problem = await checkPackage(b, entry, afterPlanId !== undefined);

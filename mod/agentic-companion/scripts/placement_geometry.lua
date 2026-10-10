@@ -352,6 +352,48 @@ function M.tiles_refuse(surface, proto, area)
   return false
 end
 
+-- The resources a mining drill can mine, by name ("crude-oil"), joined with
+-- "or", from the resource prototypes of its categories (one engine-side
+-- filter, read only to word a refusal); nil when unknown or more than four.
+-- Read once per drill prototype and kept (a site search words a refusal for
+-- every candidate off the ore): prototypes never change while the mod's Lua
+-- state lives, so every peer derives the same text and none is game state.
+local MAX_NAMED_RESOURCES = 4
+local mineable_cache = {}
+local function mineable_text(proto)
+  local categories = read(function() return proto.resource_categories end)
+  if type(categories) ~= "table" then return nil end
+  local ok, resources = pcall(function()
+    return prototypes.get_entity_filtered({ { filter = "type", type = "resource" } })
+  end)
+  if not ok or not resources then return nil end
+  local names = {}
+  for name, resource in pairs(resources) do
+    local category = read(function() return resource.resource_category end)
+    if category and categories[category] then names[#names + 1] = name end
+  end
+  if #names == 0 or #names > MAX_NAMED_RESOURCES then return nil end
+  table.sort(names)
+  if #names == 1 then return names[1] end
+  return table.concat(names, ", ", 1, #names - 1) .. " or " .. names[#names]
+end
+function M.mineable_names(proto)
+  local name = read(function() return proto.name end)
+  if name == nil then return mineable_text(proto) end
+  local cached = mineable_cache[name]
+  if cached == nil then
+    cached = mineable_text(proto) or false
+    mineable_cache[name] = cached
+  end
+  return cached or nil
+end
+
+-- A drill's refusal for having nothing to mine, naming what it mines.
+function M.no_resource_reason(proto)
+  local names = M.mineable_names(proto)
+  return "no resource it can mine under it" .. (names and (": its mining area has no " .. names) or "")
+end
+
 -- Why proto cannot stand at position for a reason of its own, whatever item
 -- stacks lie there (the build takes those up first): a surface condition it
 -- breaks, a mining drill with no resource it mines in its mining area (the
@@ -377,7 +419,7 @@ function M.proto_refusal(surface, proto, position, direction, found)
         if type(categories) ~= "table" or category == nil or categories[category] then return nil end
       end
     end
-    return "no resource it can mine under it"
+    return M.no_resource_reason(proto)
   end
   if proto.type == "offshore-pump" and not M.pumped_fluid(surface, proto, position, direction) then
     return "it needs a land tile with water behind it"

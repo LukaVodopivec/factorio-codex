@@ -17,7 +17,7 @@ local M = {}
 
 local function position(value, label)
   if type(value) ~= "table" or tonumber(value.x) == nil or tonumber(value.y) == nil then
-    error(label .. " must be {x, y}")
+    error(label .. " must be {x, y}", 0)
   end
   return { x = tonumber(value.x), y = tonumber(value.y) }
 end
@@ -133,6 +133,26 @@ local function fuel_inlet(proto)
   return ok and burner ~= nil or false
 end
 
+-- A mining drill whose product leaves through an output fluidbox (a
+-- pumpjack: its box's production_type, or in 2.0 data a pipe connection
+-- whose flow_direction is output): it drops no items, so it has no item
+-- endpoint to check; its candidates carry its fluid connections instead.
+local function fluid_miner(proto)
+  if proto.type ~= "mining-drill" then return false end
+  local ok, boxes = pcall(function() return proto.fluidbox_prototypes end)
+  for _, box in pairs(ok and type(boxes) == "table" and boxes or {}) do
+    local read, output = pcall(function()
+      if box.production_type == "output" then return true end
+      for _, connection in ipairs(box.pipe_connections or {}) do
+        if connection.flow_direction == "output" then return true end
+      end
+      return false
+    end)
+    if read and output then return true end
+  end
+  return false
+end
+
 -- Occupied tile span of an entity box along one axis.
 local function tile_span(box, axis)
   return math.floor(box.left_top[axis] + 0.01), math.ceil(box.right_bottom[axis] - 0.01)
@@ -223,12 +243,13 @@ end
 local function placement_context(S, c, here)
   local item = prototypes.item[S.item]
   local proto = item and item.place_result
-  if not proto then error(S.item .. " is not a placeable item") end
+  if not proto then error(S.item .. " is not a placeable item", 0) end
   local X = { proto = proto, drop_offset = output_targets.output_offset(proto), here = here }
   -- Read once a step, not per evaluation.
   X.force, X.surface, X.position = c.force, c.surface, c.position
   X.platform = surfaces.is_platform(c.surface)
-  X.output_capable = proto.type == "mining-drill" or proto.type == "inserter" or X.drop_offset ~= nil
+  X.fluid_miner = fluid_miner(proto)
+  X.output_capable = not X.fluid_miner and (proto.type == "mining-drill" or proto.type == "inserter" or X.drop_offset ~= nil)
   if proto.type == "inserter" then
     local ok_pickup, raw_pickup = pcall(function() return proto.inserter_pickup_position end)
     local ok_drop, raw_drop = pcall(function() return proto.inserter_drop_position end)
@@ -244,12 +265,12 @@ local function placement_context(S, c, here)
 end
 
 local function search_start(params)
-  if type(params.item) ~= "string" then error("find_placement item must be an item name") end
+  if type(params.item) ~= "string" then error("find_placement item must be an item name", 0) end
   local item = prototypes.item[params.item]
-  if not item or not item.place_result then error(params.item .. " is not a placeable item") end
+  if not item or not item.place_result then error(params.item .. " is not a placeable item", 0) end
   local proto = item.place_result
   local belt_error = build.belt_to_ground_error(params.item, proto, params.belt_to_ground_type)
-  if belt_error then error(belt_error) end
+  if belt_error then error(belt_error, 0) end
   local preferred = position(params.preferred, "find_placement preferred")
   local target = surfaces.target(params.surface)
   local c = surfaces.viewpoint(target, preferred)
@@ -260,55 +281,59 @@ local function search_start(params)
   end
   local radius = math.floor(tonumber(params.radius) or 10)
   local limit = math.floor(tonumber(params.limit) or 8)
-  if radius < 1 or radius > 30 then error("find_placement radius must be 1-30") end
-  if limit < 1 or limit > 24 then error("find_placement limit must be 1-24") end
+  if radius < 1 or radius > 30 then error("find_placement radius must be 1-30", 0) end
+  if limit < 1 or limit > 24 then error("find_placement limit must be 1-24", 0) end
   local directions = params.directions or { 0, 4, 8, 12 }
-  if type(directions) ~= "table" or #directions == 0 then error("find_placement directions must be a non-empty array") end
+  if type(directions) ~= "table" or #directions == 0 then error("find_placement directions must be a non-empty array", 0) end
   local unique = {}
   for _, raw in ipairs(directions) do
     local direction = tonumber(raw)
     if not direction or direction % 1 ~= 0 or direction < 0 or direction > 15 then
-      error("find_placement directions must contain Factorio directions 0-15")
+      error("find_placement directions must contain Factorio directions 0-15", 0)
     end
     unique[direction] = true
   end
   directions = {}; for direction in pairs(unique) do directions[#directions + 1] = direction end; table.sort(directions)
 
   if params.output_target ~= nil and params.output_recipient_item ~= nil then
-    error("find_placement accepts output_target or output_recipient_item, not both")
+    error("find_placement accepts output_target or output_recipient_item, not both", 0)
+  end
+  if (params.output_target ~= nil or params.output_recipient_item ~= nil) and fluid_miner(proto) then
+    error("find_placement: " .. params.item .. " outputs fluid through its pipe connections, not items:"
+      .. " it takes no output_target or output_recipient_item", 0)
   end
 
   local input_target, output_target, output_recipient_item, output_recipient_proto = nil, nil, nil, nil
   local drop_offset = output_targets.output_offset(proto)
   if params.input_target ~= nil then
     if proto.type ~= "inserter" or not output_targets.input_offset(proto) then
-      error(params.item .. " has no deterministic input offset")
+      error(params.item .. " has no deterministic input offset", 0)
     end
-    input_target = output_targets.resolve(c, params.input_target, "find_placement input_target", "input")
+    input_target = output_targets.resolve(c, params.input_target, "find_placement input_target", "input", true)
   end
   if params.output_target ~= nil then
-    output_target = output_targets.resolve(c, params.output_target, "find_placement output_target")
-    if not drop_offset then error(params.item .. " has no deterministic output offset") end
+    output_target = output_targets.resolve(c, params.output_target, "find_placement output_target", nil, true)
+    if not drop_offset then error(params.item .. " has no deterministic output offset", 0) end
   end
   if params.output_recipient_item ~= nil then
     if type(params.output_recipient_item) ~= "string" then
-      error("find_placement output_recipient_item must be an item name")
+      error("find_placement output_recipient_item must be an item name", 0)
     end
     output_recipient_item = prototypes.item[params.output_recipient_item]
     output_recipient_proto = output_recipient_item and output_recipient_item.place_result
     if not output_recipient_proto then
-      error(tostring(params.output_recipient_item) .. " is not a placeable recipient item")
+      error(tostring(params.output_recipient_item) .. " is not a placeable recipient item", 0)
     end
     if not output_targets.can_target_type(output_recipient_proto.type, "output") then
-      error(tostring(params.output_recipient_item) .. " cannot receive placed output")
+      error(tostring(params.output_recipient_item) .. " cannot receive placed output", 0)
     end
-    if not drop_offset then error(params.item .. " has no deterministic output offset") end
+    if not drop_offset then error(params.item .. " has no deterministic output offset", 0) end
   end
   if input_target or output_target or output_recipient_item then
     for _, direction in ipairs(directions) do
       local required_offset = input_target and output_targets.input_offset(proto) or drop_offset
       if not rotate(required_offset, direction) then
-        error("targeted placement directions must be cardinal: 0, 4, 8, or 12")
+        error("targeted placement directions must be cardinal: 0, 4, 8, or 12", 0)
       end
     end
   end
@@ -407,7 +432,8 @@ local function evaluate_spot(S, X, c, spot)
       reject(S, "uncharted", pos, direction); goto continue
     end
     do
-      local output_position = output_targets.output_position(proto, pos, direction)
+      -- A fluid miner drops nothing: no item endpoint is read.
+      local output_position = not X.fluid_miner and output_targets.output_position(proto, pos, direction) or nil
       local pickup_offset = X.inserter_pickup_offset and rotate(X.inserter_pickup_offset, direction) or nil
       local inserter_output_offset = X.inserter_drop_offset and rotate(X.inserter_drop_offset, direction) or nil
       local pickup_position = pickup_offset and { x = x + pickup_offset.x, y = y + pickup_offset.y } or nil
@@ -415,12 +441,12 @@ local function evaluate_spot(S, X, c, spot)
       if proto.type == "inserter" and output_target then output_position = drop_position end
       local candidate_input_target
       if input_target then
-        local input_entity, input_identity, _, read = output_targets.recipient_at(c, pickup_position, "input", proto.type)
+        local input_entity, input_identity, _, read = output_targets.recipient_at(c, pickup_position, "input", proto.type, true)
         S.engine_calls = S.engine_calls + COST_RECIPIENT + COST_PER_ENTITY * (read or 0)
         if input_entity ~= input_target.entity then reject(S, "pickup_not_on_source", pos, direction); goto continue end
         candidate_input_target = input_identity
       end
-      local recipient, recipient_identity, recipient_state, read = output_targets.recipient_at(c, output_position, "output", proto.type)
+      local recipient, recipient_identity, recipient_state, read = output_targets.recipient_at(c, output_position, "output", proto.type, true)
       if output_position then S.engine_calls = S.engine_calls + COST_RECIPIENT + COST_PER_ENTITY * (read or 0) end
       if X.output_capable and not (output_position ~= nil and (recipient_state == "bound" or recipient_state == "none")) then
         reject(S, "output_endpoint_unknown", pos, direction); goto continue
@@ -582,7 +608,9 @@ local function search_result(S, X, c)
       elseif reason == "planned_recipient_unplaceable" then hint = "no free spot for " .. tostring(S.output_recipient_item) .. " at any producer output point; clear the area or move preferred"
       elseif reason == "codex_body_overlap" then hint = "only Codex's own body blocks the best positions; walk clear and search again"
       elseif reason == "blocked" then hint = "the best positions are blocked" .. (blocker and string.format(" by %s at (%.17g, %.17g)", blocker.name, blocker.position.x, blocker.position.y) or "") .. "; clear it or move preferred"
-      elseif reason == "no_compatible_resource" then hint = "no compatible resource under the mining area near preferred; move preferred onto the resource patch"
+      elseif reason == "no_compatible_resource" then
+        hint = "the mining area has no " .. (placement_geometry.mineable_names(proto) or "compatible resource")
+          .. " near preferred; move preferred onto the resource patch"
       elseif reason == "wrong_fluid" then hint = "no offshore spot near preferred pumps " .. tostring(S.fluid) .. "; move preferred to the shore of that liquid" end
     end
     if S.truncated then

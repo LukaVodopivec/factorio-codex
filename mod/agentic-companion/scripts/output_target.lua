@@ -2,25 +2,34 @@
 -- placement verification.
 local M = {}
 
--- Ordinary inserter pickup inventories/transport. Labs can supply science packs.
+-- Ordinary inserter pickup inventories/transport. Labs can supply science
+-- packs; a space platform hub and a cargo landing pad are taken from and
+-- filled both ways.
 local PICKUP_TYPES = {
   ["transport-belt"] = true, ["underground-belt"] = true, splitter = true,
   container = true, ["logistic-container"] = true, furnace = true,
   ["assembling-machine"] = true, ["cargo-wagon"] = true, lab = true,
+  ["space-platform-hub"] = true, ["cargo-landing-pad"] = true,
 }
 
--- These additional types may receive items (including burner fuel), but are
--- not pickup inventories. Type eligibility is provisional, not item acceptance.
-local DROP_ONLY_TYPES = { ["mining-drill"] = true, boiler = true, inserter = true }
+-- These additional types may receive items (including burner fuel, ammo and
+-- a silo's rocket parts and cargo), but are not pickup inventories. Type
+-- eligibility is provisional, not item acceptance.
+local DROP_ONLY_TYPES = { ["mining-drill"] = true, boiler = true, inserter = true, ["ammo-turret"] = true,
+  ["artillery-turret"] = true, ["rocket-silo"] = true, reactor = true }
 
 function M.can_target_type(entity_type, kind)
   return PICKUP_TYPES[entity_type] == true
     or (kind ~= "input" and DROP_ONLY_TYPES[entity_type] == true)
 end
 
+-- A refusal of the request (never a handler fault): CODE: message, with no
+-- source location.
+local function refuse(code, message) error(code .. ": " .. message, 0) end
+
 local function position(value, label)
   if type(value) ~= "table" or tonumber(value.x) == nil or tonumber(value.y) == nil then
-    error(label .. " must be {x, y}")
+    refuse("TARGET_INVALID", label .. " must be {x, y}")
   end
   return { x = tonumber(value.x), y = tonumber(value.y) }
 end
@@ -47,13 +56,18 @@ local function identity(entity)
 end
 
 -- before_walk: a placement that will first walk to its position checks the
--- 30-tile reach after that walk (its re-resolve), not from where it starts.
+-- 30-tile reach after that walk (its re-resolve), not from where it starts;
+-- a placement search (find_placement) reads charted endpoints wherever the
+-- body stands. Refusals carry a code (TARGET_INVALID, TARGET_OUT_OF_RANGE,
+-- TARGET_UNCHARTED, TARGET_NOT_FOUND, TARGET_AMBIGUOUS, TARGET_UNSUPPORTED).
 function M.resolve(c, requested, label, kind, before_walk)
   local target = position(requested, label or "output_target")
   local dx, dy = c.position.x - target.x, c.position.y - target.y
-  if not before_walk and dx * dx + dy * dy > 900 then error((label or "output_target") .. " must be within 30 tiles of Codex") end
+  if not before_walk and dx * dx + dy * dy > 900 then
+    refuse("TARGET_OUT_OF_RANGE", (label or "output_target") .. " must be within 30 tiles of Codex")
+  end
   if not c.force.is_chunk_charted(c.surface, { x = math.floor(target.x / 32), y = math.floor(target.y / 32) }) then
-    error((label or "output_target") .. " must be force-charted")
+    refuse("TARGET_UNCHARTED", (label or "output_target") .. " must be force-charted")
   end
   local matches, covering = {}, nil
   for _, entity in ipairs(c.surface.find_entities_filtered({ position = target })) do
@@ -67,18 +81,20 @@ function M.resolve(c, requested, label, kind, before_walk)
   end
   if #matches == 0 then
     if covering then
-      error(string.format("%s does not identify a player-owned entity; it lies inside %s, whose exact position is (%.17g, %.17g) — use that position",
+      refuse("TARGET_NOT_FOUND", string.format("%s does not identify a player-owned entity; it lies inside %s, whose exact position is (%.17g, %.17g) — use that position",
         label or "output_target", covering.name, covering.position.x, covering.position.y))
     end
-    error((label or "output_target") .. " does not identify a player-owned entity; use the exact entity position from observe_local or inspect_entity")
+    refuse("TARGET_NOT_FOUND", (label or "output_target")
+      .. " does not identify a player-owned entity; use the exact entity position from observe_local or inspect_entity")
   end
-  if #matches > 1 then error((label or "output_target") .. " is ambiguous") end
+  if #matches > 1 then refuse("TARGET_AMBIGUOUS", (label or "output_target") .. " is ambiguous") end
   local entity = matches[1]
   if not M.can_target_type(entity.type, kind) then
     local guidance = kind == "input"
-      and "use a supported belt or pickup inventory (for example a chest, furnace, assembler, wagon, or lab)"
-      or "use a supported belt or item inlet (for example a chest, furnace, assembler, wagon, lab, or burner fuel inlet)"
-    error((label or "output_target") .. " identifies " .. entity.name .. ", which is not a supported "
+      and "a supported pickup is a belt or an inventory (for example a chest, furnace, assembler, wagon, lab, hub or landing pad)"
+      or "a supported recipient is a belt or an item inlet (for example a chest, furnace, assembler, wagon, lab, hub,"
+        .. " landing pad, rocket silo, turret, reactor, or burner fuel inlet)"
+    refuse("TARGET_UNSUPPORTED", (label or "output_target") .. " identifies " .. entity.name .. ", which is not a supported "
       .. (kind == "input" and "pickup source; " or "drop recipient; ") .. guidance
       .. "; provisional geometry does not prove item acceptance or runtime binding")
   end

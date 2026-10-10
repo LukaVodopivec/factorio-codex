@@ -18,11 +18,17 @@ end
 -- A running profiler for one RPC, or nil.
 function M.start() return create(false) end
 
-function M.log_rpc(method, profiler)
+-- bytes: the reply's encoded size, after the duration ("... Duration: 1.2ms
+-- bytes 5120"), so a slow call can be told from a large reply.
+function M.log_rpc(method, profiler, bytes)
   if not profiler then return end
   pcall(function()
     profiler.stop()
-    log({ "", "rpc ", tostring(method), " tick ", game and game.tick or 0, " ", profiler })
+    if bytes then
+      log({ "", "rpc ", tostring(method), " tick ", game and game.tick or 0, " ", profiler, " bytes ", bytes })
+    else
+      log({ "", "rpc ", tostring(method), " tick ", game and game.tick or 0, " ", profiler })
+    end
   end)
 end
 

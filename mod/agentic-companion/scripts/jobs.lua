@@ -116,6 +116,7 @@ local function count_nodes(value, cap)
   end
   return count
 end
+M.count_nodes = count_nodes
 
 local JSON_ESCAPES = { ['"'] = '\\"', ["\\"] = "\\\\", ["\n"] = "\\n", ["\r"] = "\\r", ["\t"] = "\\t" }
 local function json_string(text)

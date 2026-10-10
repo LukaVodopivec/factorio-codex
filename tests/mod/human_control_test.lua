@@ -585,7 +585,7 @@ do
   for _ = 1, 40 do tick() end
   local waited = tasks.plan_status({ plan_id = waiting.plan_id })
   check(waited.status == "completed" and waited.human_control == true
-    and tostring(waited.outcomes[1].result):match("output has 10 iron%-plate"),
+    and tostring(waited.outcomes[1].result.detail):match("output has 10 iron%-plate"),
     "the wait whose items arrived during the hold completes after it")
   -- Hold ticks extend the deadline: a still-unmet wait keeps its remaining time.
   reset()

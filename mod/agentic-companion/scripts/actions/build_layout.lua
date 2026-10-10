@@ -566,7 +566,7 @@ local function ground(ctx, proto, pos, direction, adopt, end_type)
         end
       else
         ok = false
-        reason = proto.type == "mining-drill" and "no resource it can mine under it"
+        reason = proto.type == "mining-drill" and placement_geometry.no_resource_reason(proto)
           or proto.type == "offshore-pump" and "it needs a land tile with water behind it"
           or "the ground there is water or otherwise unbuildable"
       end
@@ -692,9 +692,12 @@ local function route_more(ctx, variant, anchor, result, soft)
   local surface, force = where(ctx)
   while r.next <= #variant.connections do
     local route = variant.connections[r.next]
+    -- An earlier step's reserved footprint is taken, as a planned one is.
+    local reserved = ctx.reserved
     local function free(pos, direction, proto)
       ctx.calls = ctx.calls + 1
       if r.occupied[tile_key(math.floor(pos.x), math.floor(pos.y))] then return false end
+      if reserved and reserved.cells[cell(math.floor(pos.x), math.floor(pos.y))] then return false end
       return (ground(ctx, proto or route.proto, pos, direction or 0))
     end
     local from = { x = snapped(anchor.x + route.from.dx, 1), y = snapped(anchor.y + route.from.dy, 1) }
@@ -704,6 +707,7 @@ local function route_more(ctx, variant, anchor, result, soft)
       -- Linear in the poles it places: one step.
       local function has_pole(pos)
         if r.poles[tile_key(math.floor(pos.x), math.floor(pos.y))] then return true end
+        if reserved and reserved.poles[cell(math.floor(pos.x), math.floor(pos.y))] then return true end
         ctx.calls = ctx.calls + 1
         local found_ok, found = pcall(surface.find_entities_filtered,
           { position = pos, radius = 0.5, type = "electric-pole", force = force })
@@ -767,6 +771,23 @@ local function route_more(ctx, variant, anchor, result, soft)
   return true
 end
 
+-- The row of a dry run's reserved (new_search) a placement's footprint
+-- (area) overlaps, or nil; the same entity planned at the same spot is no
+-- overlap.
+local function reserved_overlap(ctx, e, position, area)
+  local R = ctx.reserved
+  ctx.calls = ctx.calls + 1
+  local hit
+  each_tile(area, function(x, y)
+    local i = not hit and R.cells[cell(x, y)]
+    local row = i and R.rows[i]
+    if row and not (row.name == e.proto.name and same_spot(row, position) and row.direction == e.direction) then
+      hit = row
+    end
+  end)
+  return hit
+end
+
 -- Checks one anchor. all = report every failure (else stop at the first).
 -- With ctx.out_of_budget set afterwards the result is incomplete.
 local function check(ctx, variant, anchor, all)
@@ -781,8 +802,16 @@ local function check(ctx, variant, anchor, all)
     local r = variant.rel[i]
     local e = r.entity
     local position = { x = r.position.x + ox, y = r.position.y + oy }
-    local ok, reason, clears, note = ground(ctx, e.proto, position, e.direction, ctx.adopt,
-      e.proto.type == "underground-belt" and belt_end(e) or nil)
+    local ok, reason, clears, note
+    -- What an earlier step of the package will have placed there (a dry run's reserved).
+    local earlier = ctx.reserved and reserved_overlap(ctx, e, position, shifted(r, ox, oy).area)
+    if earlier then
+      ok, reason = false, string.format("overlaps an earlier step's %s at (%s, %s)", earlier.name,
+        placement_geometry.exact(earlier.x), placement_geometry.exact(earlier.y))
+    else
+      ok, reason, clears, note = ground(ctx, e.proto, position, e.direction, ctx.adopt,
+        e.proto.type == "underground-belt" and belt_end(e) or nil)
+    end
     if ctx.out_of_budget then return result end
     if ok then
       result.passed = result.passed + 1
@@ -1074,21 +1103,74 @@ local function with_foundation(s, result)
   return result
 end
 
+-- The entity a site search puts on each candidate tile (the first drill or
+-- offshore pump), as its placed centre's offset from the anchor {dx, dy}:
+-- the snapped position, not the layout's dx/dy (a 3x3 pumpjack at dx 0
+-- stands at 0.5, so an anchor from the raw offset put it one tile off the
+-- oil it was meant for, trial 0013).
 local function key_entity(variant, kind)
-  for _, e in ipairs(variant.entities) do if e.proto.type == kind then return e end end
-  return variant.entities[1]
+  local index = 1
+  for i, e in ipairs(variant.entities) do if e.proto.type == kind then index = i; break end end
+  local placed = variant.rel[index].position
+  return { dx = placed.x - variant.base.x, dy = placed.y - variant.base.y }
 end
 
 -- ------------------------------------------------------------- resolution
 
--- request = {anchor? | site?, layouts = {layout, ...}}; every layout is a
--- variant of the same design (a turn of it). Returns the search state:
--- plain tables and prototype references only, so a build keeps it in its
--- task (storage) between ticks. state.result is set once it is decided.
+-- reserved (a dry run only): what earlier steps of the same package will
+-- have placed by the time this one runs, as rows {name, x, y, direction?}
+-- (build_layout's placed rows, place_entity steps). A dry run treats them
+-- as standing: a placement over one fails, and routes go around them (or
+-- end at one, as at a standing entity; a reserved pole carries power).
+local MAX_RESERVED = 600
+function M.validate_reserved(rows, label)
+  if rows == nil then return end
+  if type(rows) ~= "table" or #rows > MAX_RESERVED then
+    error(string.format("%s reserved must list at most %d {name, x, y, direction?}", label, MAX_RESERVED), 0)
+  end
+  for i, row in ipairs(rows) do
+    local d = type(row) == "table" and row.direction
+    if type(row) ~= "table" or type(row.name) ~= "string" or type(row.x) ~= "number" or type(row.y) ~= "number"
+      or (d ~= nil and (type(d) ~= "number" or d % 1 ~= 0 or d < 0 or d > 15)) then
+      error(string.format("%s reserved[%d] must be {name, x, y, direction?}", label, i - 1), 0)
+    end
+  end
+end
+
+-- The reserved rows' footprint tiles (cell -> row index) and pole tiles,
+-- plain data; a name no placeable has is left out. Charged per tile.
+local function reserve(ctx, rows)
+  local R = { cells = {}, poles = {}, rows = {} }
+  local tiles = 0
+  for i, row in ipairs(rows) do
+    local _, proto = placeable(row.name)
+    if proto then
+      local direction = math.floor(row.direction or 0) % 16
+      local pos = { x = row.x, y = row.y }
+      R.rows[i] = { name = proto.name, x = pos.x, y = pos.y, direction = direction }
+      each_tile(placement_geometry.footprint(proto, pos, direction), function(x, y)
+        tiles = tiles + 1
+        R.cells[cell(x, y)] = i
+        if proto.type == "electric-pole" then R.poles[cell(x, y)] = true end
+      end)
+    end
+  end
+  ctx.calls = ctx.calls + math.ceil((#rows + tiles) / LOAD_PER_ITEM)
+  return R
+end
+
+-- request = {anchor? | site?, layouts = {layout, ...}, check_only?,
+-- reserved?}; every layout is a variant of the same design (a turn of it).
+-- Returns the search state: plain tables and prototype references only, so
+-- a build keeps it in its task (storage) between ticks. state.result is set
+-- once it is decided. A dry run (check_only) lists a recipe not researched
+-- yet in state.recipe_locked, a fact, and still checks the geometry:
+-- research may finish before the build runs, which refuses it while locked.
 local function new_search(c, request)
   local ctx = { c = c, calls = 0, ceiling = 0, cache = {}, chunks = {}, ghosts = request.ghosts, space = request.space,
     adopt = request.anchor ~= nil and not request.ghosts or nil }
   local s = { ctx = ctx, tried = 0, ti = 1, vi = 1 }
+  if request.check_only and request.reserved and #request.reserved > 0 then ctx.reserved = reserve(ctx, request.reserved) end
   if request.tiles and #request.tiles > 0 then
     -- Platform foundation: checked first (foundation_step), over ticks.
     ctx.calls = ctx.calls + math.ceil(#request.tiles / LOAD_PER_ITEM)
@@ -1104,6 +1186,14 @@ local function new_search(c, request)
   local variants = {}
   for v, layout in ipairs(request.layouts) do
     local variant, problems = prepare(c, layout, request.space and request.space.surface or c.surface)
+    if request.check_only then
+      local blocking = {}
+      for _, row in ipairs(problems) do
+        if row.code ~= "RECIPE_LOCKED" then blocking[#blocking + 1] = row
+        elseif v == 1 then s.recipe_locked = s.recipe_locked or {}; s.recipe_locked[#s.recipe_locked + 1] = row end
+      end
+      problems = blocking
+    end
     if v == 1 and #problems > 0 then s.result = { failed = problems }; return s end
     layout_geometry(variant, base)
     variants[v] = variant
@@ -2685,14 +2775,20 @@ end
 -- The check_only answer of a hand-built layout; unobtainable lists what the
 -- body cannot get now (ok stays the geometry's answer: the caller decides).
 local function report(c, result, extra, s)
-  if s and s.ctx.ghosts then return ghost_report(s.ctx, result, extra) end
+  if s and s.ctx.ghosts then
+    local out = ghost_report(s.ctx, result, extra)
+    out.recipe_locked = s.recipe_locked
+    return out
+  end
   local steps = result.placements and #result.failed == 0 and plan_steps(result) or {}
   local placed = {}
   for i, step in ipairs(steps) do placed[i] = placed_row(step) end
   local out = { check_only = true, ok = #result.failed == 0, anchor = result.anchor, rotation = result.rotation,
     placed = placed, failed = result.failed, materials = materials(c, steps),
     clears = result.clears and result.clears > 0 and result.clears or nil, ground_items = ground_notes(result),
-    unobtainable = unobtainable(c, steps) }
+    unobtainable = unobtainable(c, steps),
+    -- Recipes not researched yet: facts, never failures of the dry run.
+    recipe_locked = s and s.recipe_locked or nil }
   for k, v in pairs(extra or {}) do out[k] = v end
   return out
 end
@@ -2745,6 +2841,8 @@ local function check_job(label, make_request)
       require_check_only(params, label)
       local c, view = check_viewer(params)
       local request, extra = make_request(c, params)
+      M.validate_reserved(params.reserved, label)
+      request.check_only, request.reserved = true, params.reserved
       local s = new_search(c, request)
       s.given_anchor = request.given_anchor
       return { search = s, extra = extra, view = view }

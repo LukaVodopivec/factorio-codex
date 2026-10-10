@@ -30,6 +30,7 @@ local autonomy = require("scripts.autonomy")
 local errors = require("scripts.errors")
 local registry = require("scripts.registry")
 local journal = require("scripts.journal")
+local jobs = require("scripts.jobs")
 local M = {}
 -- Finished task and plan records are kept 5 minutes, a failed or partial
 -- one 30 (plan_status reads its outcomes).
@@ -951,17 +952,58 @@ local function compact_payload(plan)
   return { plan_id = plan.id, source = plan.source, status = plan.status, satisfies_chain = satisfies_chain(plan) or nil,
     finished_tick = plan.finished_tick, source_tick = game.tick }
 end
+-- A plan_status payload of more than PLAN_STATUS_DIRECT_NODES nodes (a
+-- long plan's outcomes with their layouts and supply rows, its terminal
+-- observation) is never encoded whole in the RPC's tick: it is a job whose
+-- result the jobs encoder writes over ticks, read through get_job (the
+-- bridge waits for it). One plan_status took 17.5 ms (trial 0013) while
+-- the median stayed 0.3 ms: the cost is the payload's size. The lists the
+-- payload shares with the live plan are copied, so a step that ends while
+-- it is encoded changes nothing already counted, and so are the running
+-- step's diagnostics and upkeep context, which hold the live task's own
+-- tables (a supply result, a walk's goal and failure): the encoder resolves
+-- each key over later ticks, and a key the task cleared meanwhile would
+-- leave a hole in the JSON.
+local PLAN_STATUS_DIRECT_NODES = jobs.WORK_PER_TICK
+M.PLAN_STATUS_DIRECT_NODES = PLAN_STATUS_DIRECT_NODES
+jobs.register("plan_status", {
+  defer_encode = true,
+  start = function(params) return { payload = params.payload } end,
+  step = function(state, budget)
+    budget.left = budget.left - 1
+    return state.payload
+  end,
+})
+local function plan_answer(plan)
+  local payload = plan_payload(plan)
+  if jobs.count_nodes(payload, PLAN_STATUS_DIRECT_NODES) <= PLAN_STATUS_DIRECT_NODES then return payload end
+  local function copy(value, seen)
+    if type(value) ~= "table" then return value end
+    if seen[value] then return seen[value] end
+    local out = {}
+    seen[value] = out
+    for k, v in pairs(value) do out[k] = copy(v, seen) end
+    return out
+  end
+  payload.outcomes = { table.unpack(payload.outcomes or {}) }
+  if payload.transitions then payload.transitions = { table.unpack(payload.transitions) } end
+  payload.diagnostics = copy(payload.diagnostics, {})
+  if payload.upkeep and payload.upkeep.active then payload.upkeep.active = copy(payload.upkeep.active, {}) end
+  -- With every job slot taken (JOBS_BUSY) it is answered at once, as before.
+  local ok, pending = pcall(jobs.start, "plan_status", { payload = payload })
+  return ok and pending or payload
+end
 function M.plan_status(params)
   local id = tonumber(params.plan_id)
   if not id then error("plan_status requires plan_id") end
-  local payload = params.compact == true and compact_payload or plan_payload
+  local answer = params.compact == true and compact_payload or plan_answer
   local tasks = storage.tasks
-  if tasks.active and tasks.active.id == id and tasks.active.type == "plan" then return payload(tasks.active) end
-  for _, queued in ipairs(tasks.queue) do if queued.id == id and queued.type == "plan" then return payload(queued) end end
+  if tasks.active and tasks.active.id == id and tasks.active.type == "plan" then return answer(tasks.active) end
+  for _, queued in ipairs(tasks.queue) do if queued.id == id and queued.type == "plan" then return answer(queued) end end
   local record = tasks.records[id]
   if record and record.plan then
-    if payload == compact_payload then return payload(record.plan) end
-    observe_terminal(record.plan); return plan_payload(record.plan)
+    if answer == compact_payload then return answer(record.plan) end
+    observe_terminal(record.plan); return plan_answer(record.plan)
   end
   error("unknown plan_id: " .. id .. ": never queued, or it ended more than " .. math.floor(RECORD_TTL_TICKS / 3600)
     .. " minutes ago (" .. math.floor(FAILED_RECORD_TTL_TICKS / 3600) .. " if it failed or was partial);"
@@ -1301,12 +1343,35 @@ local function removed_result(action)
   return { status = REMOVED_ACTIONS[action], detail = "REMOVED_ACTION: " .. action .. " no longer exists",
     outcome = { code = "REMOVED_ACTION", action = action } }
 end
-local function wait_timeout_detail(step)
+-- What a wait_for_item has seen, arithmetic only: the count now, the net
+-- inflow per minute since the wait began (first read to latest), the
+-- seconds to the target at that inflow (absent while it does not rise; 0
+-- once met), the seconds waited and the timeout. trial 0013: a 300 s wait
+-- for 89 plates at 16/min timed out with no word on the rate.
+local function wait_progress(step)
   local start = tonumber(step._starting_count) or 0
   local current = tonumber(step._current_count) or start
   local elapsed = step._wait_started_tick and game.tick - step._wait_started_tick or 0
-  return string.format("ITEM_WAIT_TIMEOUT: timed out waiting for %d %s in %s: starting %d, current %d, observed delta %d after %d ticks",
-    step.count, step.item, step.inventory, start, current, current - start, elapsed)
+  local per_min = elapsed > 0 and math.floor((current - start) * 3600 / elapsed * 10 + 0.5) / 10 or nil
+  local to_target
+  if current >= step.count then to_target = 0
+  elseif per_min and per_min > 0 then to_target = math.ceil((step.count - current) * 60 / ((current - start) * 3600 / elapsed)) end
+  return { item = step.item, count = current, target = step.count, starting_count = start, net_per_min = per_min,
+    seconds_to_target = to_target, waited_s = math.floor(elapsed / 60), timeout_s = math.floor(wait_timeout_ticks(step) / 60) }
+end
+local function wait_timeout_detail(step)
+  local p = wait_progress(step)
+  local elapsed = step._wait_started_tick and game.tick - step._wait_started_tick or 0
+  local rate = p.seconds_to_target
+    and string.format("; net inflow %.1f/min: %d s more to %d at that rate", p.net_per_min, p.seconds_to_target, p.target)
+    or string.format("; net inflow %.1f/min: the count does not rise", p.net_per_min or 0)
+  return string.format("ITEM_WAIT_TIMEOUT: timed out waiting for %d %s in %s: starting %d, current %d, observed delta %d after %d ticks%s",
+    step.count, step.item, step.inventory, p.starting_count, p.count, p.count - p.starting_count, elapsed, rate)
+end
+local function wait_timeout_result(step)
+  local outcome = wait_progress(step)
+  outcome.code = "ITEM_WAIT_TIMEOUT"
+  return { status = "failed", detail = wait_timeout_detail(step), outcome = outcome }
 end
 local function wait_for_item(plan, step)
   plan.wait_started_tick = plan.wait_started_tick or game.tick
@@ -1324,7 +1389,7 @@ local function wait_for_item(plan, step)
   if (not entity or entity.error) and dx * dx + dy * dy > 900 then
     if timed_out then
       plan.wait_started_tick, plan.next_check_tick = nil, nil
-      return { status = "failed", detail = wait_timeout_detail(step) }
+      return wait_timeout_result(step)
     end
     local distance = math.sqrt(dx * dx + dy * dy)
     plan.wait_started_tick, plan.next_check_tick = nil, nil
@@ -1348,11 +1413,14 @@ local function wait_for_item(plan, step)
   step._current_count = found
   if found >= step.count then
     plan.wait_started_tick, plan.next_check_tick = nil, nil
-    return { status = "done", detail = step.inventory .. " has " .. found .. " " .. step.item }
+    local detail = step.inventory .. " has " .. found .. " " .. step.item
+    local outcome = wait_progress(step)
+    outcome.detail = detail
+    return { status = "done", detail = detail, outcome = outcome }
   end
   if timed_out then
     plan.wait_started_tick, plan.next_check_tick = nil, nil
-    return { status = "failed", detail = wait_timeout_detail(step) }
+    return wait_timeout_result(step)
   end
   plan.next_check_tick = game.tick + 30
 end
@@ -1375,7 +1443,7 @@ local function expire_parked_waits(tasks)
         step = plan.current_step, action = step.action, status = "failed", error = detail,
         code = step.action == "wait_for_research" and "RESEARCH_WAIT_TIMEOUT" or "ITEM_WAIT_TIMEOUT",
         result = step.action == "wait_for_research" and { code = "RESEARCH_WAIT_TIMEOUT",
-          technology = step.technology, elapsed_ticks = game.tick - plan.wait_started_tick } or nil,
+          technology = step.technology, elapsed_ticks = game.tick - plan.wait_started_tick } or wait_timeout_result(step).outcome,
       }
       plan.current_task = nil
       plan.wait_started_tick, plan.next_check_tick = nil, nil

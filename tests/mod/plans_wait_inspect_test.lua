@@ -76,7 +76,7 @@ game.tick = 31; tasks.on_tick()
 local terminal = tasks.plan_status({ plan_id = queued.plan_id })
 check(terminal.status == "completed" and terminal.completed_steps == 1
   and terminal.outcomes[1].status == "completed"
-  and terminal.outcomes[1].result:match("output has 2 iron%-plate") ~= nil,
+  and terminal.outcomes[1].result.detail:match("output has 2 iron%-plate") ~= nil,
   "real wait path preserves inventory item count and completes on a later tick")
 
 -- A parked read-only wait keeps its own deadline even when the sole physical
@@ -219,7 +219,7 @@ check(tasks.plan_status({ plan_id = away.plan_id }).status == "waiting", "the wa
 body.position, output_count = { x = 200, y = 200 }, 2
 game.tick = 2030; tasks.on_tick()
 local away_status = tasks.plan_status({ plan_id = away.plan_id })
-check(away_status.status == "completed" and away_status.outcomes[1].result:match("output has 2 iron%-plate") ~= nil
+check(away_status.status == "completed" and away_status.outcomes[1].result.detail:match("output has 2 iron%-plate") ~= nil
   and physical_starts == 0,
   "a resumed wait 200 tiles from its charted machine reads it remotely and completes without walking")
 
@@ -246,4 +246,38 @@ check(uncharted.status == "failed" and uncharted.outcomes[1].error:match("^TARGE
   and uncharted.outcomes[1].recovery == nil and physical_starts == 0,
   "a resumed wait whose target is uncharted fails with the distance correction and never walks")
 charted = true
+
+-- A wait's result and timeout carry its arithmetic: the count now, the net
+-- inflow per minute since the wait began and the seconds to the target at
+-- that rate, against the timeout (trial 0013: a 300 s wait for 89 plates at
+-- 16/min timed out saying nothing of the rate).
+storage = { tasks = { next_id = 1, records = {}, queue = {}, active = nil } }
+body.position, body.walking_state, output_count, present = { x = 0, y = 0 }, {}, 0, true
+game.tick = 3000
+local rising = tasks.queue_plan({ steps = { { action = "wait_for_item", x = 2, y = 2,
+  inventory = "output", item = "iron-plate", count = 10, timeout_seconds = 2 } } })
+for _, t in ipairs({ 3001, 3031, 3061, 3091, 3121 }) do
+  game.tick = t
+  output_count = (t - 3001) / 15
+  tasks.on_tick()
+end
+local slow = tasks.plan_status({ plan_id = rising.plan_id })
+local facts = slow.outcomes[1] and slow.outcomes[1].result
+check(slow.status == "failed" and facts and facts.code == "ITEM_WAIT_TIMEOUT" and facts.count == 8 and facts.target == 10
+  and facts.net_per_min == 240 and facts.seconds_to_target == 1 and facts.timeout_s == 2 and facts.waited_s == 2
+  and slow.outcomes[1].error:match("net inflow 240%.0/min: 1 s more to 10 at that rate$") ~= nil,
+  "a timed-out wait states its count, net inflow per minute and seconds to the target: " .. tostring(slow.outcomes[1].error))
+storage = { tasks = { next_id = 1, records = {}, queue = {}, active = nil } }
+output_count = 3
+game.tick = 4000
+local met = tasks.queue_plan({ steps = { { action = "wait_for_item", x = 2, y = 2,
+  inventory = "output", item = "iron-plate", count = 4, timeout_seconds = 60 } } })
+game.tick = 4001; tasks.on_tick()
+output_count = 5
+game.tick = 4031; tasks.on_tick()
+local done = tasks.plan_status({ plan_id = met.plan_id })
+local done_facts = done.outcomes[1] and done.outcomes[1].result
+check(done.status == "completed" and done_facts.count == 5 and done_facts.net_per_min == 240
+  and done_facts.seconds_to_target == 0 and done_facts.detail == "output has 5 iron-plate",
+  "a met wait states its count and the net inflow it saw")
 os.exit(failures == 0 and 0 or 1)

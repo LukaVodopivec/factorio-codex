@@ -215,6 +215,17 @@ check(not blocked.ok and blocked.collisions[1] and blocked.collisions[1].reason:
 check(not pcall(area_ops.place_check_job.start, { name = "gears", position = { x = 0, y = 0 } }),
   "blueprint_place over RPC is only the check_only dry run")
 world[#world].valid = false
+-- The package check's overlay: reserved (earlier steps' placements) stands
+-- for the dry run, and list_placed lists what this one places for the next.
+local listed = jobs.run_now(area_ops.place_check_job, { name = "gears", position = { x = 10, y = 10 }, check_only = true,
+  list_placed = true })
+check(listed.ok and listed.placed and #listed.placed == 2 and listed.placed[1].name and listed.placed[1].x,
+  "with list_placed the dry run lists its placements {name, x, y, direction}")
+local reserved_over = jobs.run_now(area_ops.place_check_job, { name = "gears", position = { x = 10, y = 10 }, check_only = true,
+  reserved = { { name = "wooden-chest", x = 9.5, y = 10.5 } } })
+check(not reserved_over.ok and reserved_over.collisions[1]
+  and reserved_over.collisions[1].reason:match("overlaps an earlier step's wooden%-chest") and reserved_over.placed == nil,
+  "an earlier step's reserved chest under the blueprint is a collision")
 
 -- A blueprint's pipes that would carry one standing fluid into another: the
 -- dry run names the pipe the build would be refused, and is not ok.

@@ -194,8 +194,12 @@ do
     for k in pairs(b) do if a[k] == nil then return false end end
     return true
   end
+  -- However large the budget, the reads take a tick and each of the seven
+  -- phases one of its own: costs that fit one tick together took 15.8 ms
+  -- in one (trial 0013).
   local whole, whole_ticks = jobs.run_now(run_snapshot.job, {}, 1000000)
-  check(whole_ticks == 1, "with a whole tick's budget for it the snapshot finishes in one tick")
+  check(whole_ticks == 1 + #({ "progression", "factory", "lines", "attestation", "resources", "character", "assemble" }),
+    "with a huge budget the snapshot still runs one phase a tick: " .. tostring(whole_ticks) .. " ticks")
   -- 120 technologies: progression costs more than a 30-item tick.
   setmetatable(body.force.technologies, { __len = function() return 120 end })
   local ran, step = {}, 0

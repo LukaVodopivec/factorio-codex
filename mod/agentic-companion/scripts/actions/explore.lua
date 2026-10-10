@@ -4,7 +4,8 @@
 -- itself after each leg, and stops once a charted patch of the resource lies
 -- in view (VIEW_RADIUS tiles around the start and each leg's end; it charts
 -- a wider square) or the force's charted patch list (map_summary.patches:
--- own charted chunks only) holds one within max_distance of the body, or it
+-- own charted chunks only) holds one within max_distance of the body (with
+-- a direction: one charted since the search began, near the body), or it
 -- has walked max_distance. Every leg is an ordinary walk; a heading the body
 -- cannot walk is turned by 45 degrees, at most MAX_TURNS times in a row.
 -- Work per tick is bounded: one chart pass around the body, one bounded
@@ -129,6 +130,56 @@ local function nearest_charted(c, resource)
     distance = tenth(best_d) }, unknown
 end
 
+-- How far from the body a patch the walk newly charted may lie: the square
+-- chart_around charts around a leg's end reaches about this far (its
+-- corners; VIEW_RADIUS is the round search inside it).
+local CHARTED_REACH = (CHART_RADIUS_CHUNKS + 1) * 32 * 1.42
+
+local function overlaps(a, b)
+  return a.left_top.x <= b.right_bottom.x and b.left_top.x <= a.right_bottom.x
+    and a.left_top.y <= b.right_bottom.y and b.left_top.y <= a.right_bottom.y
+end
+
+-- The bboxes of the resource's patches the force has charted on the body's
+-- surface, as plain data (a directed explore records them at its start).
+local function charted_boxes(c, resource)
+  local ok, rows = pcall(map_summary.patches, c.surface.index)
+  local boxes = {}
+  for _, patch in ipairs(ok and rows or {}) do
+    if patch.name == resource and patch.bbox then
+      boxes[#boxes + 1] = { left_top = { x = patch.bbox.left_top.x, y = patch.bbox.left_top.y },
+        right_bottom = { x = patch.bbox.right_bottom.x, y = patch.bbox.right_bottom.y } }
+    end
+  end
+  return boxes
+end
+
+-- The nearest charted patch of the resource that touches none of the
+-- patches charted when the explore began and lies within CHARTED_REACH of
+-- the body: one this walk charted (trial 0013: directed explore walked past
+-- the oil it had itself charted, beyond its round view). One pass over the
+-- cached rows; no entity read.
+local function newly_charted(c, task)
+  local ok, rows = pcall(map_summary.patches, c.surface.index)
+  local best, best_d
+  for _, patch in ipairs(ok and rows or {}) do
+    if patch.name == task.resource and patch.bbox and patch.centroid then
+      local d = box_distance(c.position, patch.bbox)
+      local known = false
+      for _, box in ipairs(task._known_patches or {}) do
+        if overlaps(box, patch.bbox) then known = true; break end
+      end
+      if not known and d <= CHARTED_REACH and (not best or d < best_d) then best, best_d = patch, d end
+    end
+  end
+  if not best then return nil end
+  local box = best.bbox
+  return { name = best.name, centroid = { x = best.centroid.x, y = best.centroid.y },
+    bbox = { left_top = { x = box.left_top.x, y = box.left_top.y },
+      right_bottom = { x = box.right_bottom.x, y = box.right_bottom.y } },
+    distance = tenth(best_d), newly_charted = true }
+end
+
 local function patch_text(patch)
   return string.format("centred at (%.1f, %.1f), bbox (%d, %d)-(%d, %d), %.0f tiles from the body to its bbox",
     patch.centroid.x, patch.centroid.y, math.floor(patch.bbox.left_top.x), math.floor(patch.bbox.left_top.y),
@@ -159,6 +210,9 @@ function M.start(task)
   task._heading = task.direction and (math.floor(task.direction / 2 + 0.5) % 8) + 1 or nil
   task._walked, task._legs, task._turns, task._phase = 0, 0, 0, "look"
   task._start = { x = c.position.x, y = c.position.y }
+  -- A directed search scouts past what is charted already: what the force
+  -- has charted of the resource now is what a newly charted patch is not.
+  if task.resource and task.direction ~= nil then task._known_patches = charted_boxes(c, task.resource) end
 end
 
 M.resume = supply.resume
@@ -192,6 +246,14 @@ local function leg(task, c)
     if patch then
       return finish(task, c, "done", "PATCH_FOUND", string.format("found %s at (%.1f, %.1f), %.0f tiles away, after walking %d tiles",
         patch.name, patch.position.x, patch.position.y, patch.distance, math.floor(task._walked + 0.5)), patch)
+    end
+    -- With a direction, a patch this walk charted beyond the round view
+    -- (in the corners of the charted square) ends it too. A search begun
+    -- by 0.37 recorded no start list: it skips this.
+    local new = task._known_patches and newly_charted(c, task)
+    if new then
+      return finish(task, c, "done", "PATCH_FOUND", string.format("found newly charted %s %s, after walking %d tiles",
+        new.name, patch_text(new), math.floor(task._walked + 0.5)), new)
     end
   end
   -- A leg ends within ARRIVAL_RADIUS of its end, so a shorter one gets

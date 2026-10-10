@@ -1418,7 +1418,8 @@ end
     local rows = {}
     for _, e in ipairs(world) do
       local seen = e.seen or e.items
-      if e.valid and e.type == "container" and (seen[item] or 0) > 0 then
+      -- A destroyed chest stays listed until the registry's next read (gone).
+      if (e.valid or e.gone) and e.type == "container" and (seen[item] or 0) > 0 then
         local row = { entity = e, type = e.type, position = e.position }
         if not skip(row) then rows[#rows + 1] = row end
       end
@@ -1441,6 +1442,16 @@ end
   local stale = run({ items = { { name = "steel-plate", count = 10 } } })
   check(stale.status == "done" and #calls == 1 and calls[1].task.target.x == 20.5 and far.items["steel-plate"] == 40,
     "holders the registry last saw holding the item but empty now are passed over until one holds it")
+
+  reset()
+  for x = 2, 6 do
+    local gone = chest({ x = x + 0.5, y = 0.5 }, {})
+    gone.seen, gone.gone, gone.valid = { ["steel-plate"] = 10 }, true, false
+  end
+  local beyond = chest({ x = 20.5, y = 0.5 }, { ["steel-plate"] = 50 })
+  local gone_run = run({ items = { { name = "steel-plate", count = 10 } } })
+  check(gone_run.status == "done" and #calls == 1 and calls[1].task.target.x == 20.5 and beyond.items["steel-plate"] == 40,
+    "registry holders whose chest is gone are passed over too, so the scan reaches one that holds it")
 
   reset()
   for x = 2, 4 do chest({ x = x + 0.5, y = 0.5 }, { ["steel-plate"] = 5 }).vanish = true end

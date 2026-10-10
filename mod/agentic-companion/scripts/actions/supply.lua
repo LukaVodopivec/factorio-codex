@@ -211,14 +211,15 @@ local function nearest_holder(c, task, item, tried)
   if ok_totals and (totals[item] or 0) == 0 then return nil end
   local function skip(entry) return tried[holder_key(entry.position)] end
   local ok, entries = pcall(registry.holders_with, item, c.position, HOLDERS_READ, skip)
+  entries = ok and type(entries) == "table" and entries or {}
   local holders = {}
-  for _, entry in ipairs(ok and entries or {}) do holders[#holders + 1] = entry.entity end
+  for _, entry in ipairs(entries) do holders[#holders + 1] = entry.entity end
   local found = nearest_of(c, task, item, tried, holders, true)
   if found then return found end
-  for _, entity in ipairs(holders) do
-    if entity.valid then tried[holder_key(entity.position)] = true end
-  end
-  if #holders >= HOLDERS_READ then return nil, true end
+  -- By the registry's position, so an entry whose entity is gone is passed
+  -- over too and the next scan reads the next few.
+  for _, entry in ipairs(entries) do tried[holder_key(entry.position)] = true end
+  if #entries >= HOLDERS_READ then return nil, true end
   return nil
 end
 

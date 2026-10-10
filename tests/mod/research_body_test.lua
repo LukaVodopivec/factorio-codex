@@ -212,10 +212,23 @@ local gated_ok, gated_error = pcall(research.start_research, { technology = "gat
 local gated_message = tostring(gated_error)
 check(not gated_ok
   and gated_message:match("alpha requires in%-game trigger build%-entity lab %(quality = epic%) and cannot be queued")
-  and gated_message:match("zeta must be researched first")
+  and gated_message:match("zeta must be researched or queued")
   and gated_message:find("alpha", 1, true) < gated_message:find("zeta", 1, true)
-  and gated_message:match("progression_status and retry"),
+  and gated_message:match("queue or research the missing ones ahead of it"),
   "failed queue reports sorted trigger and ordinary prerequisite actions with exact filter constraints")
+-- A queued prerequisite is named as queued, never as one to research first.
+local beta = setmetatable({ name = "beta", researched = false, enabled = true, prerequisites = {}, prototype = {} },
+  technology_api)
+codex_force.technologies.beta = beta
+gated.prerequisites = { beta = beta, zeta = ordinary_prereq }
+codex_force.research_queue = { beta }
+local behind_ok, behind_error = pcall(research.start_research, { technology = "gated" })
+local behind_message = tostring(behind_error)
+check(not behind_ok and behind_message:match("beta is queued") and not behind_message:match("beta must")
+  and behind_message:match("zeta must be researched or queued"),
+  "a refusal names a queued prerequisite as queued and only the unqueued one as missing")
+codex_force.research_queue = {}
+gated.prerequisites = { zeta = ordinary_prereq, alpha = trigger_prereq }
 
 -- A list of technologies is queued in its order.
 local logistics = setmetatable({ name = "logistics", researched = false, enabled = true, prerequisites = {}, prototype = {} },

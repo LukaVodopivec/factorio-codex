@@ -179,51 +179,59 @@ end
 
 function queue_one(name)
   if type(name) ~= "string" or name == "" then
-    error('start_research needs a technology name, e.g. {"technology": "logistics"}')
+    error('start_research needs a technology name, e.g. {"technology": "logistics"}', 0)
   end
 
   local force = companion.require_present().force
 
   local ok, tech = pcall(function() return force.technologies[name] end)
   if not ok or not tech then
-    error("unknown technology: " .. name)
+    error("unknown technology: " .. name, 0)
   end
   if tech.researched then
-    error("already researched: " .. name)
+    error("already researched: " .. name, 0)
   end
   local requested_trigger = research_trigger(tech)
   if requested_trigger then
     error("cannot queue trigger technology " .. name .. "; complete its in-game "
-      .. trigger_action(requested_trigger) .. " trigger, then call progression_status again")
+      .. trigger_action(requested_trigger) .. " trigger, then call progression_status again", 0)
   end
   for _, queued in ipairs(force.research_queue) do
     if queued.name == name then
-      error(name .. " is already in the research queue")
+      error(name .. " is already in the research queue", 0)
     end
   end
   if not force.add_research(name) then
     -- Most common cause: an unresearched trigger-tech prerequisite (2.0 early
-    -- techs unlock by doing things in the world, not in a lab).
+    -- techs unlock by doing things in the world, not in a lab). A technology
+    -- queues behind its own queued prerequisites, so a queued one is named
+    -- as queued, never as missing.
+    local in_queue = {}
+    for _, queued in ipairs(force.research_queue or {}) do in_queue[queued.name] = true end
     local missing = {}
     for prereq_name, prereq in pairs(tech.prerequisites) do
       if not prereq.researched then
         local trigger = research_trigger(prereq)
         missing[#missing + 1] = {
           name = prereq_name,
-          message = trigger
-            and (prereq_name .. " requires in-game trigger " .. trigger_action(trigger) .. " and cannot be queued")
-            or (prereq_name .. " must be researched first"),
+          message = in_queue[prereq_name] and (prereq_name .. " is queued")
+            or trigger and (prereq_name .. " requires in-game trigger " .. trigger_action(trigger) .. " and cannot be queued")
+            or (prereq_name .. " must be researched or queued"),
+          queued = in_queue[prereq_name],
         }
       end
     end
-    if #missing > 0 then
+    local unqueued = 0
+    for _, entry in ipairs(missing) do if not entry.queued then unqueued = unqueued + 1 end end
+    if unqueued > 0 then
       table.sort(missing, function(a, b) return a.name < b.name end)
       local messages = {}
       for _, entry in ipairs(missing) do messages[#messages + 1] = entry.message end
-      error("can't queue " .. name .. " yet — missing prerequisites: " .. table.concat(messages, ", ")
-        .. "; complete them, then call progression_status and retry")
+      error("can't queue " .. name .. " yet — prerequisites: " .. table.concat(messages, ", ")
+        .. "; queue or research the missing ones ahead of it (a trigger one by its trigger), then retry", 0)
     end
-    error("could not queue " .. name .. " — the game refused it")
+    error("could not queue " .. name .. " — the game refused it"
+      .. (#missing > 0 and " although its unresearched prerequisites are queued" or ""), 0)
   end
 
   return { queued = true, technology = name }

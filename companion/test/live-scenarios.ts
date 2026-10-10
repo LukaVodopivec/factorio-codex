@@ -1073,6 +1073,53 @@ const scenarios: Scenario[] = [
         + ` ${missed.detail}; ${none.detail}`;
     },
   },
+  {
+    // FACTORIO-REFERENCE.md and progression_status's queueable_after_queued:
+    // a technology queues behind its own queued prerequisites. A technology
+    // B whose one unresearched prerequisite A is not a trigger technology.
+    name: "start_research queues a technology behind its queued prerequisite, and the ledger's list in its order",
+    async run(bridge) {
+      const pair = await lua<{ a: string; b: string }>(`
+        local force = game.forces.player
+        local function trigger(t) return t.prototype.research_trigger ~= nil end
+        local names = {}
+        for name in pairs(force.technologies) do names[#names + 1] = name end
+        table.sort(names)
+        for _, b in ipairs(names) do
+          local B = force.technologies[b]
+          if not B.researched and B.enabled and not trigger(B) then
+            local missing = {}
+            for name, p in pairs(B.prerequisites) do if not p.researched then missing[#missing + 1] = p end end
+            local A = missing[1]
+            if #missing == 1 and A.enabled and not trigger(A) then
+              local ready = true
+              for _, p in pairs(A.prerequisites) do ready = ready and p.researched end
+              if ready then return { a = A.name, b = b } end
+            end
+          end
+        end`);
+      expect(pair?.a && pair.b, "some technology waits on one unresearched, lab-researched prerequisite", pair);
+      const queue = () => lua<string[]>(`local out = {} for _, t in ipairs(game.forces.player.research_queue) do out[#out + 1] = t.name end return out`);
+      const clear = () => lua(`game.forces.player.research_queue = {}`);
+      await clear();
+      let alone: string;
+      try { await bridge.call("start_research", { technology: pair.b }); alone = `queued alone: ${list(await queue()).join(",")}`; }
+      catch (error) { alone = error instanceof Error ? error.message : String(error); }
+      expect(alone.includes(`${pair.a} must be researched or queued`) && alone.includes("ahead of it"),
+        "without its prerequisite queued, the refusal says to queue or research it ahead", alone);
+      await clear();
+      await bridge.call("start_research", { technology: pair.a });
+      const behind = await bridge.call<any>("start_research", { technology: pair.b });
+      expect(behind?.queued === true && list(await queue()).join(",") === `${pair.a},${pair.b}`,
+        "with its prerequisite queued, it queues behind it", { behind, queue: await queue() });
+      await clear();
+      const ledger = await bridge.call<any>("start_research", { technologies: [pair.a, pair.b], origin: "ledger/r1" });
+      expect(list(ledger?.technologies).join(",") === `${pair.a},${pair.b}` && list(ledger?.research_queue).join(",") === `${pair.a},${pair.b}`,
+        "the ledger's list queues the prerequisite and then the technology behind it", ledger);
+      await clear();
+      return `${pair.b} behind ${pair.a}; alone: ${alone}`;
+    },
+  },
 ];
 
 // Profiler lines (profiler.lua): "rpc <method> tick <tick> Duration: <ms>ms"

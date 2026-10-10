@@ -320,6 +320,8 @@ async function missingPlatform(bridge: Bridge, named: Array<string | number>): P
 
 /** A placement an earlier step of a package makes, which a later step's dry run treats as standing. */
 type Reserved = { name: string; x: number; y: number; direction?: number };
+/** How a dry run names a placement over an earlier step's (build_layout.lua check). */
+const EARLIER_STEP_OVERLAP = "overlaps an earlier step's";
 /** The most reserved rows one dry run takes (the mod's bound). */
 const MAX_RESERVED = 600;
 /** A blueprint takes at most this many entities (blueprints.lua MAX_ENTITIES). */
@@ -336,8 +338,9 @@ export const CAPTURE_MAX_ENTITIES = 100;
  *  use what runs before it builds or carries, so the mod checks those when
  *  they run. Footprints are not: each dry run is given what the steps
  *  before it place (reserved: place_entity steps and earlier dry runs'
- *  placed rows), which it treats as standing, so a later step's placement
- *  or route over an earlier one fails here, not when it runs. */
+ *  placed rows), which it treats as standing (a place_entity step's through
+ *  a one-entity layout dry run), so a later step's placement or route over
+ *  an earlier one fails here, not when it runs. */
 export async function checkPackage(bridge: Bridge, entry: BuildPackage, afterPending = false): Promise<string | null> {
   try {
     const cut = entry.steps.findIndex(changesGround);
@@ -369,6 +372,16 @@ export async function checkPackage(bridge: Bridge, entry: BuildPackage, afterPen
     // Dry runs search over ticks until they have the site or a definite answer.
     for (const step of checked) {
       if (step.action === "place_entity") {
+        // can_place above saw only the map: over what an earlier step
+        // places, a one-entity layout's dry run with the overlay says so.
+        if (reserved.length > 0) {
+          const answer = await bridge.call<{ failed?: unknown }>("build_layout", { anchor: { x: step.x, y: step.y },
+            entities: [{ name: step.name, dx: 0, dy: 0, ...(step.direction !== undefined ? { direction: step.direction } : {}) }],
+            check_only: true, ...overlay({}) });
+          const over = (luaArray(answer?.failed ?? []) as Array<{ reason?: string }>)
+            .find((row) => typeof row?.reason === "string" && row.reason.includes(EARLIER_STEP_OVERLAP));
+          if (over) return `place_entity ${step.name} at (${step.x}, ${step.y}): ${over.reason}`;
+        }
         keep([{ name: step.name, x: step.x, y: step.y, direction: step.direction }]);
         continue;
       }

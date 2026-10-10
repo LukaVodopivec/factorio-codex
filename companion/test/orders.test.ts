@@ -636,6 +636,31 @@ describe("package auto-queue", () => {
     expect(problem).toBe("build_layout: BLOCKED transport-belt at (10.5, 0.5): overlaps an earlier step's transport-belt at (10.5, 0.5)");
   });
 
+  it("checks a place_entity step after a layout against what the layout places", async () => {
+    const layout = { action: "build_layout", anchor: { x: 10, y: 0 }, entities: [{ name: "stone-furnace", dx: 1, dy: 1 }] };
+    const inserter = { action: "place_entity", x: 11.5, y: 1.5, name: "inserter", direction: 4 };
+    const { call } = fakeBridge({
+      can_place: (params) => ({ results: params.placements.map(() => ({ can_place: true })) }),
+      build_layout: (params) => params.entities[0].name === "stone-furnace"
+        ? { placed: [{ name: "stone-furnace", x: 11, y: 1, direction: 0 }], failed: {} }
+        : { placed: {}, failed: [{ index: 0, code: "ITEM_UNOBTAINABLE", reason: "no inserter" },
+          { index: 0, code: "BLOCKED", reason: "inserter at (11.5, 1.5): overlaps an earlier step's stone-furnace at (11, 1)" }] },
+    });
+    const bridge = { call } as unknown as Bridge;
+    const problem = await coordination.checkPackage(bridge, { ...furnaces("feed"), steps: [layout, inserter] } as any);
+    expect(call).toHaveBeenCalledWith("build_layout", { anchor: { x: 11.5, y: 1.5 }, entities: [{ name: "inserter", dx: 0, dy: 0, direction: 4 }],
+      check_only: true, reserved: [{ name: "stone-furnace", x: 11, y: 1, direction: 0 }], list_placed: true });
+    expect(problem).toBe("place_entity inserter at (11.5, 1.5): inserter at (11.5, 1.5): overlaps an earlier step's stone-furnace at (11, 1)");
+    // Off the layout's footprint, the dry run's other findings do not refuse it.
+    const { call: clear } = fakeBridge({
+      can_place: (params) => ({ results: params.placements.map(() => ({ can_place: true })) }),
+      build_layout: (params) => params.entities[0].name === "stone-furnace" ? { placed: [{ name: "stone-furnace", x: 11, y: 1, direction: 0 }], failed: {} }
+        : { placed: {}, failed: [{ index: 0, code: "ITEM_UNOBTAINABLE", reason: "no inserter" }] },
+    });
+    expect(await coordination.checkPackage({ call: clear } as unknown as Bridge,
+      { ...furnaces("feed"), steps: [layout, { ...inserter, x: 13.5 }] } as any)).toBeNull();
+  });
+
   it("names each capture's entity count against the 100 cap when one is over it", async () => {
     const dir = runDir();
     const capture = (name: string) => ({ action: "blueprint_capture", name, center: { x: 0, y: 0 }, radius: 6 });

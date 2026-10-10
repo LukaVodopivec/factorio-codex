@@ -1669,7 +1669,7 @@ local function beside_guest(queue)
   for index, queued in ipairs(queue) do
     if queued.type == "plan" and queued.status == "queued" and not queued.lent
       and type(queued.source) == "string" and queued.source:sub(1, 8) == "package:"
-      and (not queued.after_plan_id or predecessor_status(queued.after_plan_id) == "completed")
+      and (not queued.after_plan_id or predecessor_status(queued) == "completed")
       and remote_only(queued) then
       return index
     end

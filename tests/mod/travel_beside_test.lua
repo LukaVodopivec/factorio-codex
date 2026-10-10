@@ -106,4 +106,37 @@ done = tasks.cancel({ plan_id = trip.plan_id, only_source = "pilot", origin = "c
 check(done.cancelled == 1 and tasks.plan_status({ plan_id = trip.plan_id }).status == "cancelled" and cancels == 2
   and storage.tasks.active.id == dock.plan_id, "cancelling the lent travel plan leaves the package beside it running")
 
+-- A chained package (after_plan_id) beside a travel wait: it is a guest
+-- only once its predecessor completed, and checking it never raises.
+local function fresh() storage.tasks = { next_id = storage.tasks.next_id, records = {}, queue = {}, active = nil } end
+local function status_of(id) return tasks.plan_status({ plan_id = id }).status end
+local function safe_run(n) local ran, why = pcall(run, n); if not ran then print("  error: " .. tostring(why)) end; return ran end
+fresh(); phase, arrived = "wait_arrival", false
+trip = tasks.queue_plan({ steps = { { action = "travel", to = "vulcanus" } } })
+local ground = tasks.queue_plan({ steps = { { action = "walk_to", x = 3, y = 3 } }, source = "package:ground2", surface = "nauvis" })
+local chained = tasks.queue_plan({ steps = { { action = "platform_step", platform = "Dawn" } }, source = "package:chained",
+  after_plan_id = ground.plan_id })
+local free = tasks.queue_plan({ steps = { { action = "platform_step", platform = "Dawn" } }, source = "package:free" })
+ok = safe_run(6)
+check(ok and status_of(free.plan_id) == "completed" and status_of(chained.plan_id) == "queued"
+  and status_of(ground.plan_id) == "queued" and status_of(trip.plan_id) == "running",
+  "a package chained to a pending plan waits beside a travel wait; the check never raises")
+arrived = true
+ok = safe_run(6)
+local chained_record = storage.tasks.records[chained.plan_id]
+local ground_record = storage.tasks.records[ground.plan_id]
+check(ok and status_of(ground.plan_id) == "completed" and status_of(chained.plan_id) == "completed"
+  and chained_record.plan.started_tick > ground_record.plan.started_tick,
+  "the chained package runs only after its predecessor completed")
+
+fresh(); phase, arrived = "wait_arrival", false
+trip = tasks.queue_plan({ steps = { { action = "travel", to = "vulcanus" } } })
+local first = tasks.queue_plan({ steps = { { action = "platform_step", platform = "Dawn" } }, source = "package:first" })
+local second = tasks.queue_plan({ steps = { { action = "platform_step", platform = "Dawn" } }, source = "package:second",
+  after_plan_id = first.plan_id })
+ok = safe_run(8)
+check(ok and status_of(first.plan_id) == "completed" and status_of(second.plan_id) == "completed"
+  and status_of(trip.plan_id) == "running",
+  "a package chained to a completed guest runs beside the travel wait too")
+
 os.exit(failures == 0 and 0 or 1)

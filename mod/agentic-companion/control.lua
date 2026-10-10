@@ -336,6 +336,8 @@ for _, name in ipairs({ "on_player_mined_entity", "on_robot_mined_entity", "on_s
       registry.on_removed(event)
       autonomy.on_entity_changed(event)
       journaled(name, died and journal.on_entity_died or journal.on_removed, event)
+      -- A loss on a platform's trip (platforms.trip).
+      if died then platforms.on_entity_died(event) end
     end, NO_GHOSTS)
   end
 end

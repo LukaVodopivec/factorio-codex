@@ -44,9 +44,12 @@ export type RunAttestation = z.infer<typeof attestationSchema>;
 const itemTotals = z.record(z.string(), z.number().int().nonnegative());
 /** First ticks the mod saw (mod 0.36 on): a rocket ready in a silo, a launch
  *  ordered, a rocket launched (on_rocket_launched), and each technology's
- *  first finish; each absent until it happens. */
+ *  first finish; from mod 0.38 also a platform created, the body boarded a
+ *  platform, a platform arrived from a trip, and the body landed; each
+ *  absent until it happens. */
 export const milestonesSchema = z.object({ rocket_ready_tick: whole.optional(), rocket_launch_ordered_tick: whole.optional(),
-  rocket_launched_tick: whole.optional(), research: z.record(z.string(), whole).optional() }).strict();
+  rocket_launched_tick: whole.optional(), platform_created_tick: whole.optional(), boarded_tick: whole.optional(),
+  arrived_tick: whole.optional(), landed_tick: whole.optional(), research: z.record(z.string(), whole).optional() }).strict();
 const holdEpisode = z.object({ start_tick: whole, end_tick: whole.optional(), cause: z.string().optional() }).strict();
 /** Human holds since the save began (mod 0.36 on): how many, their ticks
  *  (an open hold's so far included), and the last 16 episodes (end_tick absent while one is open). */
@@ -169,7 +172,8 @@ const runEventsSchema = z.object({
  *  final sample's milestones, holds and handler faults (runEvents). */
 const runTelemetrySchema = z.object({ roles: z.record(z.string(), timeSplitSchema), body: bodySummarySchema.nullable() })
   .extend(runEventsSchema.shape).strict();
-/** Directed work: upkeep is the mod's chore (its own row in states), never busy. */
+/** Directed work: upkeep is the mod's chore (its own row in states), never
+ *  busy, and so is traveling (a travel step waiting for its ride or carried). */
 const BUSY_STATES = ["pilot", "package", "crafting"];
 const round = (value: number, digits = 3) => Math.round(value * 10 ** digits) / 10 ** digits;
 const gapRow = (count: number, ticks: number, longest: number | null) => ({ count, total_seconds: round(ticks / 60, 2),
@@ -206,8 +210,9 @@ export function bodySummary(baseline: RunSnapshot, final: RunSnapshot): z.infer<
     ...(b.tiles !== undefined ? { tiles: round(Math.max(0, b.tiles - (a.tiles ?? 0)), 1) } : {}) };
 }
 
-const ROCKET_MILESTONES = ["rocket_ready", "rocket_launch_ordered", "rocket_launched"] as const;
-/** Between the baseline and final samples: each rocket milestone the final
+const MILESTONES = ["rocket_ready", "rocket_launch_ordered", "rocket_launched",
+  "platform_created", "boarded", "arrived", "landed"] as const;
+/** Between the baseline and final samples: each rocket and space milestone the final
  *  snapshot holds, with its tick and seconds from GO (the baseline tick;
  *  negative when it happened before this recording), human holds in the
  *  window (count, seconds, episodes that ended in it or are open), and
@@ -216,7 +221,7 @@ const ROCKET_MILESTONES = ["rocket_ready", "rocket_launch_ordered", "rocket_laun
 export function runEvents(baseline: RunSnapshot, final: RunSnapshot): z.infer<typeof runEventsSchema> {
   const out: z.infer<typeof runEventsSchema> = {};
   const milestones = final.milestones;
-  if (milestones) out.milestones = Object.fromEntries(ROCKET_MILESTONES.flatMap((name) => {
+  if (milestones) out.milestones = Object.fromEntries(MILESTONES.flatMap((name) => {
     const tick = milestones[`${name}_tick`];
     return tick === undefined ? [] : [[name, { tick, elapsed_s: round((tick - baseline.tick) / 60, 2) }]];
   }));
@@ -363,7 +368,8 @@ const FAILURE_EVENTS = new Set(["package_failed", "package_unmet"]);
  *  (isError), not_ok (a result with ok false, such as a failed dry run), else
  *  ok; ok is whether the call itself succeeded (not isError: a plan read of a
  *  failed or cancelled plan is not an error); event is next_event's kind.
- *  code is the result's own, else a failed dry run's first failed row's, else
+ *  code is the result's own, else a failed dry run's first failed row's (a
+ *  refused placement's first collision's), else
  *  the first plan outcome that did not complete (plan_ended, plan_status,
  *  run_plan). summary (at most 200 characters) only for a failed call, a
  *  status other than ok, completed or running, or a package_failed or
@@ -376,7 +382,10 @@ export function toolOutcome(value: unknown): Omit<ToolOutcome, "at" | "role" | "
   const notOk = typeof structured?.status !== "string" && structured?.ok === false;
   const status = typeof structured?.status === "string" ? structured.status : !ok ? "failed" : notOk ? "not_ok" : "ok";
   type Row = { code?: unknown; reason?: unknown; error?: unknown; status?: unknown } | undefined;
-  const failedRow = notOk && Array.isArray(structured?.failed) ? structured.failed[0] as Row : undefined;
+  // A refused placement (blueprint_place) names its first collision instead.
+  const refused = notOk || !ok || structured?.ok === false;
+  const failedRow = notOk && Array.isArray(structured?.failed) ? structured.failed[0] as Row
+    : refused && Array.isArray(structured?.collisions) ? structured.collisions[0] as Row : undefined;
   const openOutcome = Array.isArray(structured?.outcomes)
     ? (structured.outcomes as Row[]).find((outcome) => outcome && typeof outcome === "object" && outcome.status !== "completed") : undefined;
   const row = failedRow ?? openOutcome;

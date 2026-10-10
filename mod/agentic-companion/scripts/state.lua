@@ -31,6 +31,9 @@ function M.init()
     queue = tasks.queue or {},
     active = tasks.active,
     last_finished_tick = tasks.last_finished_tick,
+    -- When pilot work (any task but upkeep) last ended, absent before one:
+    -- next_event's idle_since_tick (factory_status.event_state).
+    last_pilot_finished_tick = tasks.last_pilot_finished_tick,
     -- Human takeover (companion.human_control): the last real control input
     -- on the Codex client, absent when there never was one, and the walking
     -- state the mod last commanded.
@@ -294,8 +297,10 @@ function M.init()
   storage.space.created = storage.space.created or {}
   storage.space.events = storage.space.events or {}
   -- Run milestones, the first tick of each (the run recorder samples them):
-  -- rocket_ready_tick, rocket_launch_ordered_tick and rocket_launched_tick
-  -- (platforms.lua), and research: technology -> the tick the body's force
+  -- rocket_ready_tick, rocket_launch_ordered_tick, rocket_launched_tick,
+  -- platform_created_tick and arrived_tick (a platform's trip ended)
+  -- (platforms.lua), boarded_tick and landed_tick (the body's moves,
+  -- control.lua), and research: technology -> the tick the body's force
   -- first finished it (run_snapshot.on_research_finished). A save from
   -- before them records from the upgrade on.
   storage.milestones = storage.milestones or {}

@@ -509,6 +509,9 @@ local function finish(task, status, detail, preserve_body, outcome, keep_craftin
   if status == "cancelled" and not keep_crafting and task_crafts(task) then cancel_crafting() end
   if storage.tasks.active and storage.tasks.active.id == task.id then storage.tasks.active = nil end
   storage.tasks.last_finished_tick = game.tick
+  -- next_event's idle_since_tick: when pilot work (any task but the mod's
+  -- own upkeep) last ended.
+  if not (task.type == "plan" and task.source == "upkeep") then storage.tasks.last_pilot_finished_tick = game.tick end
   if not preserve_body then stop_body() end
   if task.type == "plan" then
     task.finished_tick = game.tick
@@ -941,14 +944,25 @@ local function plan_payload(plan)
     craft_wait_s = plan_time(plan.craft_wait_ticks),
   }
 end
+-- compact (the package bridge's own polls): only what it asks, {plan_id,
+-- source, status, satisfies_chain, finished_tick, source_tick}: no outcomes,
+-- observation or diagnostics are built.
+local function compact_payload(plan)
+  return { plan_id = plan.id, source = plan.source, status = plan.status, satisfies_chain = satisfies_chain(plan) or nil,
+    finished_tick = plan.finished_tick, source_tick = game.tick }
+end
 function M.plan_status(params)
   local id = tonumber(params.plan_id)
   if not id then error("plan_status requires plan_id") end
+  local payload = params.compact == true and compact_payload or plan_payload
   local tasks = storage.tasks
-  if tasks.active and tasks.active.id == id and tasks.active.type == "plan" then return plan_payload(tasks.active) end
-  for _, queued in ipairs(tasks.queue) do if queued.id == id and queued.type == "plan" then return plan_payload(queued) end end
+  if tasks.active and tasks.active.id == id and tasks.active.type == "plan" then return payload(tasks.active) end
+  for _, queued in ipairs(tasks.queue) do if queued.id == id and queued.type == "plan" then return payload(queued) end end
   local record = tasks.records[id]
-  if record and record.plan then observe_terminal(record.plan); return plan_payload(record.plan) end
+  if record and record.plan then
+    if payload == compact_payload then return payload(record.plan) end
+    observe_terminal(record.plan); return plan_payload(record.plan)
+  end
   error("unknown plan_id: " .. id .. ": never queued, or it ended more than " .. math.floor(RECORD_TTL_TICKS / 3600)
     .. " minutes ago (" .. math.floor(FAILED_RECORD_TTL_TICKS / 3600) .. " if it failed or was partial);"
     .. " activity_log keeps the last " .. ACTIVITY_LOG_SIZE .. " plan outcomes", 0)
@@ -2208,18 +2222,24 @@ for _, name in ipairs({ "on_robot_pre_mined", "on_robot_mined_entity", "on_robot
 end
 -- Body time (run telemetry): what the body did, tick by tick, as one state:
 -- a task of a source (pilot for pilot plans and direct tools, package,
--- upkeep), hand-crafting with no task, a human hold, a dead body with work
--- waiting, or idle. storage.tasks.body_time (state.lua) keeps the ticks per
+-- upkeep), a travel step waiting for a rocket, the platform's arrival or
+-- its ride (traveling), hand-crafting with no task, a human hold, a dead
+-- body with work waiting, or idle. storage.tasks.body_time (state.lua) keeps the ticks per
 -- state and the idle gaps, keyed by the state that ended them. The state
 -- is read once as each tick begins (a plan dispatched in tick t counts from
 -- t + 1) and written only when it changes; run_snapshot reads it. A gap
 -- open at the recorder's window mark (mark_body_window) counts from the
 -- mark, so the gaps closed after a run's baseline hold only its own time.
+-- A travel step's waiting phases (actions/travel.lua): the body is carried
+-- or waits for its ride, doing no work of its own.
+local TRAVEL_WAITS = { board_wait = true, wait_arrival = true, ride = true }
 local function body_state(tasks)
   if tasks.human_hold then return "hold" end
   if tasks.dead_since then return "dead" end
   local active = tasks.active
   if active then
+    local current = active.type == "plan" and active.current_task
+    if current and current.type == "travel" and TRAVEL_WAITS[current._phase] then return "traveling" end
     local source = active.type == "plan" and active.source or "pilot"
     if source == "upkeep" then return "upkeep" end
     return source:sub(1, 8) == "package:" and "package" or "pilot"
@@ -2383,6 +2403,7 @@ function M.on_tick()
     if not tasks.human_hold then enter_hold(tasks, cause) end
     -- A human playing the body is not idle time.
     if tasks.last_finished_tick then tasks.last_finished_tick = game.tick end
+    if tasks.last_pilot_finished_tick then tasks.last_pilot_finished_tick = game.tick end
     return
   end
   if tasks.human_hold then leave_hold(tasks) end

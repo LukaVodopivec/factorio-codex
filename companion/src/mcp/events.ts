@@ -37,6 +37,13 @@ export interface LossRow {
 export interface EventState {
   tick: number; queue_depth: number; fifo_empty: boolean; human_hold: boolean;
   active_plan_id?: number; problem_count?: number; last_problem_tick?: number;
+  /** While the FIFO is empty and no human holds the body: when pilot work
+   *  last ended (upkeep and holds excluded); absent before any (mod 0.38 on). */
+  idle_since_tick?: number;
+  /** The package plans still in the FIFO, running first (mod 0.38 on). */
+  package_plans?: number[];
+  /** Where the body is: on_surface, aboard_platform (platform_name) or in_transit (mod 0.38 on). */
+  body?: { state?: string; platform_name?: string };
   /** surface: the surface the plan's positions were on (mod 0.22.3 on). */
   last_plan_ended?: { plan_id: number; status: string; tick: number; surface?: string };
   last_research_finished?: { technology: string; tick: number };
@@ -69,6 +76,9 @@ export interface FailureDelivery { keys: Set<string> | null }
 export interface EventSources {
   /** True while orders this session has not received are waiting. */
   ordersChanged(): boolean;
+  /** Ledger packages not yet ended, live from this read's package plans
+   *  (coordination/orders.ts packagesOpen); null without a run. */
+  packagesOpen?(state: EventState): number | null;
   /** Packages the bridge failed to queue. */
   packageFailures(): PackageFailure[];
   /** Packages whose verify metrics the bridge measured. */
@@ -91,13 +101,20 @@ export const researchIdleProblem = (problems: unknown): boolean =>
 const realClock: TaskClock = { now: () => Date.now(), sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) };
 export const EVENT_POLL_MS = 500;
 
+/** Whether a space event wakes the wait: all but a cargo pod landing on a
+ *  planet (a platform's drop), which only rides along in space_events; a
+ *  pod landing on a platform (a rocket's cargo) still wakes. */
+const wakes = (row: SpaceEvent) => !(row.kind === "cargo_delivered" && row.platform === undefined);
+
 /** Blocks until something the pilot should act on happens: a plan ends, a
  *  research finishes, the FIFO empties, a machine problem appears, one of the
  *  role's watches fires, own entities are destroyed, a package fails its
  *  check or has its verify measured, the orders change, a human hold starts
- *  or ends; otherwise
+ *  or ends, a space event other than a planet cargo landing; otherwise
  *  times out. A plan_ended event carries the plan's step outcomes and
- *  inventory change, so no follow-up read is needed. */
+ *  inventory change, so no follow-up read is needed. The body block says
+ *  how many ledger packages are still open (packages_open) and, while the
+ *  FIFO is empty, since when (idle_since_tick, idle_seconds). */
 export async function waitForEvent(bridge: Bridge, input: NextEventInput, sources: EventSources,
   signal?: AbortSignal, clock: TaskClock = realClock): Promise<Record<string, unknown>> {
   const since = input.since_tick;
@@ -126,16 +143,23 @@ export async function waitForEvent(bridge: Bridge, input: NextEventInput, source
     const space = (SPACE_EVENTS as readonly string[]).includes(event) ? [] : newSpace(state);
     const fired = event === "watch_fired" ? [] : luaArray(state.watch_fired ?? []);
     const losses = event === "entities_lost" ? [] : newLosses(state);
+    const idleSince = typeof state.idle_since_tick === "number" ? state.idle_since_tick : null;
+    let open: number | null = null;
+    try { open = sources.packagesOpen?.(state) ?? null; } catch { /* unreadable run files: unknown */ }
     return { event, ...details, ...(space.length > 0 ? { space_events: space } : {}),
       ...(fired.length > 0 ? { watches: fired } : {}), ...(losses.length > 0 ? { losses } : {}), tick: state.tick,
       body: { active_plan_id: state.active_plan_id ?? null, queue_depth: state.queue_depth,
-        fifo_empty: state.fifo_empty, human_hold: state.human_hold } };
+        fifo_empty: state.fifo_empty, human_hold: state.human_hold, packages_open: open,
+        idle_since_tick: idleSince, idle_seconds: idleSince === null ? null : Math.max(0, Math.floor((state.tick - idleSince) / 60)),
+        ...(typeof state.body?.state === "string" ? { state: state.body.state } : {}),
+        ...(typeof state.body?.platform_name === "string" ? { platform_name: state.body.platform_name } : {}) } };
   };
-  // The oldest new space event; later ones in the same read come along.
+  // The oldest new space event that wakes; the others in the same read come along.
   const spaceEvent = (state: EventState) => {
     const rows = newSpace(state);
-    if (rows.length === 0) return null;
-    const { tick, kind, ...fields } = rows[0]!;
+    const first = rows.find(wakes);
+    if (!first) return null;
+    const { tick, kind, ...fields } = first;
     return done(kind, state, { ...fields, event_tick: tick, ...(rows.length > 1 ? { space_events: rows } : {}) });
   };
   // A research that finished in the same poll rides along: its tick is
@@ -248,8 +272,12 @@ export async function waitForEvent(bridge: Bridge, input: NextEventInput, source
 }
 
 export const IDLE_NOW = "the FIFO is empty and the body is idle: queue work now";
-/** The same for a role that only reads (strategist, advisor): a fact, never a cue. */
+/** The same for a role that only reads (strategist, advisor): a fact, never a
+ *  cue; also every later mention in the same idle interval, with its seconds. */
 export const IDLE_FACT = "the FIFO is empty and the body is idle";
+/** A session's idle-cue record: the idle interval (its idle_since_tick, null
+ *  when unknown) whose cue was already given; undefined while not idle. */
+export interface IdleCue { since?: number | null }
 
 const at = (point: unknown) => { const p = point as { x?: number; y?: number } | undefined; return `(${p?.x}, ${p?.y})`; };
 
@@ -364,9 +392,19 @@ function eventText(value: Record<string, unknown>, idleText: string): string {
 /** One line for the result. With since_tick a FIFO that is already empty
  *  never fires queue_empty again, so any event that finds the body idle (and
  *  not held by a human) says so: the last plan ending is the pilot's cue. A
- *  role that only reads gets the idle fact without the cue. */
-export function eventSummary(value: Record<string, unknown>, role?: string): string {
-  const idleText = readsOnly(role) ? IDLE_FACT : IDLE_NOW;
+ *  role that only reads gets the idle fact without the cue. With cue (the
+ *  session's record) the cue comes once per idle interval, later mentions
+ *  are the fact with its seconds; aboard (the body is aboard a platform: that
+ *  fact in words) replaces the cue. */
+export function eventSummary(value: Record<string, unknown>, role?: string,
+  options: { cue?: IdleCue; aboard?: string } = {}): string {
+  const body = value.body as { fifo_empty?: boolean; human_hold?: boolean; idle_since_tick?: unknown; idle_seconds?: unknown } | undefined;
+  const idle = body?.fifo_empty === true && body.human_hold !== true;
+  const interval = typeof body?.idle_since_tick === "number" ? body.idle_since_tick : null;
+  const fresh = !options.cue || options.cue.since !== interval;
+  const seconds = typeof body?.idle_seconds === "number" ? ` (${body.idle_seconds} s)` : "";
+  const idleText = options.aboard ? (fresh ? options.aboard : `the FIFO is empty; the body is aboard${seconds}`)
+    : fresh ? (readsOnly(role) ? IDLE_FACT : IDLE_NOW) : `${IDLE_FACT}${seconds}`;
   const space = Array.isArray(value.space_events) ? value.space_events.length : 0;
   const along = space > 0 && !(SPACE_EVENTS as readonly string[]).includes(String(value.event));
   const fired = value.event !== "watch_fired" && Array.isArray(value.watches) ? value.watches.length : 0;
@@ -374,7 +412,11 @@ export function eventSummary(value: Record<string, unknown>, role?: string): str
   const text = `${eventText(value, idleText)}${along ? `; ${space} rocket, platform or travel event${space === 1 ? "" : "s"} in space_events` : ""}`
     + (fired > 0 ? `; ${fired} watch${fired === 1 ? "" : "es"} fired too, in watches` : "")
     + (lost.length > 0 ? `; ${lossesText(lost)}` : "");
-  const body = value.body as { fifo_empty?: boolean; human_hold?: boolean } | undefined;
-  const idle = body?.fifo_empty === true && body.human_hold !== true;
+  const said = value.event === "queue_empty" || idle && !["cancelled", "human_hold_started"].includes(String(value.event));
+  // The interval's cue is spent once said; leaving idle clears it.
+  if (options.cue) {
+    if (!idle) options.cue.since = undefined;
+    else if (said) options.cue.since = interval;
+  }
   return idle && !["queue_empty", "cancelled", "human_hold_started"].includes(String(value.event)) ? `${text}; ${idleText}` : text;
 }

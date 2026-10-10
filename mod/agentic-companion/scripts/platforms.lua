@@ -778,6 +778,7 @@ local function create(body, params)
   created[p.index] = planet
   -- A reused index starts with no trip.
   if space().trips then space().trips[p.index] = nil end
+  M.milestone("platform_created_tick")
   return { code = "PLATFORM_CREATED", platform = { index = p.index, name = p.name, state = M.state_name(p), planet = planet },
     next = "craft a " .. M.STARTER_PACK .. " and launch it to this platform with launch_rocket" }
 end
@@ -1050,6 +1051,9 @@ local function first(key, tick)
   storage.milestones = storage.milestones or {}
   if storage.milestones[key] == nil then storage.milestones[key] = tick end
 end
+-- Space milestones the body's moves mark (control.lua): boarded_tick,
+-- landed_tick.
+function M.milestone(key) first(key, game.tick) end
 
 -- Where a rocket's cargo pod goes: the platform, if any. Read when the
 -- launch is ordered: the pod leaves the rocket before it finishes ascending.
@@ -1103,6 +1107,8 @@ function M.on_platform_state_changed(event)
     end
     if state == "waiting_at_station" and location then
       M.record("platform_arrived", { platform = platform_ref(p), location = location })
+      -- A trip's end (it was on its way), not the starter pack's landing.
+      if define_name("space_platform_state", event.old_state) == "on_the_path" then first("arrived_tick", game.tick) end
       storage.travel = storage.travel or {}
       storage.travel.arrivals = storage.travel.arrivals or {}
       storage.travel.arrivals[p.index] = { location = location, tick = game.tick }

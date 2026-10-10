@@ -72,9 +72,54 @@ export interface PackageQueueState {
    *  since its tick. */
   cancel_all?: { tick: number; observed_at: string };
 }
+/** A queued package's plan as the game has it now: queued (in the FIFO),
+ *  running, ended (its end not yet recorded) or how it ended. */
+export type PackagePlanStatus = "queued" | "running" | "ended" | "completed" | "partial" | "failed" | "cancelled";
 export interface Orders {
   revision: number; NOW: OperationsLedger["task_list"]["NOW"];
-  packages: Array<{ id: string; status: "pending" | PackageRecord["status"]; plan_id?: number; reason?: string }>;
+  /** status: the bridge's record (pending: none yet); plan_status: a queued
+   *  package's plan, live when the orders were attached. */
+  packages: Array<{ id: string; status: "pending" | PackageRecord["status"]; plan_id?: number; reason?: string;
+    plan_status?: PackagePlanStatus }>;
+}
+/** The mod's FIFO as event_state reads it: the running pilot-work plan, the
+ *  package plans still in the FIFO, and the last pilot or package plan to end. */
+export interface LivePlans {
+  active_plan_id?: number | null; package_plans?: unknown;
+  last_plan_ended?: { plan_id: number; status: string } | null;
+}
+
+/** A queued record's plan now: its recorded end, else (with a live read)
+ *  running, queued or ended; absent without a live read, which would only
+ *  repeat the stale queued. Captures only have no plan and are done. */
+function planStatusOf(record: PackageRecord, live?: LivePlans): PackagePlanStatus | undefined {
+  if (record.status !== "queued") return undefined;
+  if (record.plan_status !== undefined) return record.plan_status as PackagePlanStatus;
+  if (record.plan_id === undefined) return "completed";
+  if (!live) return undefined;
+  if (live.active_plan_id === record.plan_id) return "running";
+  if ((luaArray(live.package_plans ?? []) as unknown[]).includes(record.plan_id)) return "queued";
+  const last = live.last_plan_ended;
+  return last && last.plan_id === record.plan_id ? last.status as PackagePlanStatus : "ended";
+}
+
+/** Ledger packages not yet ended, live: not yet queued (no record yet,
+ *  queuing, or waiting for the body's surface), or queued with its plan
+ *  still in the mod's FIFO (package_plans). A failed or ended one is not
+ *  open, nor is one written before the last emergency stop (held until the
+ *  strategist rewrites the ledger). null without a run or ledger. */
+export function packagesOpen(dir: string, live: LivePlans): number | null {
+  const ledger = readLedger(dir);
+  const state = readPackageQueue(dir);
+  if (!ledger || !state) return null;
+  const inFifo = new Set(luaArray(live.package_plans ?? []) as unknown[]);
+  const held = state.cancel_all !== undefined && ledgerWrittenMs(dir) <= Date.parse(state.cancel_all.observed_at);
+  return ledger.build_packages.filter((entry) => {
+    const record = state.packages[entry.package_id];
+    if (!record || record.status === "queuing" || record.status === "waiting_surface") return !held || record?.status === "queuing";
+    if (record.status !== "queued" || record.plan_id === undefined || record.plan_ended_tick !== undefined) return false;
+    return inFifo.has(record.plan_id);
+  }).length;
 }
 
 export const ledgerFile = (dir: string) => path.join(dir, "operations.json");
@@ -133,25 +178,29 @@ export function packageFailures(dir: string): Array<{ package_id: string; reason
       ...(record.tick === undefined ? {} : { tick: record.tick }), at: record.at }] : []);
 }
 
-export function readOrders(dir: string): Orders | null {
+export function readOrders(dir: string, live?: LivePlans): Orders | null {
   const ledger = readLedger(dir);
   if (!ledger) return null;
   const records = readPackageQueue(dir)?.packages ?? {};
   return { revision: ledger.revision, NOW: ledger.task_list.NOW, packages: ledger.build_packages.map((entry) => {
     const record = records[entry.package_id];
+    const plan = record ? planStatusOf(record, live) : undefined;
     return { id: entry.package_id, status: record?.status ?? "pending",
       ...(record?.plan_id === undefined ? {} : { plan_id: record.plan_id }),
-      ...(record?.reason === undefined ? {} : { reason: record.reason }) };
+      ...(record?.reason === undefined ? {} : { reason: record.reason }),
+      ...(plan === undefined ? {} : { plan_status: plan }) };
   }) };
 }
 
 /** Attaches the orders to a tool result whenever the ledger revision differs
- *  from the one this session last received. */
+ *  from the one this session last received; live (the mod's FIFO, read by
+ *  the caller only then) gives each queued package's plan_status as it is
+ *  now. The block is a snapshot of that moment. */
 export function createOrdersTracker(runDir: RunDir) {
   let delivered: string | undefined;
-  const current = () => {
+  const current = (live?: LivePlans) => {
     const dir = runDir();
-    const orders = dir ? readOrders(dir) : null;
+    const orders = dir ? readOrders(dir, live) : null;
     return orders ? { key: `${dir}#${orders.revision}`, orders } : null;
   };
   return {
@@ -159,11 +208,11 @@ export function createOrdersTracker(runDir: RunDir) {
       const now = current();
       return now !== null && now.key !== delivered;
     },
-    attach<T>(result: T): T {
+    attach<T>(result: T, live?: LivePlans): T {
       const value = result as { structuredContent?: unknown; content?: Array<{ type: string; text: string }> };
       const structured = value?.structuredContent;
       if (!structured || typeof structured !== "object" || Array.isArray(structured)) return result;
-      const now = current();
+      const now = current(live);
       if (!now || now.key === delivered) return result;
       delivered = now.key;
       const note = `orders revision ${now.orders.revision}: NOW ${now.orders.NOW.objective}`;
@@ -390,9 +439,11 @@ async function footprintChanges(b: Bridge, entry: BuildPackage): Promise<Footpri
   } catch { return undefined; }
 }
 
-/** The source of a plan the mod still knows, or null for an unknown (pruned) plan. */
+/** The source of a plan the mod still knows, or null for an unknown (pruned)
+ *  plan. The bridge's own plan_status polls are compact: plan_id, source,
+ *  status and finished_tick only. */
 async function planSource(b: Bridge, planId: number): Promise<string | undefined | null> {
-  try { return (await b.call<{ source?: string }>("plan_status", { plan_id: planId })).source; }
+  try { return (await b.call<{ source?: string }>("plan_status", { plan_id: planId, compact: true })).source; }
   catch (error) { if (error instanceof ModError) return null; throw error; }
 }
 
@@ -425,7 +476,8 @@ async function verifyPackages(b: Bridge, state: PackageQueueState, tick: number,
         if (now().getTime() - (polled.get(key) ?? -Infinity) < VERIFY_POLL_MS) continue;
         polled.set(key, now().getTime());
         try {
-          const plan = await b.call<{ status?: string; source?: string; finished_tick?: number }>("plan_status", { plan_id: record.plan_id });
+          const plan = await b.call<{ status?: string; source?: string; finished_tick?: number }>("plan_status",
+            { plan_id: record.plan_id, compact: true });
           // Another plan's id after a save rollback: the record is dropped and queued again.
           if (plan?.source !== `package:${id}` || !ENDED.has(String(plan.status))) continue;
           record.plan_ended_tick = typeof plan.finished_tick === "number" ? plan.finished_tick : tick;
@@ -647,7 +699,7 @@ export function createPackageQueue(runDir: RunDir, bridge: () => Promise<Bridge>
           let status: string | undefined, source: string | undefined, satisfiesChain: boolean | undefined;
           try {
             ({ status, source, satisfies_chain: satisfiesChain } = await b.call<{ status: string; source?: string;
-              satisfies_chain?: boolean }>("plan_status", { plan_id: before.plan_id }));
+              satisfies_chain?: boolean }>("plan_status", { plan_id: before.plan_id, compact: true }));
           }
           catch (error) { if (!(error instanceof ModError)) throw error; /* pruned: it ended long ago */ }
           if (status !== undefined && source !== `package:${entry.after_package_id}`) {

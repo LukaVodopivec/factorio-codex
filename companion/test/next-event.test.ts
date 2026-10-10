@@ -602,3 +602,87 @@ describe("next_event own losses and repeated outcomes", () => {
       .toBe("plan 6 ended failed; SUPPLY_SHORTFALL again at step 2 get_items (3 in a row)");
   });
 });
+
+describe("next_event idle interval, open packages and planet cargo", () => {
+  it("reports packages_open, idle_since_tick and idle_seconds in the body block", async () => {
+    const state: EventState = { ...idle, tick: 4_000, idle_since_tick: 400, package_plans: [7],
+      body: { state: "on_surface" } };
+    const seen: EventState[] = [];
+    const event = await waitForEvent(game([state]).bridge, input(), { ...quiet(), packagesOpen: (read) => { seen.push(read); return 2; } },
+      undefined, fakeClock());
+    expect(event).toMatchObject({ event: "queue_empty", body: { fifo_empty: true, packages_open: 2, idle_since_tick: 400,
+      idle_seconds: 60, state: "on_surface" } });
+    expect(seen[0]?.package_plans).toEqual([7]);
+    // Busy, or without a run: no idle interval, packages_open null.
+    const working = await waitForEvent(game([busy]).bridge, { timeout_seconds: 1 }, quiet(), undefined, fakeClock());
+    expect(working.body).toMatchObject({ packages_open: null, idle_since_tick: null, idle_seconds: null });
+    const broken = await waitForEvent(game([state]).bridge, input(), { ...quiet(), packagesOpen: () => { throw new Error("EIO"); } },
+      undefined, fakeClock());
+    expect(broken.body).toMatchObject({ packages_open: null });
+  });
+
+  it("lets a cargo pod landing on a planet ride along instead of waking; a platform's still wakes", async () => {
+    const drop = { tick: 210, kind: "cargo_delivered" as const, surface: "nauvis" };
+    const before = { ...busy, tick: 200, last_space_event_tick: 120, space_events: [] as never[] };
+    const dropped = { ...before, tick: 215, last_space_event_tick: 210, space_events: [drop] };
+    const clock = fakeClock();
+    const quietDrop = await waitForEvent(game([before, dropped]).bridge, { timeout_seconds: 2 }, quiet(), undefined, clock);
+    expect(quietDrop).toMatchObject({ event: "timeout", space_events: [drop] });
+    expect(clock.slept).toBe(2_000);
+    expect(eventSummary(quietDrop)).toBe("nothing happened in 2 s; 1 rocket, platform or travel event in space_events");
+    // With since_tick it rides along on the next event, never returning on its own.
+    expect(await waitForEvent(game([dropped]).bridge, { timeout_seconds: 1, since_tick: 205 }, quiet(), undefined, fakeClock()))
+      .toMatchObject({ event: "timeout", space_events: [drop] });
+    const onPlatform = { tick: 212, kind: "cargo_delivered" as const, platform: { index: 3, name: "Orbit" } };
+    const both = { ...dropped, tick: 220, last_space_event_tick: 212, space_events: [drop, onPlatform] };
+    const woke = await waitForEvent(game([both]).bridge, input({ since_tick: 205 }), quiet(), undefined, fakeClock());
+    expect(woke).toMatchObject({ event: "cargo_delivered", event_tick: 212, platform: { name: "Orbit" }, space_events: [drop, onPlatform] });
+  });
+
+  it("gives the idle cue once per idle interval, then the fact with its seconds", () => {
+    const cue = {};
+    const ended = (plan: number, since: number | null, seconds: number | null) => ({ event: "plan_ended", plan_id: plan, status: "completed",
+      body: { fifo_empty: true, human_hold: false, idle_since_tick: since, idle_seconds: seconds } });
+    expect(eventSummary(ended(5, 1_000, 0), "pilot", { cue })).toBe(`plan 5 ended completed; ${IDLE_NOW}`);
+    expect(eventSummary({ event: "timeout", waited_seconds: 25, body: { fifo_empty: true, idle_since_tick: 1_000, idle_seconds: 25 } },
+      "pilot", { cue })).toBe(`nothing happened in 25 s; ${IDLE_FACT} (25 s)`);
+    expect(eventSummary({ event: "queue_empty", body: { fifo_empty: true, idle_since_tick: 1_000, idle_seconds: 40 } }, "pilot", { cue }))
+      .toBe(`${IDLE_FACT} (40 s)`);
+    // Work in between ends the interval; the next one is cued again.
+    expect(eventSummary({ event: "timeout", waited_seconds: 25, body: { fifo_empty: false } }, "pilot", { cue }))
+      .toBe("nothing happened in 25 s");
+    expect(eventSummary(ended(6, 3_000, 0), "pilot", { cue })).toBe(`plan 6 ended completed; ${IDLE_NOW}`);
+    // A new idle start without a busy read in between is a new interval too.
+    expect(eventSummary(ended(7, 4_000, 0), "pilot", { cue })).toBe(`plan 7 ended completed; ${IDLE_NOW}`);
+    // A reading role gets the fact once, then with its seconds.
+    const reader = {};
+    expect(eventSummary(ended(5, 1_000, 0), "strategist", { cue: reader })).toBe(`plan 5 ended completed; ${IDLE_FACT}`);
+    expect(eventSummary(ended(5, 1_000, 3), "strategist", { cue: reader })).toBe(`plan 5 ended completed; ${IDLE_FACT} (3 s)`);
+    // A cancelled wait states nothing, so the cue is still to come.
+    const later = {};
+    expect(eventSummary({ event: "cancelled", body: { fifo_empty: true, idle_since_tick: 1_000 } }, "pilot", { cue: later })).toBe("cancelled");
+    expect(eventSummary({ event: "queue_empty", body: { fifo_empty: true, idle_since_tick: 1_000 } }, "pilot", { cue: later })).toBe(IDLE_NOW);
+  });
+
+  it("replaces the idle cue with the aboard fact while the body is aboard a platform", () => {
+    const cue = {};
+    const aboard = "the body is aboard platform Dawn: physical actions and hand-crafting fail with BODY_ABOARD until it lands; remote platform tools work";
+    const event = { event: "timeout", waited_seconds: 25, body: { fifo_empty: true, idle_since_tick: 500, idle_seconds: 30,
+      state: "aboard_platform", platform_name: "Dawn" } };
+    expect(eventSummary(event, "pilot", { cue, aboard })).toBe(`nothing happened in 25 s; ${aboard}`);
+    expect(eventSummary(event, "pilot", { cue, aboard })).toBe("nothing happened in 25 s; the FIFO is empty; the body is aboard (30 s)");
+    expect(eventSummary(event, "pilot", { cue, aboard })).not.toContain("queue work now");
+  });
+
+  it("says the aboard fact through the MCP handler once per interval", async () => {
+    const handlers: Record<string, (args: any, extra?: any) => Promise<any>> = {};
+    const state: EventState = { ...idle, tick: 2_000, idle_since_tick: 200, body: { state: "aboard_platform", platform_name: "Dawn" } };
+    registerMcpTools({ registerTool(name, _config, run) { handlers[name] = run; } }, async () => game([state]).bridge,
+      () => ({ ok: false, error: "offline fixture" }), "full", () => null, "pilot");
+    const first = await handlers.next_event!({ timeout_seconds: 1 });
+    expect(first.content[0].text).toBe("the body is aboard platform Dawn: physical actions and hand-crafting fail with BODY_ABOARD until it lands; remote platform tools work");
+    expect(first.structuredContent.body).toMatchObject({ state: "aboard_platform", platform_name: "Dawn", idle_seconds: 30, packages_open: null });
+    const second = await handlers.next_event!({ timeout_seconds: 1 });
+    expect(second.content[0].text).toBe("the FIFO is empty; the body is aboard (30 s)");
+  });
+});

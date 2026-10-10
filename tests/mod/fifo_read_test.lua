@@ -84,6 +84,14 @@ local pinged = call("ping")
 check(pinged.protocol_version == 29 and pinged.body.state == "on_surface" and pinged.body.surface_ref == "nauvis"
   and call("plan_status").fifo.body.surface_ref == "nauvis",
   "ping (protocol 29) and every fifo block name the body's state and surface")
+-- The package bridge's compact plan_status poll carries no FIFO block.
+helpers.json_to_table = function() return { compact = true } end
+responded = nil
+registered.rpc("plan_status", "{\"compact\":true}")
+local compact = responded and responded.ok and responded.data
+helpers.json_to_table = function() return {} end
+check(compact and compact.source == "plan_status" and compact.fifo == nil and call("plan_status").fifo ~= nil,
+  "a compact plan_status read goes without the FIFO block; a full one keeps it")
 body_state = "aboard_platform"
 local away = call("ping")
 body_state = "dead"

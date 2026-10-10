@@ -403,6 +403,12 @@ describe("run milestones, holds and handler faults", () => {
       holds: { count: 3, total_seconds: 25.6, recent: [{ start_tick: 9_000, end_tick: 10_000, cause: "build" },
         { start_tick: 20_000, end_tick: 20_536, cause: "movement" }, { start_tick: 1_635_000, cause: "gui" }] },
       handler_errors: 1 });
+    // The space milestones (mod 0.38 on) come the same way.
+    const space = { platform_created_tick: 1_640_000, boarded_tick: 1_650_000, arrived_tick: 1_660_000, landed_tick: 1_660_600 };
+    expect(parseRunSnapshot({ ...snapshot(1_700_000, 0), milestones: space }).milestones).toEqual(space);
+    expect(runEvents(baseline, { ...snapshot(1_700_000, 0), milestones: space }).milestones).toEqual({
+      platform_created: { tick: 1_640_000, elapsed_s: 27_311.68 }, boarded: { tick: 1_650_000, elapsed_s: 27_478.35 },
+      arrived: { tick: 1_660_000, elapsed_s: 27_645.02 }, landed: { tick: 1_660_600, elapsed_s: 27_655.02 } });
     // Nothing yet: an empty milestones record; an older mod: no fields at all.
     expect(runEvents(baseline, { ...snapshot(2_000, 0), milestones: {} })).toEqual({ milestones: {} });
     expect(runEvents(snapshot(1, 0), snapshot(2, 0))).toEqual({});
@@ -481,6 +487,16 @@ describe("tool outcomes", () => {
     // A passed dry run, and a status that says more than ok, stay as they were.
     expect(toolOutcome({ structuredContent: { check_only: true, ok: true, failed: [] } })).toEqual({ status: "ok", code: null, ok: true });
     expect(toolOutcome({ structuredContent: { status: "queued", ok: false } })).toMatchObject({ status: "queued", code: null });
+  });
+
+  it("takes a refused placement's code from its first collision", () => {
+    const refused = { check_only: true, blueprint: "smelter", ok: false,
+      collisions: [{ index: 3, code: "BLOCKED", reason: "stone-furnace blocked by a tree" }, { index: 4, code: "UNCHARTED" }] };
+    expect(toolOutcome({ content: [{ type: "text", text: "blocked" }], structuredContent: refused }))
+      .toEqual({ status: "not_ok", code: "BLOCKED", ok: true, summary: "blocked; BLOCKED: stone-furnace blocked by a tree" });
+    // Its own code still wins; a placement that went through keeps no collision code.
+    expect(toolOutcome({ structuredContent: { ...refused, code: "ITEM_UNOBTAINABLE" } })).toMatchObject({ code: "ITEM_UNOBTAINABLE" });
+    expect(toolOutcome({ structuredContent: { ...refused, ok: true } })).toEqual({ status: "ok", code: null, ok: true });
   });
 
   it("appends one row per call beside the samples of the ledger's run, and only while that run directory exists", async () => {

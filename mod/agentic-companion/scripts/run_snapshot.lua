@@ -99,13 +99,16 @@ function M.on_research_finished(event)
 end
 
 -- A copy of the milestones: {rocket_ready_tick?, rocket_launch_ordered_tick?,
--- rocket_launched_tick?, research = {[technology] = tick}}.
+-- rocket_launched_tick?, platform_created_tick?, boarded_tick?, arrived_tick?,
+-- landed_tick?, research = {[technology] = tick}}.
 local function milestones()
   local kept = storage.milestones or {}
   local research_ticks = {}
   for name, tick in pairs(kept.research or {}) do research_ticks[name] = tick end
   return { rocket_ready_tick = kept.rocket_ready_tick, rocket_launch_ordered_tick = kept.rocket_launch_ordered_tick,
-    rocket_launched_tick = kept.rocket_launched_tick, research = research_ticks }
+    rocket_launched_tick = kept.rocket_launched_tick, platform_created_tick = kept.platform_created_tick,
+    boarded_tick = kept.boarded_tick, arrived_tick = kept.arrived_tick, landed_tick = kept.landed_tick,
+    research = research_ticks }
 end
 
 local function controller_name(value)

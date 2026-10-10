@@ -1,7 +1,9 @@
 -- start_research: queue a technology on the companion's force.
 local companion = require("scripts.companion")
+local registry = require("scripts.registry")
 
 local M = {}
+local queue_eta
 
 local function id_filter(value)
   if type(value) == "string" then return value, nil end
@@ -227,19 +229,60 @@ function queue_one(name)
   return { queued = true, technology = name }
 end
 
+-- The research queue's time at the current labs' speed: per technology in
+-- queue order {name, seconds, cumulative_seconds}, its remaining units (the
+-- first's live progress, a later one's saved progress) x unit_time_s / the
+-- labs' summed progress rate (speed and each lab's productivity, the
+-- registry's aggregate), one after another, as labs work only the first.
+-- Arithmetic at today's speed, never a forecast of new labs; nil without
+-- labs or a queue. A few reads per queued technology.
+function queue_eta(force)
+  local rate = registry.labs().progress_rate
+  -- Float sums can keep a tiny positive leftover after the last lab goes.
+  if not (rate and rate > 1e-9) then return nil end
+  local rows, total = {}, 0
+  for index, technology in ipairs(force.research_queue or {}) do
+    local unit_time_s = M.unit_time_s(technology)
+    local ok, count = pcall(function() return technology.research_unit_count end)
+    if not (unit_time_s and ok and type(count) == "number") then break end
+    local progress
+    if index == 1 and force.current_research and force.current_research.name == technology.name then
+      progress = force.research_progress or 0
+    else
+      local saved_ok, saved = pcall(function() return technology.saved_progress end)
+      progress = saved_ok and type(saved) == "number" and saved or 0
+    end
+    local seconds = count * (1 - progress) * unit_time_s / rate
+    total = total + seconds
+    rows[#rows + 1] = { name = technology.name, seconds = math.ceil(seconds - 1e-6),
+      cumulative_seconds = math.ceil(total - 1e-6) }
+  end
+  return #rows > 0 and rows or nil
+end
+
 function M.progression_status()
   local force = companion.require_present().force
   local researched, available, trigger_unlocks, enabled_recipes = {}, {}, {}, {}
-  -- Whether every prerequisite is researched, and their names. Only a ready
-  -- technology gets a record: reading every unresearched one's prototype
-  -- tables made this read (run_snapshot's progression phase) a long frame.
+  -- after_queued: technologies whose unresearched prerequisites are all in
+  -- the research queue, so the game takes them now, behind those.
+  local after_queued = {}
+  local queued = {}
+  for _, technology in ipairs(force.research_queue or {}) do queued[technology.name] = true end
+  -- Whether every prerequisite is researched, or (behind) every unresearched
+  -- one is queued, and their names. Only such a technology gets a record:
+  -- reading every unresearched one's prototype tables made this read
+  -- (run_snapshot's progression phase) a long frame.
   local function readiness(technology)
-    local prerequisites = {}
+    local prerequisites, behind = {}, nil
     for prereq_name, prerequisite in pairs(technology.prerequisites or {}) do
-      if not prerequisite.researched then return false end
+      if not prerequisite.researched then
+        if not queued[prereq_name] then return false end
+        behind = behind or {}
+        behind[#behind + 1] = prereq_name
+      end
       prerequisites[#prerequisites + 1] = prereq_name
     end
-    return true, prerequisites
+    return true, prerequisites, behind
   end
   local function technology_record(name, technology, prerequisites)
     table.sort(prerequisites)
@@ -279,8 +322,16 @@ function M.progression_status()
   for name, technology in pairs(force.technologies) do
     if technology.researched then researched[#researched + 1] = name
     elseif technology.enabled then
-      local ready, prerequisites = readiness(technology)
-      if ready then
+      local ready, prerequisites, behind = readiness(technology)
+      if ready and behind then
+        -- A queued one is already in the queue; a trigger one never queues.
+        if not queued[name] and not research_trigger(technology) then
+          local record = technology_record(name, technology, prerequisites)
+          table.sort(behind)
+          record.queued_prerequisites = behind
+          after_queued[#after_queued + 1] = record
+        end
+      elseif ready then
         local record = technology_record(name, technology, prerequisites)
         local trigger = research_trigger(technology)
         if trigger then
@@ -295,6 +346,7 @@ function M.progression_status()
   table.sort(researched)
   table.sort(available, function(a, b) return a.name < b.name end)
   table.sort(trigger_unlocks, function(a, b) return a.name < b.name end)
+  table.sort(after_queued, function(a, b) return a.name < b.name end)
   for name, recipe in pairs(force.recipes or {}) do
     if recipe.enabled then enabled_recipes[#enabled_recipes + 1] = name end
   end
@@ -304,7 +356,9 @@ function M.progression_status()
   return {
     force = force.name, current_research = force.current_research and force.current_research.name or nil,
     research_progress = force.research_progress or 0, research_queue = queue,
+    queue_eta_seconds = queue_eta(force),
     researched = researched, available = available, trigger_unlocks = trigger_unlocks,
+    queueable_after_queued = #after_queued > 0 and after_queued or nil,
     enabled_recipes = enabled_recipes,
   }
 end

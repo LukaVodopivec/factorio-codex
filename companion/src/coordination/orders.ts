@@ -2,7 +2,8 @@
 // operations.json. Tool results carry the orders once per new ledger revision,
 // and one full-surface bridge queues each new package into the FIFO by itself,
 // first making the blueprint captures a package starts with, while the body
-// is on the package's surface. The same bridge queues the ledger's research
+// is on the package's surface (a package whose every step names a platform:
+// while those platforms exist). The same bridge queues the ledger's research
 // once per revision that lists any, records when each package's plan ended
 // and how, and measures a package's verify metrics once its plan has ended
 // and settled.
@@ -19,8 +20,9 @@ export type RunDir = () => string | null;
 type BuildPackage = OperationsLedger["build_packages"][number];
 export interface PackageRecord {
   /** queuing: the queue_plan call was sent without a recorded answer;
-   *  waiting_surface: the body is on another surface than the package's (not
-   *  a failure: it is queued once the body is back). */
+   *  waiting_surface: the body is on another surface than the package's, or
+   *  for a package whose every step names a platform, a platform it names
+   *  does not resolve yet (not a failure: it is queued once that holds). */
   status: "queuing" | "waiting_surface" | "queued" | "failed"; revision: number; at: string;
   tick?: number; plan_id?: number; reason?: string;
   /** Blueprints captured for the package, as each capture returned them
@@ -239,6 +241,34 @@ const changesGround = (step: { action: string }) =>
   ["place_tiles", "mine", "deconstruct_area", "move_entity", "pickup_items"].includes(step.action);
 const changesGroundIn = (entry: BuildPackage | undefined) => entry?.steps.some(changesGround) === true;
 
+/** The platforms a package acts on when every step names one (a step's
+ *  platform, or a hub's set_requests target), in step order without
+ *  repeats; null when any step does not (launch_rocket needs the body at its
+ *  silo, create_platform names a new one). */
+export function platformsNamed(entry: BuildPackage): Array<string | number> | null {
+  const named: Array<string | number> = [];
+  for (const step of entry.steps as Array<Record<string, any>>) {
+    const platform = step.action === "launch_rocket" ? undefined
+      : step.platform ?? (step.action === "set_requests" ? step.target?.platform : undefined);
+    if (platform === undefined) return null;
+    if (!named.includes(platform)) named.push(platform);
+  }
+  return named.length > 0 ? named : null;
+}
+
+/** Why the first of these platforms cannot be acted on (platform_status
+ *  compact refuses it: unknown or ambiguous), or null when all resolve. */
+async function missingPlatform(bridge: Bridge, named: Array<string | number>): Promise<string | null> {
+  for (const platform of named) {
+    try { await bridge.call("platform_status", { platform, detail: "compact" }); }
+    catch (error) {
+      if (!(error instanceof ModError)) throw error;
+      return `platform ${JSON.stringify(platform)}: ${message(error)}`;
+    }
+  }
+  return null;
+}
+
 /** The mod's own placement check for one package; a reason when it fails,
  *  also when its first step is a layout or blueprint that needs an
  *  item the body can neither carry nor obtain now (ITEM_UNOBTAINABLE).
@@ -422,9 +452,16 @@ async function verifyPackages(b: Bridge, state: PackageQueueState, tick: number,
     const due = record.plan_ended_tick + VERIFY_SETTLE_TICKS;
     if (tick < due) continue;
     try {
-      const answer = await b.call<{ measured?: unknown }>("factory_status",
-        { sections: [], surface: record.surface ?? "nauvis", measure: metrics.data });
-      const measured = luaArray(answer?.measured ?? []) as Array<Record<string, unknown>>;
+      // One measure per surface: a metric's own surface, else the package's.
+      const measured: Array<Record<string, unknown> | undefined> = [];
+      const surfaceOf = (metric: VerifyMetric) => metric.surface ?? record.surface ?? "nauvis";
+      for (const surface of new Set(metrics.data.map(surfaceOf))) {
+        const indexes = metrics.data.flatMap((metric, index) => surfaceOf(metric) === surface ? [index] : []);
+        const answer = await b.call<{ measured?: unknown }>("factory_status", { sections: [], surface,
+          measure: indexes.map((index) => { const { surface: _, ...metric } = metrics.data[index]!; return metric; }) });
+        const rows = luaArray(answer?.measured ?? []) as Array<Record<string, unknown>>;
+        indexes.forEach((index, k) => { measured[index] = rows[k]; });
+      }
       const rows = metrics.data.map((metric, index) => {
         const { met, ...values } = measured[index] ?? { error: "NOT_MEASURED" };
         // A partial plan may not have built the line: its NO_LINE row says how the plan ended.
@@ -558,13 +595,27 @@ export function createPackageQueue(runDir: RunDir, bridge: () => Promise<Bridge>
       // queuing: the call was sent and its answer lost; the mod returns the
       // same plan for a package source, so it is sent again unchecked.
       const retry = state.packages[id]?.status === "queuing";
+      // A package whose every step names a platform acts on it without the
+      // body (the mod runs it even beside a travel wait): it waits only for
+      // those platforms to exist, never for the body's surface.
+      const named = platformsNamed(entry);
+      if (!retry && named) {
+        const missing = await missingPlatform(b, named);
+        if (missing !== null) {
+          const reason = `the package acts on ${missing}`;
+          if (state.packages[id]?.status !== "waiting_surface" || state.packages[id]?.reason !== reason) {
+            record(id, { status: "waiting_surface", reason });
+          }
+          continue;
+        }
+      }
       // Any other package for another surface waits until the body is
       // settled there: standing on it (or aboard), with no travel pending
       // in the FIFO to somewhere else (bound_for), and not in a cargo pod.
       const body = ping.body;
       const atRest = body?.state === "on_surface" || body?.state === "aboard_platform";
       const here = atRest ? body?.bound_for ?? body?.surface_ref : undefined;
-      if (!retry && here !== entry.surface) {
+      if (!retry && !named && here !== entry.surface) {
         const where = !atRest ? (body?.state === "in_transit" ? "in a cargo pod" : "on no surface")
           : body?.bound_for !== undefined ? `bound for ${body.bound_for}` : `on ${body?.surface_ref}`;
         const reason = `the body is ${where}; the package is for ${entry.surface}`;

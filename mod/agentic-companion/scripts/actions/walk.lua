@@ -62,6 +62,10 @@ local SETTLE_CHECKS_PER_TICK = 48
 -- belt's side still stood on its edge). Its tiles are tile centres, where the
 -- native 1x1 path grid has a node.
 local SETTLE_ROUTE_RADIUS = 0.25
+-- Off-belt tiles one settle walks to by a native path: when the path to one
+-- fails (a pocket behind pipes), the next candidate is searched for, the
+-- failed ones left out, as an escape tries its next direction.
+local MAX_SETTLE_ROUTES = 3
 
 -- tan(22.5 deg): boundary between cardinal and diagonal octants
 local OCTANT_RATIO = 0.41421356
@@ -691,9 +695,12 @@ end
 
 -- Why the tile centre `cell` cannot take the body off a belt, or nil when it
 -- can: its body box touches no conveyor and no character collider, it is
--- charted and, with an anchor, it lies within `limit` of it.
+-- charted and, with an anchor, it lies within `limit` of it less
+-- SETTLE_ROUTE_RADIUS: a walk there (straight, or routed when the straight
+-- step is blocked) may stop that far short of the centre, still in reach.
 local function settle_reject(c, box, cell, anchor, limit)
-  if anchor and dist_sq(cell, anchor) > limit * limit + 1e-6 then return "out_of_range" end
+  local within = anchor and limit - SETTLE_ROUTE_RADIUS
+  if anchor and (within < 0 or dist_sq(cell, anchor) > within * within + 1e-6) then return "out_of_range" end
   if not charted(c, cell) then return "uncharted" end
   local pos = c.position
   local dx, dy = cell.x - pos.x, cell.y - pos.y
@@ -845,6 +852,7 @@ function M.begin_settle(state, c, anchor, limit)
   state.settle_anchor = anchor and { x = anchor.x, y = anchor.y } or nil
   state.settle_limit = limit
   state.settle_attempted = true
+  state.settle_tried = nil
   local cell, inner
   local rejected = { out_of_range = 0, uncharted = 0, conveyor = 0, collision = 0 }
   for _, radius in ipairs(SETTLE_RADII) do
@@ -880,8 +888,8 @@ end
 local function step_settle_search(state, c)
   local search, pos = state.settle_search, c.position
   -- The belt may carry the body off itself, still in reach.
-  if not placement_geometry.conveyor_under(c)
-    and dist_sq(pos, state.settle_anchor) <= state.settle_limit * state.settle_limit + 1e-6 then
+  if not placement_geometry.conveyor_under(c) and (not state.settle_anchor
+    or dist_sq(pos, state.settle_anchor) <= state.settle_limit * state.settle_limit + 1e-6) then
     stop(c)
     state.settle_search = nil
     state.settle = { from = { x = pos.x, y = pos.y }, to = { x = pos.x, y = pos.y }, conveyor = search.conveyor,
@@ -909,10 +917,46 @@ local function step_settle_search(state, c)
   state.settle_search = nil
   -- The wide ring holds none: on over the rest of the reach.
   if search.ring then return search_reach(state, c, search.conveyor, search.rejected, search.ring) end
+  if search.retry then
+    local tried = state.settle_tried
+    local last = tried[#tried]
+    return settle_failure(c, search.conveyor, string.format(
+      "the walk to %d off-belt tile(s) failed, the last (%.1f, %.1f): %s; no other charted clear off-belt tile lies within %s",
+      #tried, last.x, last.y, last.failed, state.settle_anchor
+        and string.format("reach (%.1f tiles) of the target", routed_radius(state.settle_limit))
+        or string.format("%d tiles", SETTLE_WIDE_RADIUS)),
+      { settle_rejected = search.rejected, settle_tried = tried, settle_anchor = state.settle_anchor,
+        settle_limit = state.settle_limit })
+  end
   return settle_failure(c, search.conveyor, string.format(
     "no charted clear off-belt tile lies within %d tiles of it or anywhere within reach (%.1f tiles) of the target",
     search.rings, routed_radius(state.settle_limit)),
     { settle_rejected = search.rejected, settle_anchor = state.settle_anchor, settle_limit = state.settle_limit })
+end
+
+-- The native path to the settle's tile failed: that tile is left out and
+-- the next candidate searched for (within the target's reach, else the wide
+-- ring around the body), SETTLE_CHECKS_PER_TICK a tick and walked to by its
+-- own native path, at most MAX_SETTLE_ROUTES tiles a settle. False once
+-- they are spent (the caller fails with this path's reason).
+local function retry_settle(state, c, settle, failed)
+  local tried = state.settle_tried or {}
+  state.settle_tried = tried
+  tried[#tried + 1] = { x = settle.to.x, y = settle.to.y, failed = failed }
+  if #tried >= MAX_SETTLE_ROUTES then return false end
+  local skip = {}
+  for _, cell in ipairs(tried) do skip[point_key(cell)] = true end
+  local cells = {}
+  local candidates = state.settle_anchor and state.settle_limit
+    and anchor_cells(c, state.settle_anchor, state.settle_limit, 0) or ring_cells(c, SETTLE_WIDE_RADIUS, 0)
+  for _, cell in ipairs(candidates) do
+    if not skip[point_key(cell)] then cells[#cells + 1] = cell end
+  end
+  state.phase = "settle_search"
+  state.settle_search = { cells = cells, index = 1, rejected = { out_of_range = 0, uncharted = 0, conveyor = 0, collision = 0 },
+    conveyor = settle.conveyor, rings = 0, retry = true }
+  stop(c)
+  return true
 end
 
 local function step_settle(state, c, task_id)
@@ -932,8 +976,10 @@ local function step_settle(state, c, task_id)
     if r == nil then return nil end
     if type(r) == "table" then
       state.settle_route = nil
-      return settle_failure(c, settle.conveyor, string.format("the walk to the off-belt tile (%.1f, %.1f) failed: %s",
-        settle.to.x, settle.to.y, r.failed), { settle = settle, route = r.outcome })
+      if retry_settle(state, c, settle, r.failed) then return nil end
+      return settle_failure(c, settle.conveyor, string.format("the walk to the off-belt tile (%.1f, %.1f) failed: %s"
+        .. " (%d off-belt tiles tried)", settle.to.x, settle.to.y, r.failed, #state.settle_tried),
+        { settle = settle, route = r.outcome, settle_tried = state.settle_tried })
     end
     -- At the tile but just out of reach (or a belt laid there since): the rest is one straight step.
     settle_straight(state, c, settle.to, settle.conveyor)

@@ -584,17 +584,30 @@ game.tick = 61
 check(routed and walk.tick(task) == nil and task._walk.settle_route and storage.path_request ~= nil
   and requested_goals[2].x == 10.5 and requested_goals[2].y == -0.5,
   "a straight settle step that does not leave the belt in time walks to its tile by a native path")
-local stuck
-for _ = 1, 8 do
-  if storage.path_request then deliver({ { x = 10.5, y = -0.5 } }, false) end
+-- Each failed native path leaves its tile out and walks to the next
+-- candidate (trial 0013: a pocket behind pipes failed the same tile 17
+-- times), at most three tiles a settle.
+local stuck, goals = nil, {}
+for _ = 1, 40 do
+  if storage.path_request then
+    local goal = requested_goals[storage.path_request.id]
+    goals[#goals + 1] = string.format("%.1f,%.1f", goal.x, goal.y)
+    deliver({ { x = goal.x, y = goal.y } }, false)
+  end
   walk.tick(task)
   game.tick = game.tick + 61
   stuck = walk.tick(task)
   if stuck then break end
 end
-check(stuck and stuck.status == "failed" and stuck.detail:match("^BODY_ON_CONVEYOR:.*off%-belt tile %(10%.5, %-0%.5%) failed: PATH_STALLED")
-  and stuck.outcome.code == "BODY_ON_CONVEYOR",
-  "a routed settle that never leaves the belt fails BODY_ON_CONVEYOR within its walk's own bounds")
+local tried = stuck and stuck.outcome.diagnostics.path.settle_tried or {}
+local distinct = #tried == 3 and tried[1].x == 10.5 and tried[1].y == -0.5
+  and not (tried[2].x == tried[1].x and tried[2].y == tried[1].y)
+  and not (tried[3].x == tried[2].x and tried[3].y == tried[2].y)
+  and not (tried[3].x == tried[1].x and tried[3].y == tried[1].y)
+check(stuck and stuck.status == "failed" and stuck.detail:match("^BODY_ON_CONVEYOR:.*off%-belt tile .* failed: PATH_STALLED")
+  and stuck.detail:match("%(3 off%-belt tiles tried%)") and stuck.outcome.code == "BODY_ON_CONVEYOR" and distinct,
+  "a routed settle whose paths never leave the belt tries three different off-belt tiles, then fails BODY_ON_CONVEYOR: "
+    .. table.concat(goals, " "))
 
 -- A blocked start (a tree cleared, an escape) cuts the straight step short
 -- and the walk asks for its path again, ending on the belt: the settle's tile
@@ -638,16 +651,24 @@ local asked = walk.tick(task) == nil and storage.path_request ~= nil
 check(asked and requested_goals[next_path_id].x == 10.5 and requested_goals[next_path_id].y == -0.5,
   "that native path goes to the settle's own off-belt tile")
 
--- The off-belt tile sits on the edge of the target's reach. The native path
--- stops within its radius of it, off the belt but just out of reach, and
--- something unseen blocks the last straight step: the walk fails PATH_STALLED
--- saying the body left the belt, never BODY_ON_CONVEYOR.
+-- A ring tile on the very edge of the target's reach is no settle's goal: a
+-- walk there may stop SETTLE_ROUTE_RADIUS short of it, beyond reach (trial
+-- 0013 stopped at exactly 10.00). The next ring tile well within reach is.
 local edge = math.sqrt(5)
 task = reset({ x = 12.5, y = 0.5 })
 body.position = { x = 10.5, y = 0.5 }
 check(approach.ensure(task, body, { x = 12.5, y = 0.5 }, edge) == nil
+  and task._approach.walk.settle.to.x == 11.5 and task._approach.walk.settle.to.y == 0.5,
+  "an approach on a belt skips the off-belt tile on the edge of its reach for one within reach")
+-- The off-belt tile lies a route radius inside the reach. Something unseen
+-- blocks the straight step, and the native path stops within its radius of
+-- the tile: off the belt and, so, always within reach.
+edge = math.sqrt(5) + 0.25
+task = reset({ x = 12.5, y = 0.5 })
+body.position = { x = 10.5, y = 0.5 }
+check(approach.ensure(task, body, { x = 12.5, y = 0.5 }, edge) == nil
   and task._approach.walk.settle.to.x == 10.5 and task._approach.walk.settle.to.y == -0.5,
-  "an approach on a belt settles to an off-belt tile on the edge of its reach")
+  "an approach on a belt settles to an off-belt tile a route radius inside its reach")
 game.tick = 60
 approach.ensure(task, body, { x = 12.5, y = 0.5 }, edge)
 game.tick = 61
@@ -662,11 +683,9 @@ for _ = 1, 3 do
   if edge_result then break end
   game.tick = game.tick + 61
 end
-check(type(edge_result) == "table" and edge_result.status == "failed"
-  and edge_result.outcome.code == "PATH_STALLED" and edge_result.detail:match("stepped off transport%-belt")
-  and edge_result.detail:match("beyond reach") and not edge_result.detail:match("did not leave"),
-  "a body off the belt but just out of reach fails PATH_STALLED, not BODY_ON_CONVEYOR: "
-    .. tostring(type(edge_result) == "table" and edge_result.detail))
+check(edge_result == "ok" and task._approach == nil,
+  "a native path that stops within its radius of the tile leaves the body off the belt and in reach: "
+    .. tostring(type(edge_result) == "table" and edge_result.detail or edge_result))
 body.surface.find_entities_filtered = function(filter)
   if filter.type then return belts end
   return {}
@@ -712,6 +731,31 @@ check(approach.ensure(task, body, { x = 10.5, y = 0.5 }, 10) == nil and task._ap
 body.position = { x = 10.5, y = -5.5 }
 check(approach.ensure(task, body, { x = 10.5, y = 0.5 }, 10) == "ok" and task._approach == nil,
   "the approach succeeds once the body has left the bundle")
+
+-- An entity's closer approach (1.5 tiles, after one failed reach check)
+-- ends on the same bundle: its settle is bounded by the body's real reach,
+-- not by the 1.5 tiles (trial 0013: the chemical-science build ended
+-- BODY_ON_CONVEYOR).
+task = reset({ x = 10.5, y = 0.5 })
+body.position = { x = 10.5, y = 0.5 }
+body.reach_distance = 10
+local lab = { valid = true, name = "lab", type = "lab", position = { x = 10.5, y = 0.5 } }
+body.can_reach_entity = function(e)
+  return (e.position.x - body.position.x) ^ 2 + (e.position.y - body.position.y) ^ 2 <= 100
+end
+task._approach_close = true
+local close_answer
+for _ = 1, 12 do
+  close_answer = approach.ensure_entity(task, body, lab)
+  if close_answer ~= nil or task._approach.walk.phase ~= "settle_search" then break end
+end
+check(close_answer == nil and task._approach and task._approach.walk.phase == "settling"
+  and task._approach.walk.settle_limit == 10 and task._approach.walk.settle.to.y == -5.5,
+  "a closer entity approach on a belt settles within the body's real reach of the entity, not within 1.5 tiles")
+body.position = { x = 10.5, y = -5.5 }
+check(approach.ensure_entity(task, body, lab) == "ok" and task._approach == nil,
+  "the closer approach succeeds off the belt, in reach of the entity")
+body.reach_distance, body.can_reach_entity = nil, nil
 
 -- Belts cover the whole reach: the search past the rings checks a fixed
 -- number of tiles a tick (never the ~320 at once) and then fails truthfully.

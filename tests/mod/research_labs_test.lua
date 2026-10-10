@@ -243,5 +243,26 @@ registry.labs = real_labs
 check(leftover.labs == nil and leftover.packs_per_minute_needed == nil and leftover.eta_seconds == nil,
   "a float leftover with no labs shows no lab demand and no eta")
 
+-- The research queue's time at today's labs: remaining units x unit time /
+-- the labs' progress rate (one lab at 1.5), one technology after another;
+-- the first counts its live progress (0.3), a later one its saved progress.
+do
+  local queued_three = setmetatable({ saved_progress = 0.5 }, { __index = three })
+  force.current_research = automation
+  force.research_queue = { automation, queued_three }
+  force.recipes = {}
+  local eta = research.progression_status().queue_eta_seconds
+  check(eta and #eta == 2 and eta[1].name == "automation" and eta[1].seconds == math.ceil(7 * 10 / 1.5)
+    and eta[1].cumulative_seconds == math.ceil(7 * 10 / 1.5)
+    and eta[2].name == "military" and eta[2].seconds == 500
+    and eta[2].cumulative_seconds == math.ceil(7 * 10 / 1.5 + 500),
+    "queue_eta_seconds gives each queued technology's seconds and the running total at the labs' progress rate")
+  registry.labs = function() return { count = 0, speed = 0, pack_rate = 0, progress_rate = 0 } end
+  check(research.progression_status().queue_eta_seconds == nil, "no labs: no queue_eta_seconds")
+  registry.labs = real_labs
+  force.research_queue = {}
+  check(research.progression_status().queue_eta_seconds == nil, "an empty queue: no queue_eta_seconds")
+end
+
 if failures > 0 then error(failures .. " research labs check(s) failed") end
 print("research_labs_test: all checks passed")

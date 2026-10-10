@@ -162,6 +162,36 @@ do
     "a technology record lists its modifier effects (laboratory-speed 0.1) as plain {type, modifier} facts")
 end
 
+-- A technology whose unresearched prerequisites are all queued can be
+-- queued behind them: queueable_after_queued names it with those
+-- prerequisites; one already queued, a trigger one, or one with an
+-- unqueued prerequisite is not listed.
+do
+  check(progression.queueable_after_queued == nil, "nothing waits only on queued prerequisites: no queueable_after_queued")
+  local follow = setmetatable({ name = "follow", researched = false, enabled = true,
+    prerequisites = { automation = technology, electronics = prerequisite },
+    prototype = { research_unit_ingredients = {}, research_unit_count = 5, research_unit_energy = 300, effects = {} } }, technology_api)
+  local queued_too = setmetatable({ name = "queued-too", researched = false, enabled = true,
+    prerequisites = { automation = technology }, prototype = { effects = {} } }, technology_api)
+  local trigger_behind = setmetatable({ name = "trigger-behind", researched = false, enabled = true,
+    prerequisites = { automation = technology }, prototype = { research_trigger = { type = "create-space-platform" }, effects = {} } },
+    technology_api)
+  codex_force.technologies.follow, codex_force.technologies["queued-too"] = follow, queued_too
+  codex_force.technologies["trigger-behind"] = trigger_behind
+  codex_force.research_queue = { technology, queued_too }
+  local behind = research.progression_status()
+  local rows = behind.queueable_after_queued
+  check(rows and #rows == 1 and rows[1].name == "follow" and rows[1].queued_prerequisites[1] == "automation"
+    and #rows[1].queued_prerequisites == 1 and rows[1].prerequisites[1] == "automation"
+    and rows[1].prerequisites[2] == "electronics" and rows[1].unit_time_s == 5 and rows[1].science_count == 5
+    and behind.available[1].name == "automation" and #behind.available == 1,
+    "queueable_after_queued lists a technology whose unresearched prerequisites are all queued, with them")
+  check(blocked_prototype_reads == 0, "a technology behind an unqueued prerequisite still gets no record")
+  codex_force.technologies.follow, codex_force.technologies["queued-too"] = nil, nil
+  codex_force.technologies["trigger-behind"] = nil
+  codex_force.research_queue = { technology, completed }
+end
+
 technology.prototype.effects = {}
 local empty_progression = research.progression_status()
 check(type(empty_progression.available[1].unlocks) == "table"

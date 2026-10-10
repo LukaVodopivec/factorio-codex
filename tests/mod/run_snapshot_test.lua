@@ -184,9 +184,8 @@ do
   check(fixture == json, "the run snapshot fixture is the record the mod sends (UPDATE_FIXTURES=1 rewrites it)")
 end
 
--- The phases: within a small budget each runs whole in its own tick, one
--- whose cost does not fit what is left waits once for a fresh tick, and
--- the record equals one taken in a single tick.
+-- The phases: within a small budget each runs whole in a tick of its own,
+-- whatever its cost, and the record equals one taken in a single tick.
 do
   local function same(a, b)
     if type(a) ~= "table" or type(b) ~= "table" then return a == b end
@@ -235,6 +234,57 @@ do
   old.phase = nil
   check(same(jobs.run_now({ start = function() return old end, step = run_snapshot.job.step }, {}, 5), whole),
     "a snapshot saved by 0.34 without a phase finishes after the upgrade")
+end
+
+-- Across jobs: a phase never runs in a tick another job already worked in
+-- (it waits, at most PHASE_DEFERS ticks in a row), and once it ran the rest
+-- of the tick's budget is its own, so no job works after it.
+do
+  local busy_ticks, phase_ticks = {}, {}
+  local busy_steps = 0
+  jobs.register("busy_test", { start = function() return { left = 0 } end,
+    step = function(state, budget)
+      busy_ticks[game.tick] = true
+      budget.left = budget.left - 50
+      state.left = state.left - 1
+      if state.left == 0 then return { done = true } end
+    end })
+  jobs.register("run_snapshot_test", run_snapshot.job)
+  local had_helpers = _G.helpers
+  _G.helpers = had_helpers or { table_to_json = function() return "{}" end } -- the finished result's encoding
+  local runs = {}
+  for name, phase in pairs(run_snapshot.PHASES) do
+    runs[name] = phase.run
+    phase.run = function(...) phase_ticks[#phase_ticks + 1] = game.tick; return runs[name](...) end
+  end
+  local function snapshot_after(first_busy, busy_for)
+    storage.jobs, busy_ticks, phase_ticks = nil, {}, {}
+    local busy, snap
+    if first_busy then busy = jobs.start("busy_test", {}) end
+    snap = jobs.start("run_snapshot_test", {})
+    if not first_busy then busy = jobs.start("busy_test", {}) end
+    storage.jobs.by_id[busy.job_id].state.left = busy_for
+    local job, ticks = storage.jobs.by_id[snap.job_id], 0
+    while job.status == "pending" and ticks < 200 do
+      game.tick, ticks = game.tick + 1, ticks + 1
+      jobs.on_tick()
+    end
+    local stacked = 0
+    for _, tick in ipairs(phase_ticks) do if busy_ticks[tick] then stacked = stacked + 1 end end
+    return job.status, stacked, ticks
+  end
+  local status, stacked = snapshot_after(true, 4)
+  check(status == "done" and #phase_ticks == 7 and stacked == 0,
+    "an older job's work defers a snapshot phase to a tick of its own (" .. stacked .. " phases stacked)")
+  status, stacked = snapshot_after(false, 4)
+  check(status == "done" and #phase_ticks == 7 and stacked == 0,
+    "a snapshot phase takes the rest of its tick: a newer job works in another (" .. stacked .. " phases stacked)")
+  local ticks
+  status, stacked, ticks = snapshot_after(true, 100000)
+  check(status == "done" and #phase_ticks == 7 and ticks <= 8 * (run_snapshot.PHASE_DEFERS + 2),
+    "a job that never stops working delays each phase a bounded number of ticks (" .. ticks .. " ticks)")
+  for name, run in pairs(runs) do run_snapshot.PHASES[name].run = run end
+  storage.jobs, _G.helpers = nil, had_helpers
 end
 
 -- The run's milestones (first ticks: rockets, and each technology the

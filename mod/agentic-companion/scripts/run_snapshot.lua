@@ -22,6 +22,7 @@ local research = require("scripts.research")
 local spatial = require("scripts.spatial")
 local surfaces = require("scripts.surfaces")
 local tasks = require("scripts.tasks")
+local jobs = require("scripts.jobs")
 
 local M = {}
 
@@ -399,10 +400,11 @@ local PHASE_NEXT = { read = "progression", progression = "factory", factory = "l
 -- window = true (the recorder's baseline) marks the body-time window as
 -- the sample is taken (tasks.mark_body_window). The phases run in
 -- PHASE_NEXT order, each in a tick of its own after the reads' ticks, so
--- a snapshot spans at least one tick per phase: a phase runs once its cost
--- (plus one item, so a spent budget always ends the tick) fits what is left
--- of the tick, else it is deferred once to a fresh tick and then runs
--- whatever its cost, like the jobs encoder's calls.
+-- a snapshot spans at least one tick per phase: a phase runs only in a tick
+-- no work was charged in before it (jobs.spent, any job's or build's), else
+-- it waits, at most PHASE_DEFERS ticks in a row (a counter in its state),
+-- and then runs whatever its cost; it takes the rest of its tick's budget.
+M.PHASE_DEFERS = 8
 M.job = {
   defer_encode = true,
   start = function(params)
@@ -421,22 +423,23 @@ M.job = {
       if S.phase == "read" then
         if S.cursor <= #S.surfaces then read_one(S, body.force, budget); worked = true else S.phase = PHASE_NEXT.read end
       else
-        -- One phase a tick, and never after other work in it: a phase's
-        -- cost is an estimate, and costs that fit one tick's budget together
-        -- took 15.8 ms in one (trial 0013: 29 of 203 snapshots over 8 ms,
-        -- the median growing with the factory). The snapshot is read
-        -- through get_job anyway, so the ticks cost nothing but latency.
+        -- One phase a tick, never after other work in it and none after
+        -- it: a phase's cost is an estimate, and costs that fit one tick's
+        -- budget together took 15.8 ms in one (trial 0013: 29 of 203
+        -- snapshots over 8 ms, the median growing with the factory). The
+        -- snapshot is read through get_job anyway, so the ticks cost
+        -- nothing but latency.
         if worked then return nil end
         worked = true
-        local phase = PHASES[S.phase]
-        local cost = 1 + phase.cost(S, body)
-        if cost > budget.left and not S.waited then
-          S.waited = true
+        if jobs.spent() > 0 and (S.deferred or 0) < M.PHASE_DEFERS then
+          S.deferred = (S.deferred or 0) + 1
           return nil
         end
-        S.waited = nil
+        S.deferred, S.waited = nil, nil
+        local phase = PHASES[S.phase]
+        local cost = 1 + phase.cost(S, body)
         local result = phase.run(S, body)
-        budget.left = budget.left - cost
+        budget.left = math.min(0, budget.left - cost)
         if S.phase == "assemble" then return result end
         S.phase = PHASE_NEXT[S.phase]
       end

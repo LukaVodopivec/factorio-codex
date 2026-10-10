@@ -30,6 +30,7 @@ local registry = require("scripts.registry")
 local blueprints = require("scripts.blueprints")
 local approach = require("scripts.actions.approach")
 local placement_geometry = require("scripts.placement_geometry")
+local surfaces = require("scripts.surfaces")
 local build = require("scripts.actions.build")
 local build_layout = require("scripts.actions.build_layout")
 local supply = require("scripts.actions.supply")
@@ -233,10 +234,12 @@ end
 
 local function ghost_key(name, x, y) return string.format("%s@%.2f,%.2f", tostring(name), x, y) end
 
--- The blueprint entities that got no ghost, as {name, x, y, blocked_by?}
--- (at most MAX_ROWS; blocked_by: what stands at that spot, as build_layout
--- names a blocker), and how many there are. origin + each entity's
--- position is where its ghost lands (blueprints.ghost_stack's cell).
+-- The blueprint entities that got no ghost, as {name, x, y, blocked_by?,
+-- uncharted?} (at most MAX_ROWS; blocked_by: what stands at that spot, as
+-- build_layout names a blocker, read only on charted land: the ghosts skip
+-- fog of war, and a spot the force has not charted is uncharted = true,
+-- never read), and how many there are. origin + each entity's position is
+-- where its ghost lands (blueprints.ghost_stack's cell).
 local function missing_ghosts(c, origin, planned, ghosts)
   local got = {}
   for _, ghost in ipairs(ghosts or {}) do
@@ -256,7 +259,12 @@ local function missing_ghosts(c, origin, planned, ghosts)
       count = count + 1
       if #rows < MAX_ROWS then
         local row = { name = e.name, x = x, y = y }
-        local ok, found = pcall(c.surface.find_entities_filtered, { position = { x = x, y = y }, limit = 4 })
+        local ok, found = false, nil
+        if surfaces.charted(c.force, c.surface, math.floor(x / 32), math.floor(y / 32)) then
+          ok, found = pcall(c.surface.find_entities_filtered, { position = { x = x, y = y }, limit = 4 })
+        else
+          row.uncharted = true
+        end
         for _, other in ipairs(ok and found or {}) do
           if other.valid and not placement_geometry.NON_BLOCKING_TYPES[other.type] then
             row.blocked_by = { name = other.name, x = other.position.x, y = other.position.y }
@@ -315,7 +323,7 @@ local function place_ghosts(task, c)
   local first = outcome.missing_ghosts and outcome.missing_ghosts[1]
   local first_missing = first and string.format("; no ghost for %s at (%.1f, %.1f)%s", first.name, first.x, first.y,
     first.blocked_by and string.format(", blocked by %s at (%.1f, %.1f)", first.blocked_by.name, first.blocked_by.x,
-      first.blocked_by.y) or "") or ""
+      first.blocked_by.y) or first.uncharted and ", on uncharted land" or "") or ""
   if count == 0 then
     return { status = "failed", outcome = outcome,
       detail = string.format("GHOSTS_NOT_PLACED: %s placed no ghosts at (%d, %d) — something stands in its way%s",
@@ -420,13 +428,11 @@ M.place_check_job = {
     end
     local c = actor(job.platform)
     local s = job.search
-    local before = s.ctx.calls
+    -- Both steps take their (scaled) work from budget.
     if job.out then
       -- The placement found is surveyed (data, never a failure).
       s.ctx.c = c
-      local done = build_layout.survey_step(s.ctx, job.survey, before + math.max(1, budget.left))
-      budget.left = budget.left - (s.ctx.calls - before)
-      if not done then return nil end
+      if not build_layout.survey_step(s.ctx, job.survey, budget) then return nil end
       for k, v in pairs(build_layout.survey_rows(job.survey)) do job.out[k] = v end
       -- A placement the build would be refused for mixing fluids is not
       -- free: at the position it collides (the list holds nothing else
@@ -441,8 +447,7 @@ M.place_check_job = {
       end
       return job.out
     end
-    local result = build_layout.search_step(c, s, math.max(1, budget.left))
-    budget.left = budget.left - (s.ctx.calls - before)
+    local result = build_layout.search_step(c, s, budget)
     if not result then return nil end
     local report = build_layout.check_report(c, result)
     if job.phase == "at" and not report.ok then
@@ -474,7 +479,7 @@ M.place_check_job = {
     -- the next tick.
     local started = s.ctx.calls
     job.out, job.survey = out, build_layout.survey_start(s.ctx, result, SURVEYED)
-    budget.left = budget.left - (s.ctx.calls - started)
+    budget.left = budget.left - build_layout.CHECK_COST * (s.ctx.calls - started)
     return nil
   end,
 }

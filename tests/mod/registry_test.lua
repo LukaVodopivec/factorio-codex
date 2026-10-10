@@ -373,10 +373,10 @@ for tick = 1000, 1010 do
   local before = finds.resource
   map_summary.patch_tick(tick)
   resource_reads[#resource_reads + 1] = finds.resource - before
-  if storage.patch_caches[1].filled then break end
+  if storage.patch_caches[1].seeded and #storage.patch_caches[1].pending == 0 then break end
 end
 check(resource_reads[1] == 0 and resource_reads[2] == 2 and resource_reads[6] == 2 and resource_reads[7] == 0
-  and storage.patch_caches[1].filled, "the patch cache reads the ten charted chunks two a tick (" .. table.concat(resource_reads, ",") .. ")")
+  and #storage.patch_caches[1].pending == 0, "the patch cache reads the ten charted chunks two a tick (" .. table.concat(resource_reads, ",") .. ")")
 check(chunk_lists == 1 and storage.registry.charted_seed == nil,
   "the patch cache is seeded from the bootstrap's chunk list without listing the surface again")
 -- Patch rows are rebuilt on later ticks with nothing to read, a few cells a

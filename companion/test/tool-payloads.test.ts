@@ -152,14 +152,14 @@ describe("public MCP to Lua DTO mappings", () => {
       ["progression_status", /modifiers: its effects other than recipes, as \{type, modifier\}/],
       ["set_recipe", /An assembler crafts from its input inventory \(insert_items puts items there\) and holds its products in its output \(extract_items takes them\)\./],
       ["blueprint_place", /wires_ignored counts them/],
-      ["blueprint_place", /missing_ghosts lists those with none \{name, x, y, blocked_by\} and missing_ghost_count counts them/],
+      ["blueprint_place", /missing_ghosts lists those with none \{name, x, y, blocked_by, or uncharted: true where the land is not charted\} and missing_ghost_count counts them/],
       ["build_layout", /on_ore, mixed_ore, drill_ore, open_fluid_ports/],
       ["blueprint_place", /drill_ore \(each drill's charted resource amount in its mining area by resource, or yield_percent for an infinite one\)/],
       ["explore", /A charted patch's distance runs from the body to its bbox \(0 inside\)/],
       ["craft_items", /fails MISSING_INGREDIENTS \(missing lists them\) or NOT_HAND_CRAFTABLE/],
       ["extract_items", /fails INVENTORY_FULL \(no room for any of it\) or NOTHING_TO_TAKE \(it held none\)/],
       ["build_ghosts", /fails AREA_INVALID/], ["deconstruct_area", /fails AREA_INVALID/], ["upgrade_area", /fails AREA_INVALID/],
-      ["factory_status", /unread_sections: wanted sections left out once the read spent its tick budget/],
+      ["factory_status", /unread_sections: wanted sections left out once the read spent its share of the tick budget \(read just those next\)/],
     ];
     // Facts and arithmetic only: no remedy, recommendation or count to build.
     const remedy = /\b(should|must build|you need|consider|recommend\w*|build more|add more|instead build|it is best|try to)\b/i;

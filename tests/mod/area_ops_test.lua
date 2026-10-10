@@ -257,6 +257,39 @@ check(not near_mix.ok and near_mix.free_position == nil
   and #near_mix.collisions == 1 and near_mix.collisions[1].reason:match("wooden%-chest") ~= nil,
   "a free position near a blocked one whose pipes would mix is not offered, and free_reason names the refused pipe")
 
+do
+  -- Two dry runs pending in one tick share its budget: blueprint_place's
+  -- takes its scaled work from the tick's budget as build_layout's does, so
+  -- together they spend one tick's allowance (and the last candidate's
+  -- checks), not one each. On uncharted land every candidate fails cheaply,
+  -- so both search for many ticks.
+  local build_layout = require("scripts.actions.build_layout")
+  jobs.register("test_place_check", area_ops.place_check_job)
+  jobs.register("test_layout_check", build_layout.layout_check_job)
+  local charted = own.is_chunk_charted
+  own.is_chunk_charted = function() return false end
+  storage.jobs = nil
+  local first = jobs.start("test_place_check", { name = "gears", position = { x = 10, y = 10 }, check_only = true })
+  local second = jobs.start("test_layout_check", { site = { near = { x = 10, y = 10 } },
+    entities = { { name = "wooden-chest", dx = 0.5, dy = 0.5 } }, check_only = true })
+  local worst, both = 0, 0
+  for _ = 1, 3 do
+    game.tick = game.tick + 1
+    jobs.on_tick()
+    worst = math.max(worst, jobs.spent())
+    if storage.jobs.by_id[first.job_id].status == "pending" and storage.jobs.by_id[second.job_id].status == "pending" then
+      both = both + 1
+    end
+  end
+  own.is_chunk_charted = charted
+  jobs.get({ job_id = first.job_id, forget = true })
+  jobs.get({ job_id = second.job_id, forget = true })
+  storage.jobs = nil
+  check(both == 3 and worst <= jobs.WORK_PER_TICK + 4 * build_layout.CHECK_COST,
+    string.format("two pending dry runs in one tick spend one tick's work between them (worst %d of %d)", worst,
+      jobs.WORK_PER_TICK))
+end
+
 local placed, place_task = run(area_ops.place_action, { name = "gears", position = { x = 10.2, y = 9.8 }, direction = 4 })
 local machine, arm
 for _, e in ipairs(live()) do
@@ -329,6 +362,25 @@ check(partial.outcome.missing_ghost_count == 1 and #partial.outcome.missing_ghos
     .. tostring(partial.detail))
 check(ghosted.outcome.missing_ghosts == nil and ghosted.outcome.missing_ghost_count == nil,
   "a complete ghost placement lists no missing ghosts")
+do
+  -- The ghosts skip fog of war: a spot with no ghost on land the force has
+  -- not charted is never read; the row says uncharted instead.
+  local hidden = spawn("wooden-chest", { x = 32.5, y = 30.5 })
+  local charted = own.is_chunk_charted
+  local probed = false
+  own.is_chunk_charted = function(_, chunk) return chunk.x < 1 end
+  local find = surface.find_entities_filtered
+  surface.find_entities_filtered = function(filter)
+    if filter.position and filter.position.x > 32 then probed = true end
+    return find(filter)
+  end
+  local fogged = run(area_ops.place_action, { name = "gears", position = { x = 31, y = 30 }, mode = "ghosts" })
+  surface.find_entities_filtered, own.is_chunk_charted, hidden.valid = find, charted, false
+  local row = fogged.outcome.missing_ghosts and fogged.outcome.missing_ghosts[1]
+  check(row and row.name == "inserter" and row.uncharted == true and row.blocked_by == nil and not probed
+    and fogged.detail:match("no ghost for inserter at %(32%.5, 30%.5%), on uncharted land$") ~= nil,
+    "a missing ghost on uncharted land is not probed for a blocker and says so: " .. tostring(fogged.detail))
+end
 native_stack.build_blueprint = function() return {} end
 local absent = run(area_ops.place_action, { name = "gears", position = { x = 50, y = 30 }, mode = "ghosts" })
 check(absent.status == "failed" and absent.outcome.ghosts == 0 and absent.outcome.expected == 2,

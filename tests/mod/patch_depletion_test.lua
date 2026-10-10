@@ -120,6 +120,26 @@ iron = row("iron-ore")
 check(iron and iron.amount == 499 and iron.minutes_left == nil and iron.remaining_fraction == nil,
   "a patch nobody mines any more has no minutes_left; 499 of 500 is no remaining_fraction")
 
+do
+  -- A newly charted chunk makes the list fill again until it is read and
+  -- the rows rebuilt from it: a reader (explore) never takes a patch there
+  -- as uncharted meanwhile.
+  storage.patch_caches = {}
+  run(200)
+  local _, filled_before = map_summary.patches(1)
+  resources["4,0"] = { mock.entity({ valid = true, name = "copper-ore", type = "resource", position = { x = 140, y = 5 }, amount = 700 }) }
+  map_summary.on_chunk_charted({ surface_index = 1, position = { x = 4, y = 0 }, force = force })
+  local _, filling = map_summary.patches(1)
+  local filled_again
+  for _ = 1, 50 do
+    run(1)
+    local _, filled = map_summary.patches(1)
+    if filled then filled_again = filled; break end
+  end
+  check(filled_before == true and filling == false and filled_again and row("copper-ore") ~= nil,
+    "a newly charted chunk is still filling until its patch is in the rows")
+end
+
 -- A version 1 cache (0.31 and older) keeps its chunks and gains the
 -- depletion fields from its current amounts.
 local cell = { cx = 0, cy = 0, amount = 900, tiles = 9, x = 0, y = 0, left = 0, right = 2, top = 0, bottom = 2 }

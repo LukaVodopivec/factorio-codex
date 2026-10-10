@@ -901,15 +901,24 @@ do
 end
 local full = factory_status.factory_status({})
 do
-  -- The worst case charges more than a tick's work by the time its last
-  -- sections come: they are named (facts only: section names), and a read
-  -- of just those returns them; together the two are the whole read.
+  -- The worst case charges more than half a tick's work by the time its
+  -- last sections come: they are named (facts only: section names), and
+  -- reads of just those return them, each at least one; together the reads
+  -- are the whole read.
   local unread = table.concat(full.unread_sections or {}, ",")
-  local rest = factory_status.factory_status({ sections = full.unread_sections })
-  check(unread == "platforms,elsewhere,alerts" and rest.unread_sections == nil and rest.alerts ~= nil,
-    "a read past a tick's work leaves its last sections out and names them; reading those returns them (" .. unread .. ")")
+  local left, reads, progressed = full.unread_sections, 0, true
+  while left and reads < 6 do
+    local rest = factory_status.factory_status({ sections = left })
+    reads = reads + 1
+    progressed = progressed and #(rest.unread_sections or {}) < #left
+    left = rest.unread_sections
+    rest.unread_sections = nil
+    for key, value in pairs(rest) do if full[key] == nil then full[key] = value end end
+  end
+  check(unread == "power,stock,research,platforms,elsewhere,alerts" and left == nil and progressed and full.alerts ~= nil,
+    "a read past half a tick's work leaves its last sections out and names them; reads of those return them ("
+      .. unread .. "; " .. reads .. " reads)")
   full.unread_sections = nil
-  for key, value in pairs(rest) do if full[key] == nil then full[key] = value end end
 end
 json_size = size(full)
 registry.labs = real_labs

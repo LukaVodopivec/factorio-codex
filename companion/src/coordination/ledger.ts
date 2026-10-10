@@ -60,12 +60,14 @@ export const VERIFY_RULE = "verify (optional): 1-3 metrics the pilot's bridge me
   + " machine whose box holds that position, with its state, cause and rate). All met: a package_verified event, else"
   + " package_unmet, each with the measured values (next_event; activity_log's packages keep them as verification)."
   + " Only a completed or partial plan is measured (a partial plan's NO_LINE row carries plan_status); a failed or"
-  + " cancelled plan's verify is not_measured, with no event. Measurement only: nothing is fixed or queued again";
+  + " cancelled plan's verify is not_measured, with no event. A metric's surface (optional) measures it on that planet"
+  + " or \"platform:<index>\" instead, such as a platform package's output on its platform. Measurement only: nothing"
+  + " is fixed or queued again";
 const itemName = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/, "items are names such as \"iron-plate\"");
 export const verifyMetricSchema = z.union([
-  z.object({ item: itemName, per_min_at_least: z.number().finite().positive() }).strict(),
+  z.object({ item: itemName, per_min_at_least: z.number().finite().positive(), surface: packageSurface.optional() }).strict(),
   z.object({ line_at: z.object({ x: z.number().finite(), y: z.number().finite() }).strict(),
-    state: z.enum(LINE_STATES) }).strict(),
+    state: z.enum(LINE_STATES), surface: packageSurface.optional() }).strict(),
 ]);
 export const verifySchema = z.array(verifyMetricSchema).min(1).max(3);
 export type VerifyMetric = z.infer<typeof verifyMetricSchema>;

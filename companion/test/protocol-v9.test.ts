@@ -18,7 +18,7 @@ describe("protocol v29 DTO and tool registry", () => {
       "blueprint_capture", "blueprint_create", "blueprint_list", "blueprint_describe", "blueprint_delete", "blueprint_export", "blueprint_place", "place_tiles", "platform_status", "create_platform", "set_requests", "configure_entity", "set_recipe", "set_platform_route", "travel", "set_watch", "clear_watch"]));
   });
 
-  it("registers exactly 53 tools, none of them build_block, and forwards exact v29 payloads", async () => {
+  it("registers exactly 54 tools, none of them build_block, and forwards exact v29 payloads", async () => {
     const handlers: Record<string, (args: any) => Promise<any>> = {};
     const schemas: Record<string, any> = {};
     const call = vi.fn(async (method: string) => method === "connect_entities"
@@ -27,7 +27,7 @@ describe("protocol v29 DTO and tool registry", () => {
     const enqueueAndWait = vi.fn(async () => "built 1/1 placements");
     const enqueueAndWaitResult = vi.fn(async () => ({ status: "done" as const, detail: "done" }));
     registerMcpTools({ registerTool(name: string, config: any, handler: (args: any) => Promise<any>) { handlers[name] = handler; schemas[name] = config.inputSchema; } }, async () => ({ call, enqueueAndWait, enqueueAndWaitResult } as unknown as Bridge), validConfig);
-    expect(Object.keys(handlers)).toHaveLength(53);
+    expect(Object.keys(handlers)).toHaveLength(54);
     expect(Object.keys(handlers)).not.toContain("build_block");
 
     const find = schemas.find_placement.parse({ item: "offshore-pump", preferred: { x: 1, y: 2 } });
@@ -431,6 +431,15 @@ describe("protocol v29 DTO and tool registry", () => {
     expect(normalizePlatformStatus(full)).toEqual({ ...full, foundation: { ...full.foundation, rows: [] },
       hub: { ...full.hub, inventory: [], trash: [] }, requests: [{ index: 1, items: [] }],
       entities: [{ ...full.entities[0], filters: [] }], ghosts: { ...full.ghosts, missing: [] } });
+    // Turrets and thrusters by name, ammo held, and a trip's losses are lists.
+    const defended = normalizePlatformStatus({ platform: { ...full.platform, trip: { departed_tick: 5, lost: {} } },
+      thrusters: { count: 1, working: 0, by_name: {} }, trip: { departed_tick: 5, from: "nauvis", lost: [{ name: "thruster", count: 1 }] },
+      turrets: [{ name: "gun-turret", count: 2, working: 1, no_ammo: 1, ammo: {} }, { name: "laser-turret", count: 1, working: 1 }] });
+    expect(defended.platform.trip.lost).toEqual([]);
+    expect(defended.thrusters).toEqual({ count: 1, working: 0, by_name: [] });
+    expect(defended.turrets).toEqual([{ name: "gun-turret", count: 2, working: 1, no_ammo: 1, ammo: [] }, { name: "laser-turret", count: 1, working: 1 }]);
+    expect(defended.trip).toEqual({ departed_tick: 5, from: "nauvis", lost: [{ name: "thruster", count: 1 }] });
+    expect(normalizePlatformStatus({ platforms: [{ ...row, trip: { departed_tick: 1, lost: {} } }] }).platforms[0].trip.lost).toEqual([]);
     expect(normalizeInspection({ entities: [{ name: "asteroid-collector", settings: { collector: { filters: {} } } }] }).entities[0])
       .toEqual({ name: "asteroid-collector", settings: { collector: { filters: [] } } });
     const silo = { status: "building_rocket", parts: 12, parts_required: 50, cargo: {}, auto_requests: false };
@@ -615,7 +624,7 @@ describe("protocol v29 DTO and tool registry", () => {
       async () => ({ call } as unknown as Bridge), validConfig);
     const connected = await handlers.connect_status({});
     expect(connected.structuredContent).toMatchObject({ status: "connected", companion_exists: true, body: aboard });
-    expect(connected.content[0].text).toBe("Connected; the body is aboard platform Orbit: physical actions fail with BODY_ABOARD until it lands; remote platform tools work");
+    expect(connected.content[0].text).toBe("Connected; the body is aboard platform Orbit: physical actions and hand-crafting fail with BODY_ABOARD until it lands; remote platform tools work");
     expect(call).not.toHaveBeenCalledWith("spawn_companion", expect.anything());
     const status = await handlers.factory_status({});
     expect(status.structuredContent.fifo).toMatchObject({ queue_depth: 1, body: aboard });
@@ -771,6 +780,10 @@ describe("protocol v29 DTO and tool registry", () => {
     expect(diagnostics.diagnostics.route[0]).toMatchObject({ step: 2, detail: "blocked" });
     expect(diagnostics.diagnostics.machines[0]).toMatchObject({ entity: "assembler", status: "no_power" });
     expect(normalizePlanDiagnostics({ transitions: {} }).transitions).toEqual([]);
+    // A travel step's phase, deadline and platform facts pass through.
+    const travel = { phase: "wait_arrival", to: "vulcanus", deadline_tick: 9000, read_tick: 8000,
+      platform: { name: "Dawn", state: "on_the_path", speed: 0, thrusters: { count: 0, working: 0 } } };
+    expect(normalizePlanDiagnostics({ diagnostics: { action: "travel", travel } }).diagnostics.travel).toEqual(travel);
     const selection = { tick: 10, refuel: { candidates: {}, selected: {} } };
     const upkeep = { selection_tick: 10, unfinished_targets: [{ step: 2, position: { x: 20, y: 2 },
       requested_items: { coal: 10 }, state: "not_started" }], preempted: true };

@@ -420,7 +420,7 @@ replacement.
 
 ## MCP tools
 
-The full surface has 53 tools; the read-only surface used by the strategist has 23.
+The full surface has 54 tools; the read-only surface used by the strategist has 23.
 Every read-only result carries `fifo` (`active_plan_id`, `queue_depth`,
 `idle_seconds`, `human_control`). Heavy reads (`map_summary`, a full
 `observe_local`, route and site searches, dry runs, blueprint capture and
@@ -439,7 +439,7 @@ description) run in the game as jobs spread over ticks; the bridge polls
 | `blueprint_place` | both (read-only: dry run) | build a stored blueprint by hand or as ghosts, or as ghosts on a space platform; its dry run also reports `on_ore`, `mixed_ore`, `open_fluid_ports` and `port_fluids` |
 | `place_tiles` | both (read-only: dry run) | lay landfill, stone path, concrete, foundation or ice platform over an area or up to 1,024 positions, nearest first; a dry run counts the items |
 | `set_watch`, `clear_watch` | both | up to 16 watches per role on a force production rate, consumption above production, or a line's rate; one fires once as `watch_fired` in `next_event` when crossed and re-arms after 60 s at least 10% clear |
-| `platform_status` | both | space platforms: state, location, trip, speed, schedule, hub slots and requests; `detail: full` for one platform adds foundation, hub contents, entities, thrusters and `ghosts.missing` |
+| `platform_status` | both | space platforms: state, location, trip, speed, schedule, hub slots and requests; `detail: full` for one platform adds foundation, hub contents, entities, thrusters and turrets by name (with ammo), damage, losses since the last departure and `ghosts.missing` |
 | `map_summary` | both | full flow graph of the charted factory on one surface (`surface`; `"all"` sums flows); `include` adds `stockpiles`, `sites`, `patches`, `power`, `problems`, `flows_all` |
 | `observe_local`, `inspect_entity` | both | nearby entities and exact entity state with settings, temperature and `frozen`, up to 64 positions (own entities anywhere charted; `surface` on `inspect_entity`), or an `area` of at most 64 x 64 charted tiles listing own entities as compact rows; belts give `lanes` and `lane_mix`, inserters `holding`, and `trace: up\|down` walks belt lanes to their sources over own belts in charted chunks |
 | `can_place`, `find_placement` | both | placement checks anywhere charted, on any surface (`surface`), with surface conditions; `find_placement` lists candidates nearest first (a drill's with its `resource_coverage`), and its `fluid` picks the liquid an offshore pump pumps |
@@ -456,6 +456,7 @@ description) run in the game as jobs spread over ticks; the bridge polls
 | `set_platform_route` | full | set a platform's stops (unlocked locations, each with the game's wait conditions), `go_to` a stop or `paused`, at once and without the body; reads the schedule back |
 | `travel` | full | queue the body's trip to another surface and return: up by the next ready rocket to a platform in orbit (`via_silo`), or from aboard down to the planet the platform reaches (`max_wait_minutes`, default 60); pilot only, never in a package |
 | `blueprint_capture`, `blueprint_create`, `blueprint_delete` | full | store a blueprint from own buildings or a layout; delete one |
+| `cancel_plan` | full | cancel one of the pilot's own queued or running plans (never a package, upkeep or research); a launch or landing under way finishes |
 | `stop` | full | supervisor-only emergency cancellation |
 
 Plan steps are `walk_to`, `mine`, `pickup_items`, `place_entity`,

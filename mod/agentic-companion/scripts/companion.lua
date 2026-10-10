@@ -321,9 +321,14 @@ function M.require_companion()
   if body.state == "in_transit" then
     error("BODY_IN_TRANSIT: the body is riding a cargo pod; physical actions wait until it lands", 0)
   elseif body.state == "aboard_platform" then
+    -- Aboard, M.get() has no character standing on a surface to act with,
+    -- and the 2.0 API documents no hand-crafting from a platform hub: the
+    -- mod's physical actions and craft_items all need the body on a planet.
     local name = body.platform and read(function() return body.platform.name end)
-    error(string.format("BODY_ABOARD: the body is aboard platform %s (%s); physical actions need it on a planet,"
-      .. " remote tools still work", tostring(name), tostring(body.surface_ref)), 0)
+    error(string.format("BODY_ABOARD: the body is aboard platform %s (%s): aboard it cannot walk, mine, build,"
+      .. " hand-craft (craft_items) or move items in or out of its inventory; that needs it on a planet."
+      .. " Remote platform tools (route, hub requests, platform building and settings) still work",
+      tostring(name), tostring(body.surface_ref)), 0)
   elseif body.state == "dead" then
     error("BODY_DEAD: the body is dead and waits to respawn", 0)
   elseif body.state == "absent" or body.state == "disconnected" then

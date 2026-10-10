@@ -1010,7 +1010,50 @@ local function describe_entity(ent, item_name, force)
   ok, v = pcall(function() return ent.belt_speed end)
   if ok and type(v) == "number" then out.belt_speed = v end
 
+  -- An asteroid: its health and resistances, [{type, decrease, percent}]
+  -- (flat decrease, then percent, by damage type).
+  ok, v = pcall(function() return ent.type end)
+  if ok and v == "asteroid" then
+    ok, v = pcall(function() return ent.get_max_health() end)
+    if ok and type(v) == "number" then out.max_health = v end
+    ok, v = pcall(function() return ent.resistances end)
+    if ok and type(v) == "table" then
+      local rows = {}
+      for damage_type, resistance in pairs(v) do
+        rows[#rows + 1] = { type = damage_type, decrease = resistance.decrease or 0, percent = resistance.percent or 0 }
+      end
+      table.sort(rows, function(a, b) return a.type < b.type end)
+      out.resistances = rows
+    end
+  end
+
   return out
+end
+
+-- The damage an ammo item's AmmoType deals: its damage effects, walked
+-- through its actions, deliveries and nested results ({type, amount}, a
+-- projectile's name when a delivery fires one), at most AMMO_ROWS rows.
+local AMMO_ROWS, AMMO_DEPTH = 8, 3
+local function ammo_damage(actions, out, depth)
+  if type(actions) ~= "table" or depth > AMMO_DEPTH then return end
+  -- A single TriggerItem or a list of them.
+  if actions.type ~= nil then actions = { actions } end
+  for _, action in ipairs(actions) do
+    local deliveries = type(action) == "table" and action.action_delivery
+    if type(deliveries) == "table" and deliveries.type ~= nil then deliveries = { deliveries } end
+    for _, delivery in ipairs(type(deliveries) == "table" and deliveries or {}) do
+      if delivery.projectile and #out.projectiles < AMMO_ROWS then out.projectiles[#out.projectiles + 1] = delivery.projectile end
+      local effects = delivery.target_effects
+      if type(effects) == "table" and effects.type ~= nil then effects = { effects } end
+      for _, effect in ipairs(type(effects) == "table" and effects or {}) do
+        if effect.type == "damage" and type(effect.damage) == "table" and #out.damage < AMMO_ROWS then
+          out.damage[#out.damage + 1] = { type = effect.damage.type, amount = effect.damage.amount }
+        elseif effect.type == "nested-result" then
+          ammo_damage(effect.action, out, depth + 1)
+        end
+      end
+    end
+  end
 end
 
 local function describe_recipe(rec, force)
@@ -1048,6 +1091,23 @@ local function describe_item(item)
   if ok and type(value) == "string" then out.fuel_category = value end
   ok, value = pcall(function() return item.place_result end)
   if ok and value then out.place_result = value.name end
+  -- Ammo: its category and the damage one shot deals ({type, amount} per
+  -- effect; a projectile's own damage is on the projectile, named), with the
+  -- range and cooldown modifiers it gives the weapon.
+  ok, value = pcall(function() return item.type end)
+  if ok and value == "ammo" then
+    local ammo = { damage = {}, projectiles = {} }
+    ok, value = pcall(function() return item.ammo_category end)
+    if ok and value then ammo.category = type(value) == "string" and value or value.name end
+    ok, value = pcall(function() return item.get_ammo_type() end)
+    if ok and type(value) == "table" then
+      ammo_damage(value.action, ammo, 1)
+      ammo.range_modifier, ammo.cooldown_modifier = value.range_modifier, value.cooldown_modifier
+    end
+    if #ammo.projectiles == 0 then ammo.projectiles = nil end
+    if #ammo.damage == 0 then ammo.damage = nil end
+    out.ammo = ammo
+  end
   return out
 end
 

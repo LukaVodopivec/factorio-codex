@@ -22,7 +22,10 @@
 --                 read; only event handlers and the travel step write it;
 --                 the rocket events also keep their first tick as a run
 --                 milestone (storage.milestones)
--- storage.space = {created = {[index] = planet}, events = {...}, last_event_tick}.
+--   trips         each platform's last trip: when it departed and the own
+--                 entities lost on it since (platform_status trip)
+-- storage.space = {created = {[index] = planet}, events = {...}, last_event_tick,
+-- trips = {[index] = {departed_tick, from, lost}}}.
 local companion = require("scripts.companion")
 local jobs = require("scripts.jobs")
 
@@ -280,6 +283,69 @@ local function schedule_of(p, full)
   return { current = read(function() return schedule.current end), records = rows }
 end
 
+-- The schedule record a platform heads for (schedule.current), its index,
+-- whether any record stops at `name`, and all its records.
+local function current_record(p, name)
+  local schedule = read(function() return p.get_schedule() end)
+  if not schedule then return nil, nil, false, {} end
+  local records = read(function() return schedule.get_records() end) or {}
+  local scheduled = false
+  for _, record in ipairs(records) do
+    if record.station == name then scheduled = true end
+  end
+  local current = read(function() return schedule.current end)
+  return current and records[current] or nil, current, scheduled, records
+end
+
+-- Whether a platform's schedule has a stop at `name`.
+function M.scheduled(p, name)
+  local _, _, scheduled = current_record(p, name)
+  return scheduled
+end
+
+-- Whether a platform's next stop is `name`: the stop it heads for now, or,
+-- while it waits at a stop over that stop's location and is not paused, the
+-- record after it (where it goes once that stop's wait conditions hold).
+function M.heading_to(p, name)
+  local record, current, _, records = current_record(p, name)
+  if record == nil then return false end
+  local location = M.location(p)
+  if location ~= nil and record.station == location and #records > 1 and read(function() return p.paused end) ~= true then
+    record = records[current % #records + 1]
+  end
+  return record ~= nil and record.station == name
+end
+
+-- A platform's thrusters: how many and how many work now. One search of the
+-- platform's own surface by type, which holds only that platform (a few
+-- chunks); nil while it has no surface.
+function M.thrusters(p)
+  local surface = read(function() return p.surface end)
+  if not (surface and surface.valid) then return nil end
+  local found = read(function() return surface.find_entities_filtered({ type = "thruster", force = p.force }) end)
+  if not found then return nil end
+  local working = 0
+  for _, e in ipairs(found) do
+    if read(function() return e.status end) == defines.entity_status.working then working = working + 1 end
+  end
+  return { count = #found, working = working }
+end
+
+-- What a trip reads of a platform (travel's phases, LAND_REFUSED): state,
+-- location (nil between locations), speed, paused, whether it has its hub,
+-- the stop it heads for {index, station, wait_conditions: their count} and,
+-- with_thrusters, its thrusters {count, working}. Facts only.
+function M.trip_facts(p, with_thrusters)
+  local record, index = current_record(p, nil)
+  local speed = read(function() return p.speed end)
+  return { index = p.index, name = p.name, state = M.state_name(p), location = M.location(p),
+    speed = type(speed) == "number" and math.floor(speed * 1000 + 0.5) / 1000 or nil,
+    paused = read(function() return p.paused end), hub = hub_of(p) ~= nil,
+    current_stop = record and { index = index, station = record.station,
+      wait_conditions = #(record.wait_conditions or {}) } or nil,
+    thrusters = with_thrusters and M.thrusters(p) or nil }
+end
+
 -- One platform's line: attribute reads, its route, the hub's free slots and
 -- its request count (one read per request section); and the work it took.
 function M.compact_row(p)
@@ -287,7 +353,7 @@ function M.compact_row(p)
   local row = { index = p.index, name = p.name, state = M.state_name(p), location = M.location(p),
     scheduled_for_deletion = p.scheduled_for_deletion, speed = read(function() return p.speed end),
     paused = read(function() return p.paused end), travel = travel_of(p), schedule = schedule_of(p, false),
-    starter_pack = pack and name_of(pack.name) or nil }
+    starter_pack = pack and name_of(pack.name) or nil, trip = M.trip(p) }
   local hub, work = hub_of(p), 6 + (row.schedule and #row.schedule.records or 0)
   if hub then
     local main = hub_inventory(hub, "hub_main")
@@ -357,11 +423,22 @@ local function entity_row(e)
   return row
 end
 
--- A thruster's fuel and oxidizer amounts and capacities.
+-- Counts by entity name {name, count, working}, kept whole (never capped).
+local function count_named(map, e, working)
+  local row = map[e.name]
+  if not row then row = { name = e.name, count = 0, working = 0 }; map[e.name] = row end
+  row.count = row.count + 1
+  if working then row.working = row.working + 1 end
+  return row
+end
+
+-- A thruster's fuel and oxidizer amounts and capacities, and its name's count.
 local function add_thruster(s, e)
   local t = s.thrusters
   t.count = t.count + 1
-  if read(function() return e.status end) == defines.entity_status.working then t.working = t.working + 1 end
+  local working = read(function() return e.status end) == defines.entity_status.working
+  if working then t.working = t.working + 1 end
+  count_named(t.by_name, e, working)
   local boxes = read(function() return e.fluidbox end)
   for i = 1, boxes and #boxes or 0 do
     local fluid = boxes[i]
@@ -373,6 +450,42 @@ local function add_thruster(s, e)
       t[kind .. "_capacity"] = t[kind .. "_capacity"] + capacity
     end
   end
+end
+
+-- Turrets by name: count, working and, for those that fire items, how many
+-- hold no ammo and the ammo they hold by item. The ammo inventory's id by
+-- turret type.
+local TURRET_AMMO = { ["ammo-turret"] = "turret_ammo", ["artillery-turret"] = "artillery_turret_ammo",
+  ["electric-turret"] = false, ["fluid-turret"] = false, turret = false }
+local function add_turret(s, e)
+  local row = count_named(s.turrets, e, read(function() return e.status end) == defines.entity_status.working)
+  local inventory_id = TURRET_AMMO[e.type]
+  if not inventory_id then return end
+  local inventory = read(function() return e.get_inventory(defines.inventory[inventory_id]) end)
+  local held = 0
+  for _, item in ipairs(inventory and read(function() return inventory.get_contents() end) or {}) do
+    held = held + item.count
+    row.ammo = row.ammo or {}
+    row.ammo[item.name] = (row.ammo[item.name] or 0) + item.count
+  end
+  if held == 0 then row.no_ammo = (row.no_ammo or 0) + 1 end
+end
+
+-- A name -> row map as rows by name; the ammo map in a row as
+-- [{item, count}].
+local function named_rows(map)
+  local rows = {}
+  for _, row in pairs(map) do
+    if row.ammo then
+      local ammo = {}
+      for item, count in pairs(row.ammo) do ammo[#ammo + 1] = { item = item, count = count } end
+      table.sort(ammo, function(a, b) return a.item < b.item end)
+      row.ammo = ammo
+    end
+    rows[#rows + 1] = row
+  end
+  table.sort(rows, function(a, b) return a.name < b.name end)
+  return rows
 end
 
 local function fill(amount, capacity)
@@ -459,7 +572,9 @@ local function full_step(s, budget, force)
         s.cx0, s.cy0, s.cx1, s.cy1 = chunk_of(box[1]), chunk_of(box[2]), chunk_of(box[3]), chunk_of(box[4])
         s.cx, s.cy = s.cx0, s.cy0
         s.kept, s.missing, s.ghosts = {}, {}, { entities = 0, tiles = 0 }
-        s.thrusters = { count = 0, working = 0, fuel_amount = 0, fuel_capacity = 0, oxidizer_amount = 0, oxidizer_capacity = 0 }
+        s.thrusters = { count = 0, working = 0, fuel_amount = 0, fuel_capacity = 0, oxidizer_amount = 0, oxidizer_capacity = 0,
+          by_name = {} }
+        s.turrets, s.hurt = {}, { entities = 0, missing = 0 }
         s.entity_count = 0
       else
         local xs = s.by_y[tostring(y)]
@@ -512,8 +627,14 @@ local function full_step(s, budget, force)
         elseif here then
           s.entity_count = s.entity_count + 1
           if e.type == "thruster" then add_thruster(s, e) end
+          if TURRET_AMMO[e.type] ~= nil then add_turret(s, e) end
+          -- Damage it carries now: the health it is missing.
+          local health, max = read(function() return e.health end), read(function() return e.max_health end)
+          if type(health) == "number" and type(max) == "number" and health < max then
+            s.hurt.entities, s.hurt.missing = s.hurt.entities + 1, s.hurt.missing + max - health
+          end
           jobs.keep_first(s.kept, M.MAX_ENTITIES, entity_row(e), before)
-          budget.left = budget.left - 2
+          budget.left = budget.left - 3
         end
       end
     elseif s.phase == "hub" then
@@ -573,9 +694,13 @@ local function full_step(s, budget, force)
         requests = s.requests,
         entities = s.kept, omitted_entities = s.entity_count > #s.kept and s.entity_count - #s.kept or nil,
         thrusters = t.count > 0 and { count = t.count, working = t.working, fuel_fill = fill(t.fuel_amount, t.fuel_capacity),
-          oxidizer_fill = fill(t.oxidizer_amount, t.oxidizer_capacity) } or nil,
+          oxidizer_fill = fill(t.oxidizer_amount, t.oxidizer_capacity), by_name = named_rows(t.by_name) } or nil,
+        -- Every turret, by name, whatever the entity list's cap left out.
+        turrets = next(s.turrets) and named_rows(s.turrets) or nil,
         ghosts = { entities = s.ghosts.entities, tiles = s.ghosts.tiles, missing = s.short },
-        damage = { damaged_tiles = #damaged, total = math.floor(total * 10 + 0.5) / 10 },
+        damage = { damaged_tiles = #damaged, total = math.floor(total * 10 + 0.5) / 10,
+          damaged_entities = s.hurt.entities, entity_health_missing = math.floor(s.hurt.missing * 10 + 0.5) / 10 },
+        trip = M.trip(p),
       }
     end
   end
@@ -651,6 +776,8 @@ local function create(body, params)
     if not (force.platforms[index] and force.platforms[index].valid) then created[index] = nil end
   end
   created[p.index] = planet
+  -- A reused index starts with no trip.
+  if space().trips then space().trips[p.index] = nil end
   return { code = "PLATFORM_CREATED", platform = { index = p.index, name = p.name, state = M.state_name(p), planet = planet },
     next = "craft a " .. M.STARTER_PACK .. " and launch it to this platform with launch_rocket" }
 end
@@ -967,6 +1094,13 @@ function M.on_platform_state_changed(event)
     local location = M.location(p)
     -- Its pack landed: the platform names its own location from now on.
     if location then space().created[p.index] = nil end
+    -- It departs: a new trip, whose losses count from here.
+    if state == "on_the_path" and define_name("space_platform_state", event.old_state) ~= "on_the_path" then
+      local trips = space().trips or {}
+      space().trips = trips
+      trips[p.index] = { departed_tick = game.tick, from = name_of(read(function() return p.last_visited_space_location end)),
+        lost = {} }
+    end
     if state == "waiting_at_station" and location then
       M.record("platform_arrived", { platform = platform_ref(p), location = location })
       storage.travel = storage.travel or {}
@@ -992,6 +1126,39 @@ function M.on_rocket_ready(silo)
     first("rocket_ready_tick", game.tick)
     M.record("rocket_ready", { silo = xy(silo.position) })
   end)
+end
+
+-- Trips: storage.space.trips[index] = {departed_tick, from, lost = {[name]
+-- = count}}, begun at each departure (on_platform_state_changed); an own
+-- entity destroyed on that platform's surface counts as lost on it.
+M.MAX_LOST_NAMES = 16
+function M.on_entity_died(event)
+  pcall(function()
+    local trips = storage.space and storage.space.trips
+    if not trips then return end
+    local e = event.entity
+    local p = e.surface.platform
+    local trip = p and trips[p.index]
+    if not (trip and own(e.force)) then return end
+    local lost = trip.lost
+    if lost[e.name] == nil then
+      local n = 0
+      for _ in pairs(lost) do n = n + 1 end
+      if n >= M.MAX_LOST_NAMES then trip.lost_other = (trip.lost_other or 0) + 1; return end
+    end
+    lost[e.name] = (lost[e.name] or 0) + 1
+  end)
+end
+
+-- A platform's last trip as readers see it: {departed_tick, from, lost:
+-- [{name, count}] by name, lost_other?}; nil before its first departure.
+function M.trip(p)
+  local trip = storage.space and storage.space.trips and storage.space.trips[p.index]
+  if not trip then return nil end
+  local lost = {}
+  for name, count in pairs(trip.lost) do lost[#lost + 1] = { name = name, count = count } end
+  table.sort(lost, function(a, b) return a.name < b.name end)
+  return { departed_tick = trip.departed_tick, from = trip.from, lost = lost, lost_other = trip.lost_other }
 end
 
 -- For event_state: the tick of the newest entry and the last few.

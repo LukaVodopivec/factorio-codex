@@ -387,6 +387,35 @@ describe("package auto-queue", () => {
       ["package:iron-a", "nauvis", 41]]);
   });
 
+  it("queues a package whose every step names a platform while that platform exists, whatever the body's trip", async () => {
+    const dir = runDir();
+    const dock = { ...furnaces("dock"), surface: "platform:1", steps: [
+      { action: "set_recipe", x: 1.5, y: 2.5, recipe: "metallic-asteroid-crushing", platform: "Dawn" },
+      { action: "set_requests", target: { platform: "Dawn" }, requests: [{ item: "thruster", min: 2 }] }] };
+    // A launch needs the body at its silo: a package with one is gated on the body as before.
+    const launch = { ...furnaces("launch"), steps: [{ action: "launch_rocket", silo: { x: 0, y: 0 }, platform: "Dawn", cargo: { thruster: 1 } }] };
+    writeLedger(dir, 1, [dock, launch]);
+    let exists = false;
+    const { call, bridge } = fakeBridge({
+      ping: () => ({ companion_exists: true, tick: 900, body: { state: "aboard_platform", surface_ref: "platform:1", bound_for: "vulcanus" } }),
+      platform_status: (params) => {
+        if (!exists) throw new ModError(`UNKNOWN_PLATFORM: no platform called ${params.platform}`);
+        return { tick: 900, platforms: [{ index: 1, name: "Dawn" }] };
+      },
+    });
+    const queue = createPackageQueue(() => dir, bridge);
+    await queue.tick();
+    expect(queuedPlans(call)).toEqual([]);
+    expect(readPackageQueue(dir)?.packages).toMatchObject({
+      dock: { status: "waiting_surface", reason: 'the package acts on platform "Dawn": UNKNOWN_PLATFORM: no platform called Dawn' },
+      launch: { status: "waiting_surface", reason: "the body is bound for vulcanus; the package is for nauvis" } });
+    exists = true;
+    await queue.tick();
+    expect(call).toHaveBeenCalledWith("platform_status", { platform: "Dawn", detail: "compact" });
+    expect(queuedPlans(call)).toEqual([expect.objectContaining({ source: "package:dock", surface: "platform:1" })]);
+    expect(readPackageQueue(dir)?.packages).toMatchObject({ dock: { status: "queued" }, launch: { status: "waiting_surface" } });
+  });
+
   it("holds a package for the departure planet while the body rides a pod or a trip is pending", async () => {
     const dir = runDir();
     writeLedger(dir, 1, [furnaces("iron-a")]);
@@ -816,6 +845,26 @@ describe("package verify", () => {
     expect(measures(call)).toHaveLength(1);
     // Nothing is queued again.
     expect(queuedPlans(call)).toHaveLength(1);
+  });
+
+  it("measures a metric that names a surface there, and the rest on the package's surface", async () => {
+    const dir = runDir();
+    const split = [{ item: "space-science-pack", per_min_at_least: 10, surface: "platform:1" }, { item: "iron-plate", per_min_at_least: 30 }];
+    writeLedger(dir, 1, [{ ...furnaces("iron-a"), verify: split }]);
+    const { call, bridge, clock } = game([], { factory_status: (params) => ({ tick: clock.tick,
+      measured: params.surface === "platform:1" ? [{ per_min: 11.5, met: true }] : [{ per_min: 31, met: true }] }) });
+    let ms = 0;
+    const queue = createPackageQueue(() => dir, bridge, () => new Date(Date.UTC(2026, 9, 8) + ms));
+    await queue.tick();
+    clock.plan = "completed"; clock.finished = 1000; clock.tick = 1000 + 7200; ms += 20_000;
+    await queue.tick();
+    await queue.tick();
+    expect(measures(call)).toEqual([
+      { sections: [], surface: "platform:1", measure: [{ item: "space-science-pack", per_min_at_least: 10 }] },
+      { sections: [], surface: "nauvis", measure: [{ item: "iron-plate", per_min_at_least: 30 }] }]);
+    expect(readPackageQueue(dir)?.packages["iron-a"]?.verification).toMatchObject({ status: "verified", metrics: [
+      { item: "space-science-pack", surface: "platform:1", measured: { per_min: 11.5 }, met: true },
+      { item: "iron-plate", measured: { per_min: 31 }, met: true }] });
   });
 
   it("reports package_unmet with the measured values when one metric falls short, a partial plan's NO_LINE row saying so", async () => {

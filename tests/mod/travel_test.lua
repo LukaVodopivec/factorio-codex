@@ -95,7 +95,7 @@ local runner = travel.action.runner
 local function start(step)
   travel.action.validate(step, 1)
   local task = travel.action.make_task(step)
-  task.id = 7
+  task.id, task.type = 7, "travel"
   runner.start(task)
   return task
 end
@@ -253,6 +253,123 @@ state = "in_transit"
 result = tick(task, travel.RIDE_TICKS + 5)
 check(result and result.outcome.code == "ARRIVAL_TIMEOUT" and storage.travel.active == nil,
   "a ride that does not arrive within 7,200 ticks fails ARRIVAL_TIMEOUT")
+-- Waiting aboard reads the platform at every poll: its facts (state, speed,
+-- location, thrusters, the stop it heads for, the deadline) are in the
+-- travel_phase event and in M.facts, which plan_status and active_task show.
+defines.entity_status = { working = 1, no_fuel = 2 }
+local thrusters = { { status = defines.entity_status.working } }
+alpha.surface = { valid = true, find_entities_filtered = function(filter)
+  assert(filter.type == "thruster" and filter.force == force)
+  return thrusters
+end }
+alpha.state = defines.space_platform_state.on_the_path
+alpha.space_location, alpha.space_connection, alpha.speed = nil, { name = "nauvis-vulcanus" }, 0.5
+records = { { station = "nauvis" }, { station = "vulcanus", wait_conditions = { { type = "time" } } } }
+schedule.current = 2
+state = "aboard_platform"
+task = start({ to = "vulcanus", max_wait_minutes = 30 })
+tick(task, 2)
+local facts = travel.facts(task)
+check(facts and facts.phase == "wait_arrival" and facts.to == "vulcanus" and facts.deadline_tick == task._deadline_tick
+  and facts.platform.state == "on_the_path" and facts.platform.speed == 0.5 and facts.platform.location == nil
+  and facts.platform.thrusters.count == 1 and facts.platform.thrusters.working == 1
+  and facts.platform.current_stop.station == "vulcanus" and facts.platform.current_stop.wait_conditions == 1,
+  "a waiting step keeps the platform's state, speed, location, thrusters and its deadline")
+local phase_row = storage.space.events[#storage.space.events]
+check(phase_row.kind == "travel_phase" and phase_row.phase == "wait_arrival" and phase_row.deadline_tick == task._deadline_tick
+  and phase_row.platform.thrusters.working == 1, "the travel_phase event carries the deadline and the platform's facts")
+check(travel.facts({ type = "walk_to" }) == nil, "only a travel step has travel facts")
+
+-- The only thruster is lost: a moment of stillness is no stall, standing
+-- still for STUCK_POLLS polls is PLATFORM_CANNOT_MOVE; a paused platform is
+-- held, never stuck.
+thrusters, alpha.speed = {}, 0
+check(tick(task, 60 * 4) == nil and task._stuck ~= nil, "a few still polls do not fail the wait")
+alpha.speed = 0.2
+tick(task, 61)
+check(task._stuck == nil, "moving again clears the stillness count")
+alpha.speed, alpha.paused = 0, true
+check(tick(task, 61 * (travel.STUCK_POLLS + 2)) == nil and task._stuck == nil, "a paused platform is held, not stuck")
+alpha.paused = false
+result = tick(task, 61 * (travel.STUCK_POLLS + 2))
+check(result and result.status == "failed" and result.outcome.code == "PLATFORM_CANNOT_MOVE"
+  and result.outcome.platform.thrusters.count == 0 and result.outcome.state == "aboard_platform"
+  and result.detail:find("between locations", 1, true), "no working thruster and standing still fails PLATFORM_CANNOT_MOVE")
+-- Thrusters without fuel between locations are as stuck; at a stop with
+-- idle thrusters the platform only waits for its wait conditions.
+thrusters = { { status = defines.entity_status.no_fuel } }
+task = start({ to = "vulcanus", max_wait_minutes = 30 })
+result = tick(task, 61 * (travel.STUCK_POLLS + 2))
+check(result and result.outcome.code == "PLATFORM_CANNOT_MOVE", "unfuelled thrusters between locations cannot move it")
+alpha.space_location, alpha.space_connection = { name = "nauvis" }, nil
+alpha.state = defines.space_platform_state.waiting_at_station
+task = start({ to = "vulcanus", max_wait_minutes = 30 })
+check(tick(task, 61 * (travel.STUCK_POLLS + 2)) == nil, "idle thrusters at a stop are no stall")
+thrusters = {}
+result = tick(task, 61 * (travel.STUCK_POLLS + 2))
+check(result and result.outcome.code == "PLATFORM_CANNOT_MOVE" and result.detail:find("at nauvis", 1, true),
+  "a platform with no thruster at all cannot leave its stop")
+
+-- The route changes during the wait: NO_ROUTE at the next poll.
+thrusters = { { status = defines.entity_status.working } }
+alpha.space_location, alpha.space_connection, alpha.speed = nil, { name = "nauvis-vulcanus" }, 0.4
+task = start({ to = "vulcanus", max_wait_minutes = 30 })
+tick(task, 2)
+records, schedule.current = { { station = "nauvis" } }, 1
+result = tick(task, 62)
+check(result and result.outcome.code == "NO_ROUTE" and result.outcome.platform.current_stop.station == "nauvis"
+  and result.outcome.state == "aboard_platform", "a destination dropped from the schedule ends the wait NO_ROUTE")
+
+-- A refused landing carries the platform's facts.
+records, schedule.current = { { station = "nauvis" }, { station = "vulcanus" } }, 2
+alpha.space_location, alpha.space_connection, alpha.speed = { name = "vulcanus" }, nil, 0
+alpha.state = defines.space_platform_state.waiting_at_station
+land_ok = false
+result = tick(start({ to = "vulcanus" }), 3)
+check(result and result.outcome.code == "LAND_REFUSED" and result.outcome.platform.location == "vulcanus"
+  and result.outcome.platform.state == "waiting_at_station" and result.outcome.platform.hub == true
+  and result.outcome.platform.paused == false and result.outcome.platform.current_stop.index == 2
+  and result.outcome.platform.current_stop.wait_conditions == 0
+  and result.detail:find("heads for is 2 (vulcanus) with 0 wait conditions", 1, true),
+  "LAND_REFUSED names the platform's state, location, paused, hub and the stop it heads for")
+land_ok = true
+
+-- Boarding a platform on its way here: board_wait waits for it (no launch
+-- meanwhile), boards once it is over the planet; a platform that turns away
+-- fails PLATFORM_NOT_IN_ORBIT.
+state, character.surface = "on_surface", nauvis_surface
+alpha.space_location, alpha.space_connection, alpha.speed = nil, { name = "nauvis-vulcanus" }, 0.4
+alpha.state = defines.space_platform_state.on_the_path
+records, schedule.current = { { station = "nauvis" }, { station = "vulcanus" } }, 1
+silo.rocket_silo_status = defines.rocket_silo_status.rocket_ready
+launches, launch_results = {}, {}
+task = start({ to = { platform = "alpha" }, max_wait_minutes = 5 })
+check(tick(task, 130) == nil and task._phase == "board_wait" and #launches == 0 and travel.facts(task).platform.location == nil,
+  "a platform heading for this planet is waited for in board_wait, with no launch")
+alpha.space_location, alpha.space_connection = { name = "nauvis" }, nil
+tick(task, 61)
+check(#launches == 1 and task._phase == "board", "once over the planet the ready rocket boards it")
+alpha.space_location, alpha.space_connection = nil, { name = "nauvis-vulcanus" }
+task = start({ to = { platform = "alpha" }, max_wait_minutes = 5 })
+tick(task, 2)
+schedule.current = 2
+result = tick(task, 62)
+check(result and result.outcome.code == "PLATFORM_NOT_IN_ORBIT" and result.outcome.platform.current_stop.station == "vulcanus",
+  "a platform that no longer heads here fails PLATFORM_NOT_IN_ORBIT with its facts")
+check(refused({ platform = "alpha" }, "PLATFORM_NOT_IN_ORBIT"), "a platform elsewhere heading elsewhere is refused at once")
+-- Waiting at another stop whose next record is this planet: it returns, so
+-- it is waited for; paused there, it goes nowhere and is refused.
+alpha.space_location, alpha.space_connection, alpha.speed = { name = "vulcanus" }, nil, 0
+alpha.state = defines.space_platform_state.waiting_at_station
+launches = {}
+task = start({ to = { platform = "alpha" }, max_wait_minutes = 5 })
+check(tick(task, 130) == nil and task._phase == "board_wait" and #launches == 0,
+  "a platform waiting at a stop before this planet is waited for in board_wait")
+alpha.paused = true
+check(refused({ platform = "alpha" }, "PLATFORM_NOT_IN_ORBIT"), "a paused platform at another stop is refused at once")
+alpha.paused = false
+silo.rocket_silo_status = defines.rocket_silo_status.building_rocket
+
 state = "dead"
 check(not pcall(runner.tick, start({ to = "vulcanus" })), "a body that is neither on a surface nor aboard fails with its state")
 

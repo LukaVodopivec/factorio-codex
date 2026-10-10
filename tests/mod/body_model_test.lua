@@ -93,8 +93,9 @@ local anchor = companion.anchor()
 check(anchor.surface == platform_surface and anchor.position.x == 0 and anchor.force == force,
   "reads anchor on the hub's surface and position aboard")
 local ok, err = pcall(companion.require_companion)
-check(not ok and tostring(err):match("^BODY_ABOARD: the body is aboard platform alpha %(platform:3%)"),
-  "a physical action aboard fails BODY_ABOARD naming the platform")
+check(not ok and tostring(err):match("^BODY_ABOARD: the body is aboard platform alpha %(platform:3%)")
+  and tostring(err):find("hand-craft (craft_items)", 1, true) and tostring(err):find("Remote platform tools", 1, true),
+  "a physical action aboard fails BODY_ABOARD naming the platform and stating that hand-crafting needs a planet")
 check(companion.require_present().state == "aboard_platform", "remote actions and reads still find the body aboard")
 local summary = companion.body_summary()
 check(summary.state == "aboard_platform" and summary.surface_ref == "platform:3" and summary.platform_name == "alpha",

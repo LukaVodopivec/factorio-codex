@@ -239,6 +239,62 @@ check(full.hub.free_slots == 50 and full.hub.inventory[1].item == "space-platfor
   "hub stock, trash and requests")
 check(full.damage.damaged_tiles == 2 and full.damage.total == 15 and full.surface == "platform:1"
   and full.platform.name == "alpha", "tile damage as a count and sum; the platform's surface is named")
+check(#full.thrusters.by_name == 1 and full.thrusters.by_name[1].name == "thruster" and full.thrusters.by_name[1].count == 2
+  and full.thrusters.by_name[1].working == 1 and full.turrets == nil and full.trip == nil
+  and full.damage.damaged_entities == 0, "thrusters by name; no turrets, trip or entity damage to report")
+
+-- Turrets and thrusters are counted by name whatever the entity rows' cap
+-- leaves out, with each ammo turret's ammo; damage carried now and the
+-- losses of the trip since the last departure.
+defines.inventory.turret_ammo = 4
+local function turret(name, kind, x, ammo, health)
+  local e = entity({ name = name, type = kind, position = { x = x, y = 1 }, status = ammo == false and defines.entity_status.no_power
+    or defines.entity_status.working, health = health or 400, max_health = 400 })
+  e.get_inventory = function(id) assert(id == defines.inventory.turret_ammo); return inventory(ammo or {}) end
+  return e
+end
+local saved_cap, saved_entities, saved_reads = platforms.MAX_ENTITIES, entities, tile_reads
+platforms.MAX_ENTITIES = 2
+entities = { hub, thruster_a, thruster_b, turret("gun-turret", "ammo-turret", -1, { ["firearm-magazine"] = 10 }, 250),
+  turret("gun-turret", "ammo-turret", 1, nil), turret("laser-turret", "electric-turret", 0, false) }
+local defended = jobs.run_now(platforms.status_job, { platform = "alpha", detail = "full" })
+platforms.MAX_ENTITIES, entities, tile_reads = saved_cap, saved_entities, saved_reads
+local gun, laser = defended.turrets[1], defended.turrets[2]
+check(#defended.entities == 2 and defended.omitted_entities == 3 and #defended.turrets == 2
+  and gun.name == "gun-turret" and gun.count == 2 and gun.working == 2 and gun.no_ammo == 1
+  and gun.ammo[1].item == "firearm-magazine" and gun.ammo[1].count == 10
+  and laser.name == "laser-turret" and laser.count == 1 and laser.working == 0 and laser.ammo == nil and laser.no_ammo == nil
+  and defended.thrusters.by_name[1].count == 2,
+  "every turret and thruster is counted by name past the entity cap, with ammo held and turrets without ammo")
+check(defended.damage.damaged_entities == 1 and defended.damage.entity_health_missing == 150,
+  "the damage entities carry now: how many and the health they miss")
+-- A departure starts a trip; own losses on that platform count on it.
+alpha.last_visited_space_location = nauvis
+alpha.state = defines.space_platform_state.on_the_path
+platforms.on_platform_state_changed({ platform = alpha, old_state = defines.space_platform_state.waiting_at_station })
+alpha.state = defines.space_platform_state.waiting_at_station
+local function died(name, surface, force)
+  local e = entity({ name = name, type = "ammo-turret", position = { x = 0, y = 0 }, surface = surface })
+  if force then e.force = force end
+  platforms.on_entity_died({ entity = e })
+end
+platform_surface.platform = alpha
+died("gun-turret", platform_surface)
+died("gun-turret", platform_surface)
+died("thruster", platform_surface)
+died("stone-furnace", mock.surface({ name = "nauvis" }))
+died("gun-turret", platform_surface, mock.force({ name = "enemy" }))
+local trip = platforms.trip(alpha)
+check(trip and trip.departed_tick == game.tick and trip.from == "nauvis" and #trip.lost == 2 and trip.lost[1].name == "gun-turret"
+  and trip.lost[1].count == 2 and trip.lost[2].name == "thruster" and trip.lost[2].count == 1
+  and jobs.run_now(platforms.status_job, { platform = "alpha" }).platforms[1].trip.lost[1].count == 2,
+  "a departure starts a trip; own entities lost on that platform since count by name (compact and full)")
+platforms.on_platform_state_changed({ platform = alpha, old_state = defines.space_platform_state.on_the_path })
+alpha.state = defines.space_platform_state.on_the_path
+platforms.on_platform_state_changed({ platform = alpha, old_state = defines.space_platform_state.waiting_at_station })
+alpha.state = defines.space_platform_state.waiting_at_station
+check(#platforms.trip(alpha).lost == 0, "the next departure starts a fresh trip")
+storage.space.events = {}
 
 -- Before its starter pack lands a platform has no hub: identity only.
 local bare = jobs.run_now(platforms.status_job, { platform = 2, detail = "full" })

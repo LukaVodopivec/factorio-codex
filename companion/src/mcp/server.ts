@@ -145,7 +145,7 @@ function bodyOf(ping: any): { body?: { state: string; surface_ref?: string; plat
  *  or in a cargo pod. */
 function bodyAway(ping: any): string | null {
   const body = bodyOf(ping).body;
-  if (body?.state === "aboard_platform") return `aboard platform ${body.platform_name ?? body.surface_ref}: physical actions fail with BODY_ABOARD until it lands; remote platform tools work`;
+  if (body?.state === "aboard_platform") return `aboard platform ${body.platform_name ?? body.surface_ref}: physical actions and hand-crafting fail with BODY_ABOARD until it lands; remote platform tools work`;
   if (body?.state === "in_transit") return `in a cargo pod (now over ${body.surface_ref})${body.bound_for ? `, bound for ${body.bound_for}` : ""}`;
   return null;
 }
@@ -468,7 +468,7 @@ export function registerMcpTools(
     }
     catch (error) { return failure(error); }
   });
-  tools.registerTool("describe_prototype", { description: `Describe up to 10 item, entity or recipe prototypes; auto tries entity, then item, then recipe. An entity gives energy (burner, electric or none), fuel_categories and fuel_inventory_size, mining_speed, crafting_speed and max_energy_usage (joules per tick; x 60 for watts); a resource its mining_time and mining_products; a fuel its fuel_value.${inserterRate}`, inputSchema: z.object({ names: z.array(z.string()).min(1).max(10), kind: z.enum(["auto", "entity", "recipe", "item"]).default("auto") }).strict() }, async (p) => rpc("describe_prototype", p));
+  tools.registerTool("describe_prototype", { description: `Describe up to 10 item, entity or recipe prototypes; auto tries entity, then item, then recipe. An entity gives energy (burner, electric or none), fuel_categories and fuel_inventory_size, mining_speed, crafting_speed and max_energy_usage (joules per tick; x 60 for watts); a resource its mining_time and mining_products; a fuel its fuel_value; an asteroid its max_health and resistances; an ammo item its category and damage per shot.${inserterRate}`, inputSchema: z.object({ names: z.array(z.string()).min(1).max(10), kind: z.enum(["auto", "entity", "recipe", "item"]).default("auto") }).strict() }, async (p) => rpc("describe_prototype", p));
   tools.registerTool("progression_status", { description: "Researched technologies, what can be researched now, and what each unlocks (modifiers: its effects other than recipes, as {type, modifier}), with science_count units of unit_time_s seconds each at lab speed 1; a trigger technology names its trigger and a hint at the tool that completes it.", inputSchema: z.object({}).strict() }, async () => rpc("progression_status"));
   tools.registerTool("can_place", { description: "Check up to 24 placements without building, anywhere charted: the body need not go there. Each result keeps the request and gives can_place, the reason, overlaps_batch (indexes of overlapping placements in the batch), and what an inserter would pick up from and drop onto. surface checks another planet or platform.", inputSchema: z.object({ placements: z.array(position.extend({ name: z.string(), direction: z.number().int().min(0).max(15).optional() }).strict()).min(1).max(24), surface: surfaceRef.optional() }).strict() }, async ({ placements, surface }) => {
     try { return result(normalizeCanPlace(await (await bridge()).call("can_place", toolPayloads.canPlace(placements, surface)), placements)); }
@@ -601,7 +601,7 @@ export function registerMcpTools(
   });
   const platformStatusSchema = z.object({ platform: platformSelector.optional(), detail: z.enum(["compact", "full"]).default("compact") }).strict()
     .refine((p) => p.detail === "compact" || p.platform !== undefined, { message: "detail full reads one platform: name it", path: ["platform"] });
-  tools.registerTool("platform_status", { description: "Your space platforms: state, location, trip (from, to, how far along), speed, paused, schedule, hub free slots and requests. detail full (one platform) adds its thrusters, foundation rows, hub contents and requests, entities with recipes and filters, and ghosts.missing: what its ghosts still need that the hub lacks, to send up by rocket.", inputSchema: platformStatusSchema }, async (p, extra) => {
+  tools.registerTool("platform_status", { description: "Your space platforms: state, location, trip (from, to, how far along), speed, paused, schedule, hub free slots and requests. detail full (one platform) adds its thrusters, foundation rows, hub contents and requests, entities with recipes and filters, and ghosts.missing: what its ghosts still need that the hub lacks, to send up by rocket; turrets (every one, by name, with ammo held and no_ammo) and thrusters.by_name are never capped; damage adds the health its entities miss; trip: own entities lost since its last departure.", inputSchema: platformStatusSchema }, async (p, extra) => {
     try {
       const value = normalizePlatformStatus(await (await bridge()).call("platform_status", platformStatusSchema.parse(p), extra?.signal));
       return result({ ...value, summary: platformStatusSummary(value) });
@@ -688,7 +688,7 @@ export function registerMcpTools(
     catch (error) { return failure(error); }
   });
   const routeInput = z.object(platformRouteFields).strict().superRefine(issue(routeIssue));
-  tools.registerTool("set_platform_route", { description: "Set a space platform's route at once, without the body: stops (locations, each with optional wait conditions in the game's own form, such as {\"type\":\"all_requests_satisfied\"}) replace its schedule; go_to heads for stop n; paused holds it still. Locations must be unlocked. Returns the schedule as kept; repeating it changes nothing.", inputSchema: routeInput }, async (p) => {
+  tools.registerTool("set_platform_route", { description: "Set a space platform's route at once, without the body: stops (locations, each with optional wait conditions in the game's own form, such as {\"type\":\"all_requests_satisfied\"}) replace its schedule; go_to heads for stop n and departs at once; paused holds it still. A stop with no wait conditions is left at once. Locations must be unlocked. Returns the schedule as kept; repeating it changes nothing.", inputSchema: routeInput }, async (p) => {
     try {
       return await remote("set_platform_route", routeInput.parse(p), (value) => {
         const changed = luaArray(value?.changed ?? []);
@@ -697,7 +697,7 @@ export function registerMcpTools(
     } catch (error) { return failure(error); }
   });
   const travelInput = z.object(travelFields).strict();
-  tools.registerTool("travel", { description: "Go to another surface as a player does: by rocket from a planet up to a platform in orbit (it waits for a ready rocket; via_silo picks the silo), or from aboard down to a planet: it waits aboard until the platform reaches that planet (max_wait_minutes, default 60; NO_ROUTE when the platform's schedule has no stop there). Queues one plan and returns; follow it with next_action's next_event. Route the platform first with set_platform_route.", inputSchema: travelInput }, async (p) => {
+  tools.registerTool("travel", { description: "Go to another surface as a player does: by rocket from a planet up to a platform in orbit (it waits for a ready rocket, and for a platform whose next stop is this planet; via_silo picks the silo), or from aboard down to a planet: it waits aboard until the platform reaches that planet (max_wait_minutes, default 60; NO_ROUTE when the platform's schedule has no stop there, also once the route drops it; PLATFORM_CANNOT_MOVE when the platform stands still with no working thruster). The step holds the FIFO while it waits; only platform-only packages run beside it. plan_status shows its phase, deadline_tick and the platform's state, speed, location and thrusters; LAND_REFUSED carries the platform's facts. Queues one plan and returns; follow it with next_action's next_event. Route the platform first with set_platform_route.", inputSchema: travelInput }, async (p) => {
     try {
       const queued: any = await (await bridge()).call("travel", travelInput.parse(p));
       return result({ ...queued, status: "queued", terminal: false,
@@ -766,6 +766,17 @@ export function registerMcpTools(
   tools.registerTool("start_research", { description: "Start researching an unlocked technology, or queue up to 7 technologies in order (technologies).", inputSchema: researchInput }, async (p) => {
     try { return await rpc("start_research", researchInput.parse(p)); }
     catch (error) { return failure(error); }
+  });
+  // The pilot's own plans only: the mod refuses a package, upkeep or ended
+  // plan (only_source), and logs the origin with the cancel.
+  const cancelPlanInput = z.object({ plan_id: z.number().int().positive() }).strict();
+  tools.registerTool("cancel_plan", { description: "Cancel one of your own plans (from queue_plan, run_plan or travel), queued or running: its running step stops now and the plans behind it move up. A rocket launch or landing already under way still finishes. Packages, upkeep and research are not yours to cancel (NOT_YOUR_PLAN); an ended plan is PLAN_NOT_PENDING.", inputSchema: cancelPlanInput }, async (p) => {
+    try {
+      const { plan_id } = cancelPlanInput.parse(p);
+      const value: any = await (await bridge()).call("cancel", { plan_id, only_source: "pilot", origin: `cancel_plan/${role}` });
+      return result({ ...value, plan_id, status: "completed", terminal: true,
+        summary: value?.cancelled === 1 ? `plan ${plan_id} cancelled` : `plan ${plan_id}: nothing cancelled`, next_action: null });
+    } catch (error) { return failure(error); }
   });
   tools.registerTool("stop", { description: "Emergency stop: cancels the active and queued plans and hand-crafting; upkeep stays off until a plan finishes, unless keep_upkeep is true (retained-work reconciliation). Supervisor only, never for gameplay or routine recovery.", inputSchema: z.object({ keep_upkeep: z.boolean().optional() }).strict() }, async (p) => rpc("cancel", { all: true, origin: `stop/${role}`, ...(p.keep_upkeep === true ? { keep_upkeep: true } : {}) }));
 }

@@ -2,7 +2,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, it, vi } from "vitest";
-import { DEFAULT_TASK_TIMEOUT_MS, type Bridge } from "../src/bridge.js";
+import { DEFAULT_TASK_TIMEOUT_MS, ModError, type Bridge } from "../src/bridge.js";
 import { connectStatus, MAP_SUMMARY_SECTIONS, normalizeObservation, READ_ONLY_TOOLS, registerMcpTools, result, toolPayloads, type SessionRole } from "../src/mcp/server.js";
 import { queuePlanSchema } from "../src/mcp/runPlan.js";
 import { FIFO_HUMAN_HINT, FIFO_IDLE_HINT, normalizeBeltJoins, normalizeFifo, normalizePhysicalRoute, normalizePlanDiagnostics, normalizeProductionRequirements, normalizePlacementSearch, planStatusSummary, queuedPlanSummary } from "../src/mcp/toolPayloads.js";
@@ -481,6 +481,28 @@ describe("registered MCP handler parity with the current Lua protocol", () => {
     }
   });
 
+  it("cancel_plan cancels only the pilot's own plan, naming its origin; the read-only surface has none", async () => {
+    const handlers: Record<string, (args: any) => Promise<any>> = {};
+    const call = vi.fn(async (_method: string, params: any) => {
+      if (params.plan_id === 8) throw new ModError("NOT_YOUR_PLAN: plan 8 is package:dock's, not pilot's");
+      return { cancelled: 1 };
+    });
+    registerMcpTools({ registerTool(name, _config, handler) { handlers[name] = handler; } },
+      async () => ({ call } as unknown as Bridge), validConfig, "full", () => null, "pilot");
+    const done = await handlers.cancel_plan!({ plan_id: 7 });
+    expect(call).toHaveBeenLastCalledWith("cancel", { plan_id: 7, only_source: "pilot", origin: "cancel_plan/pilot" });
+    expect(done.structuredContent).toMatchObject({ cancelled: 1, plan_id: 7, status: "completed", summary: "plan 7 cancelled" });
+    const refused = await handlers.cancel_plan!({ plan_id: 8 });
+    expect(refused.isError).toBe(true);
+    expect(refused.structuredContent).toMatchObject({ code: "NOT_YOUR_PLAN" });
+    expect((await handlers.cancel_plan!({ plan_id: 0 })).isError).toBe(true);
+    const readOnly: Record<string, unknown> = {};
+    registerMcpTools({ registerTool(name, _config, handler) { readOnly[name] = handler; } },
+      async () => ({ call } as unknown as Bridge), validConfig, "read-only", () => null, "strategist");
+    expect(readOnly).not.toHaveProperty("cancel_plan");
+    expect(READ_ONLY_TOOLS).not.toContain("cancel_plan");
+  });
+
   it("passes the abort signal to the build_plan owned by connect_entities", async () => {
     const handlers: Record<string, (args: any, extra?: { signal?: AbortSignal }) => Promise<any>> = {};
     const enqueueAndWait = vi.fn(async () => "cancelled");
@@ -623,7 +645,7 @@ describe("registered MCP handler parity with the current Lua protocol", () => {
     expect(queued).toEqual([[{ action: "build_layout", ...layout }], [{ action: "get_items", item: "iron-plate", count: 20 }],
       [{ action: "get_items", item: "iron-gear-wheel", count: 10, craft: false }]]);
     expect(schemas.get_items.safeParse({ item: "iron-plate", count: 1, craft: "no" }).success).toBe(false);
-    expect(Object.keys(handlers)).toHaveLength(53);
+    expect(Object.keys(handlers)).toHaveLength(54);
   });
 });
 

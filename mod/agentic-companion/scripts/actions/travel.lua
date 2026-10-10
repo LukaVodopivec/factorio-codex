@@ -12,23 +12,37 @@
 --                own silo on this surface, from the registry). Aboard, `to`
 --                must be an unlocked planet the platform is at or has a
 --                schedule record for (else NO_ROUTE at once).
---   board_wait   no silo has a rocket ready: wait for one (a silo serving
---                hub requests launches on its own), within max_wait_minutes
+--   board_wait   no silo has a rocket ready, or the platform is not over
+--                the planet yet but its next stop (platforms.heading_to)
+--                is this planet:
+--                wait for both (a silo serving hub requests launches on its
+--                own), within max_wait_minutes; a platform that no longer
+--                heads here fails PLATFORM_NOT_IN_ORBIT
 --   board        launch_rocket's engine with the body: walk to the silo and
 --                press the button with the character aboard the rocket
 --   wait_arrival aboard, until the platform reaches the destination: the
 --                platform state event (waiting_at_station) marks it, within
---                max_wait_minutes; the body stays aboard on a timeout
---   land         LuaPlayer.land_on_planet
+--                max_wait_minutes; the body stays aboard on a timeout. Each
+--                poll reads the platform again: a schedule with no stop at
+--                the destination any more fails NO_ROUTE; a platform that
+--                is not paused, stands still away from the destination and
+--                has no working thruster (none at all, or none working
+--                between locations) for STUCK_POLLS polls fails
+--                PLATFORM_CANNOT_MOVE
+--   land         LuaPlayer.land_on_planet; a refusal (LAND_REFUSED) carries
+--                the platform's facts
 --   ride         in the rocket or the landing pod, until the body is aboard
 --                that platform or standing on that planet (7,200 ticks)
 -- A launch or landing that started finishes natively even when the step is
 -- cancelled. The step keeps the FIFO meanwhile (the body is busy): plans
 -- behind it wait with it, which is why the pilot uses the direct remote
--- tools while aboard. Each phase is in next_event (travel_phase); the
--- surface change itself is body_surface_changed.
+-- tools while aboard. Each phase is in next_event (travel_phase, with the
+-- deadline tick and the platform's facts); the surface change itself is
+-- body_surface_changed. A waiting phase keeps the platform's facts of its
+-- last poll (M.facts), which plan_status and observe_local's active_task
+-- show.
 -- Result: {arrived, from, to, phases:[{phase, start_tick, end_tick}],
--- position, state, code?, waited_ticks}.
+-- position, state, code?, waited_ticks, platform?}.
 local companion = require("scripts.companion")
 local platforms = require("scripts.platforms")
 local rocket = require("scripts.actions.rocket")
@@ -40,6 +54,12 @@ M.RIDE_TICKS = 7200
 M.POLL_TICKS = 60
 M.DEFAULT_WAIT_MINUTES = 60
 M.MAX_WAIT_MINUTES = 240
+-- Polls a platform may stand still away from the destination with no
+-- working thruster before the wait fails PLATFORM_CANNOT_MOVE (a moment of
+-- stillness, such as a departure, is no stall).
+M.STUCK_POLLS = 10
+-- Slower than this (km a tick) a platform stands still.
+local STOPPED_SPEED = 0.001
 local WAITING = { board_wait = true, wait_arrival = true, ride = true }
 local STARTER_STATES = { waiting_for_starter_pack = true, starter_pack_requested = true, starter_pack_on_the_way = true }
 
@@ -76,14 +96,32 @@ local function phase_limit(task, phase)
   if phase == "ride" then return M.RIDE_TICKS end
 end
 
+-- The platform the step boards or rides, while it exists (nil also while
+-- the body is absent: a read never fails the step).
+local function platform_of(task)
+  if not task._platform then return nil end
+  local ok, p = pcall(function() return platforms.resolve(companion.require_present().force, task._platform) end)
+  return ok and p or nil
+end
+
+-- The platform's facts as the step reads them (platforms.trip_facts), kept
+-- on the task for plan_status and active_task.
+local function read_facts(task, p, with_thrusters)
+  task._facts, task._facts_tick = platforms.trip_facts(p, with_thrusters), game.tick
+  return task._facts
+end
+
 local function enter(task, phase)
   local last = task._phases[#task._phases]
   if last and not last.end_tick then last.end_tick = game.tick end
   task._phases[#task._phases + 1] = { phase = phase, start_tick = game.tick }
-  task._phase, task._phase_tick, task._next_check = phase, game.tick, nil
+  task._phase, task._phase_tick, task._next_check, task._stuck = phase, game.tick, nil, nil
   local limit = phase_limit(task, phase)
   task._deadline_tick = limit and game.tick + limit or nil
-  platforms.record("travel_phase", { phase = phase, from = task._from, to = task._to })
+  local p = platform_of(task)
+  local facts = p and read_facts(task, p, phase == "wait_arrival") or nil
+  platforms.record("travel_phase", { phase = phase, from = task._from, to = task._to, deadline_tick = task._deadline_tick,
+    platform = facts })
 end
 
 local function expired(task)
@@ -98,12 +136,13 @@ local function waited(task)
   return ticks
 end
 
-local function outcome(task, code, arrived)
+local function outcome(task, code, arrived, facts)
   local last = task._phases and task._phases[#task._phases]
   if last and not last.end_tick then last.end_tick = game.tick end
   local body = companion.body()
   return { code = code, arrived = arrived, from = task._from, to = task._to, phases = task._phases or {},
-    position = body.position, state = body.state, surface = body.surface_ref, waited_ticks = waited(task) }
+    position = body.position, state = body.state, surface = body.surface_ref, waited_ticks = waited(task),
+    platform = facts }
 end
 
 -- A launch or landing this step started and still owns.
@@ -112,10 +151,11 @@ local function release(task)
   if active and active.task_id == task.id then storage.travel.active = nil end
 end
 
-local function fail(task, code, detail)
+-- facts: the platform's facts, in the outcome as platform.
+local function fail(task, code, detail, facts)
   release(task)
   task._launched = nil
-  return { status = "failed", detail = code .. ": " .. detail, outcome = outcome(task, code, false) }
+  return { status = "failed", detail = code .. ": " .. detail, outcome = outcome(task, code, false, facts) }
 end
 
 local function arrived(task)
@@ -162,9 +202,11 @@ local function resolve_board(task, body, p)
     return fail(task, "PLATFORM_NOT_IN_ORBIT", "platform " .. p.name .. " has no hub yet: launch its starter pack first")
   end
   local location = platforms.location(p)
-  if not planet or location ~= planet then
-    return fail(task, "PLATFORM_NOT_IN_ORBIT", string.format("platform %s is %s, not over %s", p.name,
-      location and ("at " .. location) or "travelling", tostring(planet)))
+  -- A platform whose next stop is here (on its way, or waiting at a stop
+  -- before it) is waited for in board_wait.
+  if not planet or location ~= planet and not platforms.heading_to(p, planet) then
+    return fail(task, "PLATFORM_NOT_IN_ORBIT", string.format("platform %s is %s, not over %s, and its next stop"
+      .. " is not %s", p.name, location and ("at " .. location) or "travelling", tostring(planet), tostring(planet)))
   end
   local any, carrier = false, false
   for _, silo in ipairs(silos(c, task)) do
@@ -176,7 +218,7 @@ local function resolve_board(task, body, p)
       task.via_silo.y) or "no own rocket silo on this surface")
   end
   if not carrier then return fail(task, "SILO_NOT_FOR_PLATFORMS", "no silo here launches rockets to space platforms") end
-  task._platform = p.index
+  task._platform, task._planet = p.index, planet
   enter(task, "board_wait")
 end
 
@@ -195,12 +237,7 @@ local function resolve_land(task, body)
   if platforms.location(p) == task._to and not read(function() return p.space_connection end) then
     return enter(task, "land")
   end
-  local scheduled = false
-  local schedule = read(function() return p.get_schedule() end)
-  for _, record in ipairs(schedule and read(function() return schedule.get_records() end) or {}) do
-    if record.station == task._to then scheduled = true end
-  end
-  if not scheduled then
+  if not platforms.scheduled(p, task._to) then
     return fail(task, "NO_ROUTE", string.format("platform %s's schedule has no stop at %s: add it with set_platform_route",
       p.name, task._to))
   end
@@ -242,6 +279,23 @@ function Runner.tick(task)
     if task._next_check and game.tick < task._next_check and not expired(task) then return nil end
     task._next_check = game.tick + M.POLL_TICKS
     local c = companion.require_companion()
+    -- The rocket reaches the platform only over this planet; while its next
+    -- stop is here it is waited for.
+    local p = platform_of(task)
+    if not p then return fail(task, "UNKNOWN_PLATFORM", "the platform to board is gone") end
+    local planet = task._planet or read(function() return c.surface.planet.name end)
+    if platforms.location(p) ~= planet then
+      local facts = read_facts(task, p, false)
+      if not platforms.heading_to(p, planet) then
+        return fail(task, "PLATFORM_NOT_IN_ORBIT", string.format("platform %s's next stop is no longer %s (%s)", p.name,
+          tostring(planet), facts.location and ("at " .. facts.location) or "travelling"), facts)
+      end
+      if expired(task) then
+        return fail(task, "PLATFORM_NOT_IN_ORBIT", string.format("platform %s did not reach orbit over %s within %d minutes",
+          p.name, tostring(planet), wait_ticks(task) / 3600), facts)
+      end
+      return nil
+    end
     local silo = ready_silo(c, task)
     if not silo then
       if expired(task) then
@@ -283,20 +337,46 @@ function Runner.tick(task)
     task._next_check = game.tick + M.POLL_TICKS
     local p = platforms.resolve(companion.require_present().force, task._platform)
     if not p then return fail(task, "UNKNOWN_PLATFORM", "the platform the body is aboard is gone") end
+    local facts = read_facts(task, p, true)
+    local away = facts.location ~= task._to
+    -- The route changed: the destination is no stop any more.
+    if away and not platforms.scheduled(p, task._to) then
+      return fail(task, "NO_ROUTE", string.format("platform %s's schedule has no stop at %s any more; the body stays aboard",
+        p.name, task._to), facts)
+    end
+    -- Standing still with no thrust to leave: no working thruster (none at
+    -- all, or none working between locations). A paused platform is held.
+    local thrusters = facts.thrusters
+    local stuck = away and facts.paused ~= true and (facts.speed or 0) < STOPPED_SPEED and thrusters ~= nil
+      and thrusters.working == 0 and (thrusters.count == 0 or facts.location == nil)
+    task._stuck = stuck and (task._stuck or 0) + 1 or nil
+    if stuck and task._stuck >= M.STUCK_POLLS then
+      return fail(task, "PLATFORM_CANNOT_MOVE", string.format("platform %s stands still %s with %d thrusters, none working:"
+        .. " it cannot reach %s; the body stays aboard", p.name, facts.location and ("at " .. facts.location)
+        or "between locations", thrusters.count, task._to), facts)
+    end
     if expired(task) then
       return fail(task, "ARRIVAL_TIMEOUT", string.format("platform %s did not reach %s within %d minutes; the body stays aboard",
-        p.name, task._to, wait_ticks(task) / 3600))
+        p.name, task._to, wait_ticks(task) / 3600), facts)
     end
     return nil
   elseif phase == "land" then
     local body = companion.body()
     if body.state ~= "aboard_platform" or not body.platform or body.platform.index ~= task._platform then
-      return fail(task, "LAND_REFUSED", "the body is no longer aboard the platform (" .. body.state .. ")")
+      local p = platform_of(task)
+      return fail(task, "LAND_REFUSED", "the body is no longer aboard the platform (" .. body.state .. ")",
+        p and platforms.trip_facts(p, false) or nil)
     end
     -- It may have left already (a short stop): wait for the next arrival.
     if platforms.location(body.platform) ~= task._to then return enter(task, "wait_arrival") end
     if not body.player.land_on_planet() then
-      return fail(task, "LAND_REFUSED", "the game refused the landing on " .. task._to)
+      -- What the platform showed as the game refused: facts, no cause guessed.
+      local facts = platforms.trip_facts(body.platform, false)
+      local stop = facts.current_stop
+      return fail(task, "LAND_REFUSED", string.format("the game refused the landing on %s (platform %s %s at %s, paused %s,"
+        .. " %s; %s)", task._to, facts.name, tostring(facts.state), tostring(facts.location), tostring(facts.paused == true),
+        facts.hub and "hub present" or "no hub", stop and string.format("the stop it heads for is %d (%s) with %d wait"
+        .. " conditions", stop.index or 0, tostring(stop.station), stop.wait_conditions) or "no stop it heads for"), facts)
     end
     task._launched = true
     storage.travel.active = { task_id = task.id, to = task._to, since_tick = game.tick }
@@ -329,6 +409,15 @@ end
 -- Waiting for a rocket, an arrival or the end of a ride is not a stall.
 function Runner.waiting(task)
   return WAITING[task._phase] == true
+end
+
+-- A running travel step as plan_status and active_task show it: its phase,
+-- destination, deadline tick, and the platform's facts of its last read
+-- (read_tick); nil for any other task.
+function M.facts(task)
+  if type(task) ~= "table" or task.type ~= "travel" or not task._phase then return nil end
+  return { phase = task._phase, to = task._to, deadline_tick = task._deadline_tick, platform = task._facts,
+    read_tick = task._facts and task._facts_tick or nil }
 end
 
 -- A cancel stops the waiting; a launch or landing already under way

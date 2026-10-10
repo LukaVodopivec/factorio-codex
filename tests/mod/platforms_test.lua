@@ -286,6 +286,7 @@ check(#created_calls == 1 and created_calls[1].planet == "nauvis" and created_ca
   and made.platform.planet == "nauvis" and storage.space.created[9] == "nauvis" and storage.space.created[77] == nil,
   "create_platform makes the platform over the body's planet and remembers it while the pack is due")
 check(platforms.planet(own.platforms[9]) == "nauvis", "a waiting platform's planet is the one it was made over")
+check(storage.milestones.platform_created_tick == game.tick, "the first platform made is a milestone")
 check(not pcall(platforms.create_action.validate, { name = "" }, 1) and not pcall(platforms.create_action.validate,
   { name = "x", quality = "shiny" }, 1) and platforms.create_action.remote({}), "plan step: validated at queue time, remote")
 local ok_rare, rare = pcall(platforms.create_platform, { name = "delta", quality = "rare" })
@@ -314,8 +315,20 @@ check(event.kind == "rocket_launch_ordered" and event.silo.x == 10.5 and event.p
   "an ordered launch names its silo and destination platform, read while the pod is still attached")
 check(storage.milestones.rocket_launch_ordered_tick == 100 and storage.milestones.rocket_launched_tick == nil,
   "the first ordered launch is a milestone; the rocket has not left yet")
+game.tick = 190
+-- The starter pack's landing is no trip's end: no arrived milestone.
+platforms.on_platform_state_changed({ platform = alpha, old_state = defines.space_platform_state.starter_pack_on_the_way })
+check(storage.milestones.arrived_tick == nil and storage.space.events[3].kind == "platform_arrived",
+  "a platform that got its starter pack is waiting at a station, but no trip arrived")
+table.remove(storage.space.events, 3); table.remove(storage.space.events, 2)
 game.tick = 200
 platforms.on_platform_state_changed({ platform = alpha, old_state = defines.space_platform_state.on_the_path })
+check(storage.milestones.arrived_tick == 200, "the first trip's arrival is a milestone")
+platforms.milestone("boarded_tick")
+game.tick = 201
+platforms.milestone("boarded_tick")
+check(storage.milestones.boarded_tick == 200, "a milestone keeps its first tick")
+game.tick = 200
 event = storage.space.events[2]
 check(event.kind == "platform_state_changed" and event.old == "on_the_path" and event.new == "waiting_at_station",
   "a platform state change names old and new")

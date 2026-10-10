@@ -93,6 +93,17 @@ check(a.transitions[1].status == "queued" and a.transitions[2].status == "runnin
   and b.after_plan_id == first.plan_id,
   "terminal plan status retains exact game-tick queued-through-completed milestones even when first polled late")
 local transition_count = #b.transitions
+-- The package bridge's compact poll: only plan_id, source, status and
+-- finished_tick (with the read's tick), no outcomes or observation.
+do
+  local compact = tasks.plan_status({ plan_id = 1, compact = true })
+  local keys = 0
+  for _ in pairs(compact) do keys = keys + 1 end
+  check(compact.plan_id == 1 and compact.status == "completed" and compact.source == a.source
+    and compact.finished_tick == a.finished_tick and compact.source_tick == game.tick and compact.outcomes == nil
+    and compact.observation == nil and compact.transitions == nil and keys <= 5,
+    "a compact plan_status carries only plan_id, source, status, finished_tick and source_tick")
+end
 tasks.plan_status({ plan_id = 2 }); tasks.plan_status({ plan_id = 2 })
 check(#tasks.plan_status({ plan_id = 2 }).transitions == transition_count,
   "plan polling does not fabricate lifecycle transitions")

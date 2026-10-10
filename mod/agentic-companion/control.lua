@@ -186,7 +186,12 @@ rpc.register("progression_status", read(research.progression_status))
 rpc.register("enqueue", tasks.enqueue)
 rpc.register("get_task", read(tasks.get))
 rpc.register("queue_plan", tasks.queue_plan)
-rpc.register("plan_status", read(tasks.plan_status))
+-- A compact read (the package bridge's polls) carries no FIFO block either.
+local full_plan_status = read(tasks.plan_status)
+rpc.register("plan_status", function(params)
+  if type(params) == "table" and params.compact == true then return tasks.plan_status(params) end
+  return full_plan_status(params)
+end)
 rpc.register("cancel", tasks.cancel)
 rpc.register("factory_status", read(factory_status.factory_status))
 rpc.register("activity_log", read(tasks.activity_log))
@@ -225,7 +230,10 @@ local function move_body(event)
   if change.changed then
     tasks.on_body_surface_changed(change)
     platforms.record("body_surface_changed", { from = change.from, to = change.to, state = change.state })
+    if change.state == "aboard_platform" then platforms.milestone("boarded_tick") end
   end
+  -- Standing on a surface it did not stand on before: after a trip, landed.
+  if change.arrived and change.state == "on_surface" then platforms.milestone("landed_tick") end
   if change.arrived then
     companion.enforce_peaceful_world({ surface_index = change.surface_index })
     chores.on_arrival(change)

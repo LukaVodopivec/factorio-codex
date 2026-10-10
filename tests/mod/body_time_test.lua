@@ -175,6 +175,30 @@ do
   check(tasks.body_time().state == "idle", "with nothing queued the body is idle again")
 end
 
+-- traveling: a travel step waiting for a rocket, for its platform to
+-- arrive, or riding, is its own state, never pilot or package work.
+do
+  storage.tasks.body_time = { since_tick = game.tick, state = "idle", state_since = game.tick, ticks = {}, gaps = {},
+    phases = {}, tiles = 0 }
+  tasks.queue_plan({ steps = { { action = "walk_to", x = 50, y = 0 } } })
+  ticks(3)
+  -- A travel step that keeps waiting (its runner here never ends).
+  tasks.register_action("travel", { runner = { start = function() end, tick = function() return nil end },
+    make_task = function() return {} end })
+  local walk = storage.tasks.active.current_task
+  storage.tasks.active.current_task = { type = "travel", _phase = "wait_arrival" }
+  ticks(5)
+  storage.tasks.active.current_task = { type = "travel", _phase = "land" }
+  ticks(2)
+  storage.tasks.active.current_task = walk
+  tasks.cancel({ all = true, origin = "test/body-time" })
+  ticks(1)
+  local time = tasks.body_time()
+  check(time.ticks.traveling == 5 and time.ticks.pilot == 2 + 2 and time.state == "idle",
+    "a travel step's waiting phases count as traveling; boarding or landing stays pilot work ("
+      .. tostring(time.ticks.traveling) .. ", " .. tostring(time.ticks.pilot) .. ")")
+end
+
 -- Body phases: each pilot or package tick is one phase, walk first (tiles
 -- add up the distance moved), then mine, smelt_wait, craft_wait, other; no
 -- upkeep, hold or idle tick counts. They add up to the pilot and package ticks.
@@ -214,6 +238,21 @@ do
   local snapshot = tasks.body_time()
   snapshot.phases.walk = 0
   check(storage.tasks.body_time.phases.walk == 6, "the read copies the phases")
+end
+
+-- next_event's idle_since_tick: the end of the last pilot work. The mod's
+-- own upkeep never moves it; a human hold restarts it.
+do
+  busy("pilot", 3)
+  local ended = game.tick
+  check(storage.tasks.last_pilot_finished_tick == ended, "a pilot plan's end is the last pilot work's end")
+  ticks(2)
+  busy("upkeep", 3)
+  check(storage.tasks.last_pilot_finished_tick == ended, "an upkeep plan's end leaves it alone")
+  companion.on_human_input({ player_index = 1, input_name = "agentic-companion-mine" })
+  ticks(2)
+  check(storage.tasks.last_pilot_finished_tick == game.tick, "a human hold keeps restarting it")
+  ticks(320)
 end
 
 -- A save without the counter (before state.init made it) reads nil and is not accounted.

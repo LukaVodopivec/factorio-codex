@@ -245,6 +245,8 @@ do
   finished("logistics", "enemy", 700)
   finished("logistics", "player", 800)
   storage.milestones.rocket_launched_tick = 1200
+  storage.milestones.platform_created_tick, storage.milestones.boarded_tick = 1300, 1400
+  storage.milestones.arrived_tick, storage.milestones.landed_tick = 1500, 1600
   storage.tasks.holds = { count = 2, total_ticks = 40, recent = { { start_tick = 10, end_tick = 50, cause = "mine" },
     { start_tick = 17990, cause = "gui" } } }
   storage.tasks.human_hold = { since = 17990 }
@@ -254,6 +256,8 @@ do
   check(m.research.automation == 600 and m.research.logistics == 800 and m.rocket_launched_tick == 1200
     and m.rocket_ready_tick == nil and m ~= storage.milestones and m.research ~= storage.milestones.research,
     "the snapshot copies the milestones: each technology's first finish by the body's force, the rocket ticks")
+  check(m.platform_created_tick == 1300 and m.boarded_tick == 1400 and m.arrived_tick == 1500 and m.landed_tick == 1600,
+    "the snapshot copies the space milestones: platform created, boarded, arrived, landed")
   local holds = sampled.holds
   check(holds.count == 2 and holds.total_ticks == 40 + sampled.tick - 17990 and holds.recent[1].cause == "mine"
     and holds.recent[2].end_tick == nil and holds.recent[2] ~= storage.tasks.holds.recent[2],

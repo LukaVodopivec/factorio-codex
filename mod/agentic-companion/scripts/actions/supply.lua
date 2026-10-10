@@ -28,6 +28,7 @@ local craft = require("scripts.actions.craft")
 local factory_activity = require("scripts.factory_activity")
 local registry = require("scripts.registry")
 local autonomy = require("scripts.autonomy")
+local items = require("scripts.items")
 
 local M = {}
 
@@ -200,16 +201,45 @@ end
 
 -- The registry's stock (the maintenance cursor's last reads) picks the few
 -- nearest holders that held the item; only those are read live. None held
--- any: no holder is walked.
+-- any: no holder is walked. When none of the few holds it now (the
+-- registry's read is older), they count as tried and nil, true says the
+-- next few are read at the next scan, until the registry names none.
 local HOLDERS_READ = 4
+local function holder_key(position) return string.format("%.2f,%.2f", position.x, position.y) end
 local function nearest_holder(c, task, item, tried)
   local ok_totals, totals = pcall(registry.stock_totals, { item })
   if ok_totals and (totals[item] or 0) == 0 then return nil end
-  local function skip(entry) return tried[string.format("%.2f,%.2f", entry.position.x, entry.position.y)] end
+  local function skip(entry) return tried[holder_key(entry.position)] end
   local ok, entries = pcall(registry.holders_with, item, c.position, HOLDERS_READ, skip)
   local holders = {}
   for _, entry in ipairs(ok and entries or {}) do holders[#holders + 1] = entry.entity end
-  return nearest_of(c, task, item, tried, holders, true)
+  local found = nearest_of(c, task, item, tried, holders, true)
+  if found then return found end
+  for _, entity in ipairs(holders) do
+    if entity.valid then tried[holder_key(entity.position)] = true end
+  end
+  if #holders >= HOLDERS_READ then return nil, true end
+  return nil
+end
+
+-- Up to HOLDERS_READ own holders the registry last read holding the item
+-- that this frame has not tried, nearest first, each {kind, x, y, count}
+-- with its live count (a shortfall names them: a later get_items may take
+-- them); one inventory read each.
+local function untried_holders(c, item, tried)
+  local function skip(entry) return tried[holder_key(entry.position)] end
+  local ok, entries = pcall(registry.holders_with, item, c.position, HOLDERS_READ, skip)
+  local rows = {}
+  for _, entry in ipairs(ok and entries or {}) do
+    local e = entry.entity
+    if e and e.valid then
+      local count = held(e, item)
+      if count > 0 then
+        rows[#rows + 1] = { kind = registry.holder_kind(e), x = e.position.x, y = e.position.y, count = count }
+      end
+    end
+  end
+  return rows
 end
 
 -- A square cell at offset (x, y) from the body: its side and the squared
@@ -548,6 +578,39 @@ local function idle_furnace(e)
   return ok and source ~= nil and not e.is_crafting() and source.get_item_count() == 0
 end
 
+-- A furnace an own inserter or loader serves belongs to a line, even while
+-- that line is starved and the furnace stands idle: the body's ore would
+-- feed the line and its plates leave on the line's belt. One query around
+-- the furnace (an inserter's reach past its box, at most SERVED_LIMIT
+-- inserters and loaders) finds the inserter whose pickup or drop target, or
+-- the loader whose container, it is: {name, x, y}, or nil. Each search
+-- checks at most SERVED_CHECKS furnaces a tick.
+local SERVED_REACH = 3
+local SERVED_LIMIT = 24
+local SERVED_CHECKS = 8
+local SERVER_TYPES = { "inserter", "loader", "loader-1x1" }
+local function served_by(c, furnace)
+  local half = 1
+  pcall(function()
+    local box = furnace.bounding_box
+    half = math.max(box.right_bottom.x - box.left_top.x, box.right_bottom.y - box.left_top.y) / 2
+  end)
+  local ok, found = pcall(c.surface.find_entities_filtered, { position = furnace.position,
+    radius = half * math.sqrt(2) + SERVED_REACH, force = c.force, type = SERVER_TYPES, limit = SERVED_LIMIT })
+  for _, e in ipairs(ok and type(found) == "table" and found or {}) do
+    local ok_hit, hit = pcall(function()
+      if not e.valid then return false end
+      if e.type == "inserter" then return e.drop_target == furnace or e.pickup_target == furnace end
+      return e.loader_container == furnace
+    end)
+    if ok_hit and hit then return { name = e.name, x = e.position.x, y = e.position.y } end
+  end
+end
+M.served_by = served_by
+local function served_reason(server)
+  return string.format("an own %s at (%.1f, %.1f) feeds or empties it", server.name, server.x, server.y)
+end
+
 local UNOBTAINABLE_SMELT_SECONDS = 180
 function M.unobtainable(c, wants)
   local pool, furnaces, smelt_seconds = {}, nil, 0
@@ -558,13 +621,26 @@ function M.unobtainable(c, wants)
     end
     return pool[name]
   end
+  -- An idle furnace an own inserter or loader serves is a line's (smelter
+  -- passes it over): the first SERVED_CHECKS idle furnaces of a category
+  -- still without a free one are checked; past them a furnace counts
+  -- unchecked, so the read stays a bounded number of queries.
   local function furnace_for(category)
     if not furnaces then
       furnaces = {}
+      local checks = 0
       local ok, list = pcall(registry.machines, { "furnace" })
       for _, entry in ipairs(ok and type(list) == "table" and list or {}) do
         pcall(function()
           if entry.entity.valid and idle_furnace(entry.entity) then
+            local wanted = false
+            for name in pairs(entry.entity.prototype.crafting_categories) do
+              if not furnaces[name] then wanted = true end
+            end
+            if wanted and checks < SERVED_CHECKS then
+              checks = checks + 1
+              if served_by(c, entry.entity) then return end
+            end
             local ok_speed, speed = pcall(function() return entry.entity.prototype.get_crafting_speed() end)
             speed = ok_speed and tonumber(speed) or 1
             for name in pairs(entry.entity.prototype.crafting_categories) do
@@ -620,7 +696,8 @@ function M.unobtainable(c, wants)
           end
           reasons[#reasons + 1] = "not smelted: short of " .. ore.name
         else
-          reasons[#reasons + 1] = "no idle own furnace smelts it (" .. tostring(smelt.category) .. ")"
+          reasons[#reasons + 1] = "no idle own furnace smelts it (" .. tostring(smelt.category)
+            .. "; one an own inserter or loader serves is a line's)"
         end
       end
     end
@@ -757,29 +834,65 @@ local function inventory_of(entity, id)
 end
 
 -- Nearest own furnace that smelts the recipe's category, is idle
--- (idle_furnace) and whose result holds nothing or the item; or `own`, the
--- furnace the frame loaded last, while its source holds only that ore.
--- Furnaces in avoid (by unit number) were seen fed or emptied by a line.
-local function smelter(c, recipe, ore, item, own, avoid)
+-- (idle_furnace), whose result holds nothing or the item and that no own
+-- inserter or loader serves (served_by); or `own`, the furnace the frame
+-- loaded last, while its source holds only that ore. Furnaces in avoid (by
+-- unit number) were seen fed or emptied by a line. served keeps each
+-- furnace's check across ticks (by position): at most SERVED_CHECKS new ones
+-- a call, then nil, true (the caller resumes next tick). rejected gets the
+-- nearest MAX_REJECTED furnaces of the category passed over, each
+-- {name, x, y, reason}.
+local MAX_REJECTED = 4
+local function smelter(c, recipe, ore, item, own, avoid, served, rejected)
   local ok, furnaces = pcall(registry.machines, { "furnace" })
-  local best, best_d
+  local rows = {}
   for _, entry in ipairs(ok and type(furnaces) == "table" and furnaces or {}) do
     local e = entry.entity
-    local ok_fit, fits = pcall(function()
-      if not (e and e.valid and e.prototype.crafting_categories[recipe.category]) then return false end
-      if avoid and avoid[e.unit_number] then return false end
+    local ok_fit, fits, why = pcall(function()
+      if not (e and e.valid and e.prototype.crafting_categories[recipe.category]) then return nil end
+      if avoid and avoid[e.unit_number] then return false, "a line fed or emptied the load the body put in" end
       local source, result = inventory_of(e, "furnace_source"), inventory_of(e, "furnace_result")
-      if not (source and result) then return false end
-      if result.get_item_count() ~= result.get_item_count(item) then return false end
-      if own and e == own then return source.get_item_count() == source.get_item_count(ore) end
-      return idle_furnace(e)
+      if not (source and result) then return nil end
+      if result.get_item_count() ~= result.get_item_count(item) then return false, "its result holds another item" end
+      if own and e == own then
+        if source.get_item_count() == source.get_item_count(ore) then return true end
+        return false, "its source holds another ore"
+      end
+      if not idle_furnace(e) then return false, "it is smelting or holds ore" end
+      return true
     end)
-    if ok_fit and fits then
-      local d = dist_sq(c.position, e.position)
-      if not best or d < best_d then best, best_d = e, d end
+    if ok_fit and fits ~= nil then
+      rows[#rows + 1] = { e = e, d = dist_sq(c.position, e.position), fits = fits, why = why,
+        key = string.format("%.2f,%.2f", e.position.x, e.position.y) }
     end
   end
-  return best
+  table.sort(rows, function(a, b)
+    if a.d ~= b.d then return a.d < b.d end
+    return a.key < b.key
+  end)
+  local checks = 0
+  for index = #rejected, 1, -1 do rejected[index] = nil end
+  local function reject(row, reason)
+    if #rejected < MAX_REJECTED then
+      rejected[#rejected + 1] = { name = row.e.name, x = row.e.position.x, y = row.e.position.y, reason = reason }
+    end
+  end
+  for _, row in ipairs(rows) do
+    if not row.fits then
+      reject(row, row.why)
+    elseif own and row.e == own then
+      return row.e
+    else
+      if served[row.key] == nil then
+        if checks >= SERVED_CHECKS then return nil, true end
+        checks = checks + 1
+        served[row.key] = served_by(c, row.e) or false
+      end
+      if not served[row.key] then return row.e end
+      reject(row, served_reason(served[row.key]))
+    end
+  end
+  return nil
 end
 
 -- ------------------------------------------------------------------ runner
@@ -841,11 +954,27 @@ local function note(task, kind, item, count)
   book[item] = (book[item] or 0) + count
 end
 
+-- A shortfall row: the item, how many are missing and why; inventory_full
+-- (with free_slots) when a full inventory ended it, untried_holders when the
+-- take cap left holders unread, rejected_furnaces when no furnace was free.
 local function shortfall(task, frame, missing, reason)
   local rows = task._shortfall
   if #rows < MAX_SHORTFALL_ROWS then
-    rows[#rows + 1] = { item = frame.name, missing = missing, reason = reason, inventory_full = frame.full }
+    rows[#rows + 1] = { item = frame.name, missing = missing, reason = reason, inventory_full = frame.full,
+      free_slots = frame.full and frame.free_slots or nil,
+      untried_holders = frame.untried and #frame.untried > 0 and frame.untried or nil,
+      rejected_furnaces = frame.smelt_error and frame.smelt_rejected and #frame.smelt_rejected > 0
+        and frame.smelt_rejected or nil }
   end
+end
+
+-- Whether a supply result's shortfall ended on a full inventory.
+function M.inventory_full(result)
+  local outcome = type(result) == "table" and type(result.outcome) == "table" and result.outcome or {}
+  for _, row in ipairs(type(outcome.shortfall) == "table" and outcome.shortfall or {}) do
+    if row.inventory_full == true then return true end
+  end
+  return false
 end
 
 function M.start(task)
@@ -928,10 +1057,16 @@ local function advance(task, c, frame)
     local inventory = c.get_main_inventory()
     local room = inventory and inventory.get_insertable_count(frame.name) or need
     if room <= 0 then
-      frame.error, frame.phase, frame.full = "my inventory is full", "end", true
+      -- No source is looked for: the end names the full inventory, not
+      -- sources it never read.
+      frame.phase, frame.full = "end", true
+      if frame.takes == 0 and (frame.empty_takes or 0) == 0 then frame.full_unsearched = true
+      else frame.error = "my inventory is full" end
       return false
     end
-    if frame.takes < MAX_TAKES then
+    -- An empty take (the source held none by the time the body got there)
+    -- does not count toward MAX_TAKES; at most MAX_TAKES of those too.
+    if frame.takes < MAX_TAKES and (frame.empty_takes or 0) < MAX_TAKES then
       if not scan(task) then return true end
       -- Chests and machine outputs first, then loose items at an own drill's
       -- drop position; nearby belts only when none holds it.
@@ -944,7 +1079,9 @@ local function advance(task, c, frame)
         source = nearest_drop(c, task, frame.name, frame.tried)
         if not source then frame.drops, frame.belts = nil, true; return false end
       else
-        source = nearest_holder(c, task, frame.name, frame.tried)
+        local more
+        source, more = nearest_holder(c, task, frame.name, frame.tried)
+        if more then return false end
         if not source then frame.drops = true; return false end
       end
       if source then
@@ -971,6 +1108,10 @@ local function advance(task, c, frame)
         frame.error = tostring(err)
         return false
       end
+    end
+    -- The take cap ended the search: the holders it left are named.
+    if frame.takes >= MAX_TAKES or (frame.empty_takes or 0) >= MAX_TAKES then
+      frame.untried = untried_holders(c, frame.name, frame.tried)
     end
     frame.phase = "craft"
     return false
@@ -1030,10 +1171,18 @@ local function advance(task, c, frame)
       return false
     end
     if not scan(task) then return true end
-    local furnace = smelter(c, recipe, ingredient.name, frame.name, frame.smelt and frame.smelt.furnace, frame.smelt_avoid)
+    frame.served, frame.smelt_rejected = frame.served or {}, frame.smelt_rejected or {}
+    local furnace, more = smelter(c, recipe, ingredient.name, frame.name, frame.smelt and frame.smelt.furnace,
+      frame.smelt_avoid, frame.served, frame.smelt_rejected)
+    if more then return true end
     if not furnace then
+      local passed = {}
+      for _, row in ipairs(frame.smelt_rejected) do
+        passed[#passed + 1] = string.format("%s at (%.1f, %.1f): %s", row.name, row.x, row.y, row.reason)
+      end
       frame.smelt_error = "no own furnace is free to smelt it (" .. recipe.category .. ")"
         .. (frame.smelt_avoid and "; a line feeds or empties the one it loaded" or "")
+        .. (#passed > 0 and (" — passed over " .. table.concat(passed, "; ")) or "")
       frame.phase = "gather"
       return false
     end
@@ -1154,10 +1303,22 @@ local function advance(task, c, frame)
 
   -- end: name why this item is still short.
   local parts = {}
-  if frame.drills and frame.drills > 0 then
+  if frame.full then frame.free_slots = items.free_slots(c.get_main_inventory()) end
+  if frame.full_unsearched then
+    -- The inventory was full before any source was read: none was looked for.
+    parts[#parts + 1] = string.format("not looked for: inventory full (%s free)", tostring(frame.free_slots or 0))
+  elseif frame.drills and frame.drills > 0 then
     parts[#parts + 1] = string.format("%d own mining drill(s) produce it but none of their output can be taken now", frame.drills)
-  elseif frame.takes == 0 then
+  elseif frame.takes == 0 and not (frame.untried and #frame.untried > 0) then
     parts[#parts + 1] = "no own chest, landing pad, machine output or belt holds it"
+  end
+  if frame.untried and #frame.untried > 0 then
+    local rows = {}
+    for _, row in ipairs(frame.untried) do
+      rows[#rows + 1] = string.format("%s at (%.1f, %.1f) holds %d", row.kind, row.x, row.y, row.count)
+    end
+    parts[#parts + 1] = string.format("took from %d sources (at most %d per item; %d more were empty); untried: %s",
+      frame.takes, MAX_TAKES, frame.empty_takes or 0, table.concat(rows, ", "))
   end
   if frame.craft_error then parts[#parts + 1] = "not hand-craftable: " .. frame.craft_error end
   if frame.craft_off then parts[#parts + 1] = "not hand-crafted (craft is false)" end
@@ -1305,6 +1466,10 @@ function M.tick(task)
       local kinds = { craft = "crafted", gather = "gathered", smelt = "smelted" }
       note(task, kinds[frame.source_kind] or "taken", frame.name, got)
       if result.status ~= "done" and got <= 0 then frame.error = result.detail end
+      -- A take that got nothing is an empty take, not one of MAX_TAKES.
+      if got <= 0 and frame.source_kind and not kinds[frame.source_kind] and frame.phase == "take" then
+        frame.takes, frame.empty_takes = frame.takes - 1, (frame.empty_takes or 0) + 1
+      end
     end
     -- Enclosed by own entities: once per frame, step out and start the
     -- action again; else the supply is pinned and ends BODY_ENCLOSED.

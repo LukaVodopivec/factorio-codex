@@ -173,7 +173,7 @@ end
 -- The body: where it is (its state, absent while it stands on a surface;
 -- its surface when the read describes another; its health, absent while
 -- full), what it carries (by item key, spoilable items with when they
--- spoil) and its work. Aboard or in transit the character's inventory still
+-- spoil), its free main-inventory slots and its work. Aboard or in transit the character's inventory still
 -- travels with it.
 local function body_section(body, read_surface)
   local c = body.character
@@ -201,6 +201,8 @@ local function body_section(body, read_surface)
   out.inventory_summary = summary
   local spoils = items.spoil(inventory, names)
   if next(spoils) then out.inventory_spoils = spoils end
+  -- Empty main-inventory slots: at 0 a fetch, pickup or mining of a new item fails.
+  out.free_slots = items.free_slots(inventory)
   out.crafting_queue_size = c.crafting_queue_size or 0
   return out
 end

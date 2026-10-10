@@ -491,7 +491,8 @@ force.current_research, force.research_progress, force.research_queue = { name =
 local active_plan = { id = 4, type = "plan", status = "running", current_step = 2, steps = { {}, { action = "walk_to" } }, source = "package:p1" }
 package.loaded["scripts.tasks"] = { queue_length = function() return 1 end,
   active_summary = function() return { id = 4, type = "plan", current_step = 2, total_steps = 2, action = "walk_to", source = "package:p1" } end }
-body.get_main_inventory = function() return { get_contents = function() return { { name = "coal", count = 5 }, { name = "iron-plate", count = 9 } } end } end
+body.get_main_inventory = function() return { get_contents = function() return { { name = "coal", count = 5 }, { name = "iron-plate", count = 9 } } end,
+  count_empty_stacks = function() return 78 end } end
 body.crafting_queue_size = 0
 storage.tasks.active, storage.tasks.queue = active_plan, { {} }
 storage.tasks.last_plan_ended = { plan_id = 3, status = "completed", tick = 10 }
@@ -507,6 +508,7 @@ check(status.tick == game.tick and type(status.lines) == "table" and status.powe
   and status.research.current == "automation" and status.research.available[1] == "logistics"
   and status.body.queue_depth == 1 and status.body.active_step.source == "package:p1"
   and status.body.inventory_summary["iron-plate"] == 9 and status.body.human_control == false
+  and status.body.free_slots == 78
   and status.patches[1].name == "iron-ore" and status.patches[1].distance == 50,
   "factory_status composes lines, problems, power, stock, research, body and patches")
 do

@@ -79,7 +79,8 @@ local surface = {
     return result
   end,
 }
-local inventory = { get_contents = function() return { { name = "iron-plate", count = 3 } } end }
+local inventory = { get_contents = function() return { { name = "iron-plate", count = 3 } } end,
+  count_empty_stacks = function() return 79 end }
 local ammo_inventory = { get_contents = function() return { { name = "firearm-magazine", count = 7 } } end }
 character = { valid = true, name = "character", type = "character", force = player_force, surface = surface, position = { x = 0, y = 0 }, health = 250, reach_distance = 10, build_distance = 10, get_main_inventory = function() return inventory end,
   get_inventory = function(index) if index == 1 then return ammo_inventory end end }
@@ -119,6 +120,7 @@ check(observation.character.inventory_scope == "main"
   and observation.character.ammo_inventory["firearm-magazine"] == 7
   and observation.character.inventory["firearm-magazine"] == nil,
   "observation distinguishes main inventory from equipped ammunition")
+check(observation.character.free_slots == 79, "observation states the body's free main-inventory slots")
 local ground_by_name = {}
 for _, item in ipairs(observation.ground_items) do ground_by_name[item.item] = item end
 check(#observation.ground_items == 256 and observation.omitted_ground_items == 3

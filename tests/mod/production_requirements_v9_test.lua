@@ -253,7 +253,7 @@ do
   local rows = {}
   for _, row in ipairs(timed.missing_technologies) do rows[row.name] = row end
   local allowed = { complete = true, bottleneck_seconds = true, basis = true, lab_seconds_at_speed_1 = true,
-    lab_seconds = true }
+    lab_seconds = true, packs = true }
   local facts_only = true
   for key, value in pairs(estimate) do
     if not allowed[key] or (type(value) == "string" and key ~= "basis") then facts_only = false end
@@ -261,9 +261,14 @@ do
   check(rows["lab-pre"].unit_time_s == 30 and rows["lab-target"].unit_time_s == 10
     and estimate.lab_seconds_at_speed_1 == 1600 and estimate.lab_seconds == 640 and facts_only,
     "a closure's time_estimate adds lab seconds at speed 1 (1600) and at the labs' progress rate (640), facts only")
+  -- 60 red packs over 1600 lab-seconds at speed 1 with a pack rate of 2: the
+  -- labs draw 4.5 a minute at full speed; the force makes 60 a minute.
+  local red = estimate.packs and estimate.packs["automation-science-pack"]
+  check(red and red.made_per_min == 60 and red.lab_use_per_min == 4.5,
+    "time_estimate.packs gives each pack's observed output beside the labs' draw at full speed")
   registry.labs = function() return { count = 0, speed = 0, pack_rate = 0, progress_rate = 0 } end
   local no_labs = production.production_requirements({ technology = "lab-target" }).time_estimate
-  check(no_labs.lab_seconds_at_speed_1 == 1600 and no_labs.lab_seconds == nil,
+  check(no_labs.lab_seconds_at_speed_1 == 1600 and no_labs.lab_seconds == nil and no_labs.packs == nil,
     "without labs a closure gives lab seconds at speed 1 only")
   pre.prototype.research_unit_energy = nil
   local unknown = production.production_requirements({ technology = "lab-target" })

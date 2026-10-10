@@ -645,6 +645,18 @@ local function closure_requirements(params, body, location, force, target_kind, 
     if labs.count > 0 and labs.progress_rate > 0 then
       time_estimate.lab_seconds = math.ceil(lab_seconds / labs.progress_rate - 1e-6)
     end
+    -- Each remaining pack's observed output beside what the labs draw of it
+    -- at full speed over this closure (its packs x the labs' pack rate / the
+    -- lab work at speed 1, per minute; one technology gives factory_status
+    -- packs_per_minute_needed): arithmetic, not a target.
+    if lab_seconds > 0 and labs.count > 0 and labs.pack_rate > 0 then
+      local packs = {}
+      for _, row in ipairs(flows) do
+        packs[row.name] = { made_per_min = row.production_rate,
+          lab_use_per_min = math.floor(science[row.name] * labs.pack_rate * 60 / lab_seconds * 100 + 0.5) / 100 }
+      end
+      if next(packs) then time_estimate.packs = packs end
+    end
   end
   return {
     target_kind = target_kind, target = target_name, target_technology = technology_name,

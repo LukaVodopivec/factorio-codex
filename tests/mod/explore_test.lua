@@ -214,6 +214,39 @@ do
   end
 end
 
+-- With a direction, a patch the walk itself charted ends the search even
+-- beyond the round view (trial 0013, the third trial running: explore
+-- walked past oil it had charted in a corner of its chart square); a patch
+-- charted before the search began does not.
+do
+  reset()
+  local before = { name = "crude-oil", amount = 1, tiles = 9, centroid = { x = 100, y = 100 },
+    bbox = { left_top = { x = 95, y = 95 }, right_bottom = { x = 105, y = 105 } } }
+  local corner = { name = "crude-oil", amount = 1, tiles = 9, centroid = { x = 170, y = 150 },
+    bbox = { left_top = { x = 165, y = 145 }, right_bottom = { x = 175, y = 155 } } }
+  local map = package.loaded["scripts.map_summary"]
+  local saved = map.patches
+  -- The cache lists the corner patch once its chunk is charted.
+  map.patches = function()
+    local rows = { before }
+    if charted["5,4"] then rows[#rows + 1] = corner end
+    return rows, true, 0
+  end
+  local found = run({ resource = "crude-oil", direction = 4, max_distance = 600 })
+  local patch = found and found.outcome.patch
+  check(found and found.status == "done" and found.outcome.code == "PATCH_FOUND" and patch.newly_charted == true
+    and patch.centroid.x == 170 and patch.distance > explore.VIEW_RADIUS and found.outcome.walked <= 64
+    and found.detail:match("^found newly charted crude%-oil centred at %(170%.0, 150%.0%)") ~= nil,
+    "a directed explore ends PATCH_FOUND on a patch its walk charted beyond the round view, never one charted before")
+  -- Without it, the walk goes on to its budget.
+  reset()
+  map.patches = function() return { before }, true, 0 end
+  local on = run({ resource = "crude-oil", direction = 4, max_distance = 200 })
+  check(on and on.outcome.code == "EXPLORE_NOT_FOUND" and on.outcome.walked > 150,
+    "a patch charted before a directed explore began never ends it")
+  map.patches = saved
+end
+
 -- No direction: the heading whose uncharted land is nearest.
 reset()
 for x = -3, 3 do for y = -6, 6 do charted[x .. "," .. y] = true end end

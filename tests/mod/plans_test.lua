@@ -1136,6 +1136,23 @@ check(short_status.status == "partial" and short_row.inserted == 1 and short_row
   and short_status.outcomes[1].error == nil and short_status.satisfies_chain == nil
   and tasks.plan_status({ plan_id = after_short.plan_id }).status == "cancelled",
   "a retry that found none carried still reports the first insert; a short insert does not satisfy the chain")
+
+-- The retry failed for another reason (its target gone, no transfer row):
+-- the remainder takes the retry's code, not the first attempt's capacity.
+insert_runner.tick = scripted({
+  { status = "partial", detail = "partial insert", outcome = { code = "PARTIAL_INSERT", total_inserted = 1, target = target,
+    transfers = { { item = "rocket-fuel", requested = 10, available = 48, inserted = 1, remainder = 9, reason = "TARGET_CAPACITY" } } } },
+  { status = "failed", detail = "TRANSFER_TARGET_MISSING: no rocket-silo at (1, 1)",
+    outcome = { code = "TRANSFER_TARGET_MISSING" } },
+})
+local gone = tasks.queue_plan({ steps = { { action = "insert_items", x = 1, y = 1, items = { ["rocket-fuel"] = 10 } } } })
+local after_gone = tasks.queue_plan({ steps = { { action = "walk_to", x = 2, y = 2 } }, after_plan_id = gone.plan_id })
+run(90)
+local gone_status = tasks.plan_status({ plan_id = gone.plan_id })
+local gone_row = gone_status.outcomes[1].result.transfers[1]
+check(gone_status.status == "partial" and gone_row.inserted == 1 and gone_row.reason == "TRANSFER_TARGET_MISSING"
+  and gone_status.satisfies_chain == nil and tasks.plan_status({ plan_id = after_gone.plan_id }).status == "cancelled",
+  "a retry that failed for another reason keeps its own code: the chain is not satisfied")
 insert_runner.tick = original
 
 -- The predecessor's record is pruned while its dependent still waits: the

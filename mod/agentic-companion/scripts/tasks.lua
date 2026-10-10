@@ -1536,7 +1536,9 @@ end
 -- first attempt's, so the step reports what both inserted, against the
 -- original request. An item still short keeps the retry's reason, except
 -- that one the first attempt inserted some of was capped, not refused or
--- missing (TARGET_CAPACITY, INSUFFICIENT_CARRIED_ITEMS).
+-- missing (TARGET_CAPACITY, INSUFFICIENT_CARRIED_ITEMS). A retry that ended
+-- short with no row for the item (its target gone, an error) gives it the
+-- retry's own code, never the first attempt's reason.
 local CAPPED_REASON = { TARGET_REJECTED_ITEM = "TARGET_CAPACITY", NO_CARRIED_ITEMS = "INSUFFICIENT_CARRIED_ITEMS" }
 local function merge_retry(first, retry)
   local before = type(first.outcome) == "table" and first.outcome or {}
@@ -1555,7 +1557,9 @@ local function merge_retry(first, retry)
     local remainder = math.max(0, requested - inserted)
     local reason
     if remainder > 0 then
-      reason = second and second.reason or row.reason
+      if second then reason = second.reason or row.reason
+      elseif retry.status ~= "done" then reason = result_code(retry) or "RETRY_FAILED"
+      else reason = row.reason end
       if first_inserted > 0 and CAPPED_REASON[reason] then reason = CAPPED_REASON[reason] end
       problems[#problems + 1] = string.format("requested %d %s, inserted %d, remainder %d (%s)", requested,
         tostring(row.item), inserted, remainder, tostring(reason))

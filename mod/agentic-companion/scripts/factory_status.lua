@@ -90,14 +90,18 @@ local PROBLEM_RANK = { no_power = 1, not_plugged_in_electric_network = 1, no_fue
   no_research_in_progress = 2, full_output = 3, waiting_for_space_in_destination = 3 }
 
 -- Work a read charges to the tick (jobs.lua work items, about 13 us each:
--- the live suite reads 74 lines of 185 machines in about 2 ms): each line
--- row LINE_ROW_WORK, each line ranked and each problem row one, one per SCAN_PER_ITEM lines or
--- machines passed, and the engine reads of its sections as they count them.
--- Once a read has charged a tick's budget (jobs.WORK_PER_TICK), the sections
--- still to come of GATED are left out and named in unread_sections (a read
--- of just those returns them): no read takes more than a tick, and job work
--- later in the tick gets what is left.
-local LINE_ROW_WORK, SCAN_PER_ITEM = 2, 16
+-- the live suite reads 74 lines of 185 machines in about 2 ms, of which
+-- encoding the reply and its fifo block take about 0.7 ms): REPLY_WORK for
+-- that reply (its rows are capped), each line row LINE_ROW_WORK, each line
+-- ranked and each problem row one, one per SCAN_PER_ITEM lines or machines
+-- passed, and the engine reads of its sections as they count them. Once a
+-- read has charged GATE_WORK (half a tick's budget, jobs.WORK_PER_TICK),
+-- the sections still to come of GATED are left out and named in
+-- unread_sections (read just those next): no read takes more
+-- than half a tick, which leaves room for the garbage collector, and job
+-- work later in the tick gets what is left.
+local LINE_ROW_WORK, SCAN_PER_ITEM, REPLY_WORK = 2, 16, 64
+local GATE_WORK = math.floor(jobs.WORK_PER_TICK / 2)
 local GATED = { power = true, stock = true, research = true, logistics = true, platforms = true, elsewhere = true,
   alerts = true }
 local function scan(n) return math.ceil((n or 0) / SCAN_PER_ITEM) end
@@ -622,11 +626,12 @@ function M.factory_status(params)
   local result = { tick = game.tick, since_tick = since, registry_ready = registry.ready(), surface = target.ref,
     unlocked_locations = unlocked_locations(target.force), trial = benchmark.trial() }
   local start = jobs.spent()
+  jobs.charge(REPLY_WORK)
   -- Whether a section is wanted and, if gated, the read still has budget
   -- for it; one it has not is named in unread_sections.
   local function due(name)
     if not want[name] then return false end
-    if GATED[name] and jobs.spent() - start >= jobs.WORK_PER_TICK then
+    if GATED[name] and jobs.spent() - start >= GATE_WORK then
       result.unread_sections = result.unread_sections or {}
       result.unread_sections[#result.unread_sections + 1] = name
       return false

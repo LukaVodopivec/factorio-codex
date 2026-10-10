@@ -102,10 +102,12 @@ end
 -- Area queries are collision-based, while the observation contract reports
 -- the union of collision and selection footprints. Expand only the bounded
 -- local query by the largest installed prototype extent, then precisely
--- intersect each returned entity with the requested grid below.
-local footprint_query_margin
-local function max_footprint_extent()
-  if footprint_query_margin ~= nil then return footprint_query_margin end
+-- intersect each returned entity with the requested grid below. That extent
+-- reads every entity prototype (about 2 ms and thousands of new tables), so
+-- M.init reads it when the mod starts or its prototypes change (on_init,
+-- on_configuration_changed) into storage, the same on every peer, and an
+-- observation only looks it up.
+local function footprint_extent()
   local margin = 0
   for _, proto in pairs((prototypes and prototypes.entity) or {}) do
     local function include(box)
@@ -119,8 +121,13 @@ local function max_footprint_extent()
     include(proto.collision_box)
     include(proto.selection_box)
   end
-  footprint_query_margin = margin
   return margin
+end
+function M.init() storage.footprint_margin = footprint_extent() end
+local function max_footprint_extent()
+  -- (A save from before it has none until then.)
+  if storage.footprint_margin == nil then M.init() end
+  return storage.footprint_margin
 end
 
 -- ----------------------------------------------------------- observe_local

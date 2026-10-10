@@ -885,6 +885,19 @@ do
     amount = 450000 }
   local amounts = dry({ anchor = { x = 45, y = 45 }, entities = { { name = "burner-mining-drill", dx = 3, dy = 0 } } })
   local well = dry({ anchor = { x = 70, y = 30 }, entities = { { name = "pumpjack", dx = 0.5, dy = 0.5 } } })
+  -- A survey saved by 0.36 (no drill_ore list) resumes and adds the row.
+  local old_search = layout.search_start(character, { anchor = { x = 45, y = 45 },
+    layouts = { { entities = { { name = "burner-mining-drill", dx = 3, dy = 0 } }, connections = {} } } })
+  local old_found
+  repeat old_found = layout.search_step(character, old_search, { left = layout.WORK_PER_TICK }) until old_found
+  local old_survey = layout.survey_start(old_search.ctx, old_found)
+  old_survey.rows.drill_ore = nil
+  local resumed_ok, resumed = pcall(function()
+    repeat until layout.survey_step(old_search.ctx, old_survey, { left = layout.WORK_PER_TICK })
+    return layout.survey_rows(old_survey)
+  end)
+  check(resumed_ok and resumed.drill_ore and resumed.drill_ore[1].ore["iron-ore"] == 6000,
+    "a dry-run survey saved by 0.36 resumes and reports each drill's ore: " .. tostring(resumed_ok or resumed))
   resources[#resources] = nil
   crude.infinite_resource, crude.normal_resource_amount = nil, nil
   for _, e in ipairs(resources) do e.amount = nil end
@@ -973,23 +986,23 @@ check(dry_big and not dry_big.ok and dry_big.failed[1].code == "SITE_NOT_FOUND"
     .. " (%d ticks, worst %d checks)", layout.CHECK_COST, layout.CHECK_COST, dry_ticks, dry_worst))
 do
   -- blueprint_place's dry run steps through the exported search_step: it
-  -- spends the same share of the budget it is given and charges the rest of
-  -- it to the tick, so it answers alike within the same checks a tick.
+  -- spends the same share of the budget table it is given and takes its
+  -- work from it scaled to that share, so it answers alike within the same
+  -- checks a tick, and leaves later jobs only what is left.
   local s = layout.search_start(character, { site = big.site, layouts = { { entities = big.entities, connections = {} } } })
   local found, steps, worst, undercharged = nil, 0, 0, 0
+  storage.jobs = nil
   while not found and steps < 600 do
     engine.can_place = 0
-    storage.jobs = nil
-    local calls = s.ctx.calls
-    found = layout.search_step(character, s, layout.WORK_PER_TICK)
+    local calls, budget = s.ctx.calls, { left = layout.WORK_PER_TICK }
+    found = layout.search_step(character, s, budget)
     local own = s.ctx.calls - calls
-    if own + jobs.spent() < layout.CHECK_COST * own then undercharged = undercharged + 1 end
+    if layout.WORK_PER_TICK - budget.left < layout.CHECK_COST * own then undercharged = undercharged + 1 end
     steps, worst = steps + 1, math.max(worst, engine.can_place)
   end
-  storage.jobs = nil
   check(found and found.failed[1].code == "SITE_NOT_FOUND" and worst <= per_tick_engine / layout.CHECK_COST
-    and undercharged == 0,
-    string.format("blueprint_place's dry-run search spends 1/%d of its budget a tick and charges the rest (%d ticks, worst %d checks)",
+    and undercharged == 0 and jobs.spent() == 0,
+    string.format("blueprint_place's dry-run search spends 1/%d of its budget a tick and takes the rest from it (%d ticks, worst %d checks)",
       layout.CHECK_COST, steps, worst))
 end
 do
@@ -1323,7 +1336,10 @@ check(layout.layout_action.budget_steps({ entities = { {}, {} },
 
 -- Liquids (C6): a site near a liquid reads only that liquid's tiles; this
 -- map's lake is water, so lava finds no site, and near_water is water.
+-- (Tile prototypes change only with the mod list: on_configuration_changed
+-- lists the liquid tiles again.)
 prototypes.tile.lava = { collision_mask = { layers = { water_tile = true, player = true } }, fluid = { name = "lava" } }
+layout.init()
 local read_names = {}
 local find_tiles = surface.find_tiles_filtered
 surface.find_tiles_filtered = function(filter)
@@ -1595,6 +1611,41 @@ check(forwarded and forwarded.code == "ESCAPE_CANCELLED" and forwarded.from.x ==
   and layout_runner.cancelled({ _search = {} }) == nil
   and layout_runner.cancelled({ _plan = { _escape = { type = "escape_probe", from = { x = 3, y = 4 } } } }, true).body_only == true,
   "a cancelled layout step reports its nested build's escape note, body-only passed on; a search has none")
+
+do
+  -- A freshly loaded mod's first site search sorts no list of candidate
+  -- anchors in its tick: the file sorted them as it loaded.
+  local loaded = package.loaded["scripts.actions.build_layout"]
+  package.loaded["scripts.actions.build_layout"] = nil
+  local fresh = require("scripts.actions.build_layout")
+  local sort, largest = table.sort, 0
+  table.sort = function(list, less) largest = math.max(largest, #list); return sort(list, less) end
+  local s = fresh.search_start(character, { site = { near = { x = 500, y = 500 } },
+    layouts = { { entities = { { name = "wooden-chest", dx = 0.5, dy = 0.5 } }, connections = {} } } })
+  local found = fresh.search_step(character, s, { left = fresh.WORK_PER_TICK })
+  table.sort = sort
+  package.loaded["scripts.actions.build_layout"] = loaded
+  check(found and largest < 100, string.format("a fresh load's first site search sorts no anchor list in its tick (largest sort %d)",
+    largest))
+  -- Nor does its first liquid site search read a tile prototype: init
+  -- listed the liquid tiles into storage.
+  layout.init()
+  package.loaded["scripts.actions.build_layout"] = nil
+  fresh = require("scripts.actions.build_layout")
+  package.loaded["scripts.actions.build_layout"] = loaded
+  local tiles, scans = prototypes.tile, 0
+  prototypes.tile = setmetatable({}, { __pairs = function() scans = scans + 1; return next, {}, nil end })
+  local wet = fresh.search_start(character, { site = { near = { x = 2, y = 0 }, near_liquid = "water" },
+    layouts = { { entities = { { name = "offshore-pump", dx = 0, dy = 0 } }, connections = {} } } })
+  local wet_found
+  for _ = 1, 50 do
+    wet_found = fresh.search_step(character, wet, { left = fresh.WORK_PER_TICK })
+    if wet_found then break end
+  end
+  prototypes.tile = tiles
+  check(wet_found and scans == 0 and storage.liquid_tile_names.water[1] == "water",
+    "a fresh load's first liquid site search reads no tile prototype (init listed the liquid tiles in storage)")
+end
 
 print(failures == 0 and "\nALL TESTS PASSED" or ("\n" .. failures .. " FAILURES"))
 os.exit(failures == 0 and 0 or 1)

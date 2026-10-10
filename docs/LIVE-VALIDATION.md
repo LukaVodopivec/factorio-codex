@@ -231,7 +231,7 @@ observable checks:
   offshore pump refusal names the water-edge reason, and a dry run lists
   `drill_ore` for each drill over charted resource.
 - With about 180 machines, `factory_status` and a large `check_only` take
-  no tick over 8 ms; a read that spent its tick budget names the rest in
+  no tick over 8 ms; a read that spent its share of the tick budget names the rest in
   `unread_sections`.
 - An `output_full` machine whose output only backs up leaves the
   `next_event` wake tick unchanged and stays in `factory_status`.

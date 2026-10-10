@@ -88,6 +88,7 @@ package.loaded["scripts.companion"] = { require_companion = function() return ch
 dofile(here .. "/body_stub.lua")(package.loaded["scripts.companion"], function() return character end)
 package.loaded["scripts.tasks"] = { active_summary = function() return nil end, queue_length = function() return 0 end }
 _G.game = { tick = 123, forces = { enemy = enemy_force } }
+_G.storage = {}
 _G.defines = { entity_status = { no_power = 1 }, inventory = { character_ammo = 1 } }
 _G.prototypes = { entity = {
   ["edge-machine"] = {
@@ -259,4 +260,19 @@ do
 end
 character.bounding_box = nil
 _G.require = parse_require
+do
+  -- The query margin (the largest prototype extent) is read from every
+  -- entity prototype at init into storage: a freshly loaded mod's first
+  -- observation scans no prototype.
+  spatial.init()
+  local margin = storage.footprint_margin
+  package.loaded["scripts.spatial"] = nil
+  local fresh = require("scripts.spatial")
+  local entity_prototypes, scans = prototypes.entity, 0
+  prototypes.entity = setmetatable({}, { __pairs = function() scans = scans + 1; return next, {}, nil end })
+  local S = fresh.observe_job.start({ radius = 5 })
+  prototypes.entity = entity_prototypes
+  check(margin == 1.75 and S.margin == margin and scans == 0,
+    "init keeps the largest prototype extent in storage; a fresh load's first observation scans no prototype")
+end
 os.exit(failures == 0 and 0 or 1)

@@ -819,21 +819,29 @@ local function distance_sorted(list, near)
   return list
 end
 
--- The liquid tiles of a fluid (water, lava, heavy-oil,
+-- The liquid tiles of each fluid (water, lava, heavy-oil,
 -- ammoniacal-solution): tiles on the water_tile layer whose fluid it is
--- (placement_geometry's liquid rule), listed once per load.
-local liquid_names = {}
-local function liquid_tile_names(fluid)
-  if liquid_names[fluid] then return liquid_names[fluid] end
-  local names = {}
+-- (placement_geometry's liquid rule). Reading every tile prototype takes
+-- about 2 ms, so M.init lists them when the mod starts or its prototypes
+-- change (on_init, on_configuration_changed) into storage, the same on
+-- every peer, and a search only looks them up.
+function M.init()
+  local by_fluid = {}
   for name, proto in pairs(prototypes.tile) do
     local ok, layers = pcall(function() return proto.collision_mask.layers end)
     local fluid_ok, tile_fluid = pcall(function() return proto.fluid.name end)
-    if ok and type(layers) == "table" and layers.water_tile and fluid_ok and tile_fluid == fluid then names[#names + 1] = name end
+    if ok and type(layers) == "table" and layers.water_tile and fluid_ok and type(tile_fluid) == "string" then
+      by_fluid[tile_fluid] = by_fluid[tile_fluid] or {}
+      table.insert(by_fluid[tile_fluid], name)
+    end
   end
-  table.sort(names)
-  liquid_names[fluid] = names
-  return names
+  for _, names in pairs(by_fluid) do table.sort(names) end
+  storage.liquid_tile_names = by_fluid
+end
+local function liquid_tile_names(fluid)
+  -- (A save from before it has none until then.)
+  if storage.liquid_tile_names == nil then M.init() end
+  return storage.liquid_tile_names[fluid] or {}
 end
 
 -- The resource or liquid window around site.near (SEARCH_RADIUS) is read as
@@ -936,20 +944,17 @@ local function load_step(s, limit)
   return true
 end
 
--- Anchor offsets around a site's centre, nearest first (the same for every
--- search, so worked out once).
-local site_offsets_list
-local function site_offsets()
-  if site_offsets_list then return site_offsets_list end
-  local offsets = {}
-  for dy = -SITE_RADIUS, SITE_RADIUS do
-    for dx = -SITE_RADIUS, SITE_RADIUS do
-      if dx * dx + dy * dy <= SITE_RADIUS * SITE_RADIUS then offsets[#offsets + 1] = { x = dx, y = dy } end
-    end
+-- Anchor offsets around a site's centre, nearest first: the same for every
+-- search, so worked out as this file loads (sorting about 1,800 of them
+-- takes some 2 ms, which no tick's search pays).
+local site_offsets_list = {}
+for dy = -SITE_RADIUS, SITE_RADIUS do
+  for dx = -SITE_RADIUS, SITE_RADIUS do
+    if dx * dx + dy * dy <= SITE_RADIUS * SITE_RADIUS then site_offsets_list[#site_offsets_list + 1] = { x = dx, y = dy } end
   end
-  site_offsets_list = distance_sorted(offsets, { x = 0.5, y = 0.5 })
-  return site_offsets_list
 end
+distance_sorted(site_offsets_list, { x = 0.5, y = 0.5 })
+local function site_offsets() return site_offsets_list end
 
 -- Every drill's mining area holds at least half resource tiles. Charged per
 -- tile tested. (A search from a 0.21.0 save keyed its set by strings.)
@@ -2454,6 +2459,8 @@ local function survey_item(ctx, V, item)
     local r = read_number(function() return p.proto.mining_drill_radius end)
     local amounts = {}
     local found = r and resources_in(ctx, supply_box(p.position, r), function(name) return mines(p.proto, name) end, amounts)
+    -- (A survey saved by 0.36 has no drill_ore list.)
+    rows.drill_ore = rows.drill_ore or {}
     if found then rows.drill_ore[#rows.drill_ore + 1] = drill_ore_row(p, amounts) end
     local names = {}
     for name in pairs(found or {}) do names[#names + 1] = name end
@@ -2951,30 +2958,27 @@ M._resolve, M._rotated, M._plan_steps = resolve, rotated, plan_steps
 -- The resumable search for another dry run (blueprint_place check_only):
 -- search_start(c, {anchor? | site?, layouts}), search_step(c, s, budget) ->
 -- result | nil, check_report(c, result, extra) -> the check_only answer.
--- Both steps spend the dry run's share (check_share) of the budget they are
--- given and charge the rest of it to the tick (jobs.charge), as this file's
--- own dry run does: the caller takes their own work from its budget.
-local function charge_share(spent, left, share)
-  jobs.charge(math.max(0, math.ceil(spent * left / share) - spent))
-end
+-- Both steps take a job's budget table, spend the dry run's share
+-- (check_share) of what is left of it and take their work from it scaled to
+-- that share, as this file's own dry run does, so later jobs of the tick get
+-- only what is left.
 local function check_search_step(c, s, budget)
-  local before, left = s.ctx.calls, math.max(1, budget)
+  local before, left = s.ctx.calls, math.max(1, budget.left)
   local share = check_share(left)
   local result = advance(c, s, share)
-  charge_share(s.ctx.calls - before, left, share)
+  budget.left = budget.left - math.ceil((s.ctx.calls - before) * left / share)
   return result
 end
 M.search_start, M.search_step, M.check_report = new_search, check_search_step, report
 -- Its survey of a buildable result: survey_start(ctx, result, only?) ->
--- state, survey_step(ctx, state, limit) -> true once done, survey_rows(state)
+-- state, survey_step(ctx, state, budget) -> true once done, survey_rows(state)
 -- -> the report rows (only names the rows wanted), survey_failed(state) ->
 -- the placements the build would be refused (fluid_mixes).
-local function check_survey_step(ctx, state, limit)
-  local before = ctx.calls
-  local left = math.max(1, limit - before)
+local function check_survey_step(ctx, state, budget)
+  local before, left = ctx.calls, math.max(1, budget.left)
   local share = check_share(left)
   local done = survey_step(ctx, state, before + share)
-  charge_share(ctx.calls - before, left, share)
+  budget.left = budget.left - math.ceil((ctx.calls - before) * left / share)
   return done
 end
 M.survey_start, M.survey_step, M.survey_rows, M.survey_failed = survey_start, check_survey_step, survey_rows, survey_failed

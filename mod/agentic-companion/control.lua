@@ -255,6 +255,7 @@ local function initialize()
   tasks.set_observer(spatial.observe_compact)
   spatial.init()
   build_layout.init()
+  production_requirements.init()
   companion.enforce_peaceful_world()
   for _, player in pairs(game.connected_players) do
     companion.on_player_available({ player_index = player.index })

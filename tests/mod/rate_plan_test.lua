@@ -88,6 +88,7 @@ force.get_item_production_statistics = function(surface)
   end }
 end
 force.get_fluid_production_statistics = function() error("no fluid in these plans") end
+_G.storage = _G.storage or {}
 local production = require("scripts.production_requirements")
 
 local function close(a, b) return a ~= nil and math.abs(a - b) < 0.011 end

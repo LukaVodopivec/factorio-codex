@@ -291,7 +291,8 @@ checks:
 
 - No tick's RPC and job work together goes over 8 ms: `run_snapshot` runs in
   phases and its result arrives through `get_job`, `production_requirements`
-  is a job whose recipe index and resource catalogue spread across ticks, and
+  is a job whose recipe index spreads across ticks (its resource catalogue
+  and recipe facts are read into storage at init, never in a tick), and
   large dry runs yield. Profiler RPC lines carry the tick.
 - `factory_status` lines carry `line_counts` (with `by_state`) for every line
   of the surface beside the ten worst rows; an output-full drill or inserter

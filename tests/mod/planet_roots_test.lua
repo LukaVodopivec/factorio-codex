@@ -109,6 +109,7 @@ package.loaded["scripts.companion"] = { get = function() return body end }
 dofile(here .. "/body_stub.lua")(package.loaded["scripts.companion"], function() return body end)
 _G.game = { tick = 1 }
 _G.defines = { flow_precision_index = { one_minute = 2 } }
+_G.storage = _G.storage or {}
 local production = require("scripts.production_requirements")
 local function ask(params) return production.production_requirements(params) end
 

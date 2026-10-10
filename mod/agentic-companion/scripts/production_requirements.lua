@@ -1,9 +1,8 @@
 -- Deterministic item/fluid expansion plus current-force technology/location closure.
 --
 -- Resource roots per planet (prototype data only, never charted or hidden
--- map state; built once per load into a module-local table, a step per work
--- item over the job's ticks, since prototypes change only with a
--- configuration change): for every space
+-- map state; read into storage when the mod starts or its prototypes
+-- change, M.init, never in a tick): for every space
 -- location with map generation, the resources, rocks, trees, plants and
 -- fish its autoplace settings (or an autoplace control it has) place, and
 -- the liquids of its tiles; for every location and space connection, the
@@ -87,13 +86,10 @@ local HAND_TYPES = { tree = true, plant = true, ["simple-entity"] = true, fish =
 -- = {[name] = true}}, properties = {[location] = {[property] = value}},
 -- planets = the locations with map generation, sorted}.
 --
--- It is built in steps (the job spreads them over ticks): the drills'
--- resource categories, the entities a control places, one step per space
--- location, one per space connection, then the sort. A step's cost is the
--- prototype entries it reads, prototype data alike on every peer, so the job
--- charges the same work whether this peer's per-load cache is warm or not.
-local roots_cache -- {R, costs = {[step] = cost}} once built
-local building -- the build in progress
+-- It is built in steps: the drills' resource categories, the entities a
+-- control places, one step per space location, one per space connection,
+-- then the sort. The build reads hundreds of prototypes (several ms and
+-- much garbage cold), so M.init does it into storage, never a tick.
 
 local function new_build()
   local steps = { { kind = "drills" }, { kind = "controlled" } }
@@ -101,7 +97,7 @@ local function new_build()
   for _, name in ipairs(each_key(prototypes.space_connection)) do steps[#steps + 1] = { kind = "connection", name = name } end
   steps[#steps + 1] = { kind = "sort" }
   return { R = { by_product = {}, at = {}, properties = {}, planets = {} }, seen = {}, drills_of = {}, controlled = {},
-    steps = steps, done = 0, costs = {} }
+    steps = steps }
 end
 
 local function add(B, location, product, via)
@@ -143,11 +139,8 @@ local function entity_roots(B, location, entity)
   end
 end
 
--- Returns the definitions read.
 local function asteroid_roots(B, location, definitions)
-  local read_count = 0
   for _, definition in ipairs(definitions or {}) do
-    read_count = read_count + 1
     if definition.type == "asteroid-chunk" and definition.asteroid then
       local chunk = read(function() return prototypes.asteroid_chunk[definition.asteroid] end)
       local mining = chunk and read(function() return chunk.mineable_properties end)
@@ -159,27 +152,21 @@ local function asteroid_roots(B, location, definitions)
       end
     end
   end
-  return read_count
 end
 
--- Each step does its part of the catalogue and returns its cost.
+-- Each step does its part of the catalogue.
 local ROOT_STEPS = {}
 function ROOT_STEPS.drills(B)
-  local cost = 1
   for name, drill in pairs(prototypes.get_entity_filtered({ { filter = "type", type = "mining-drill" } })) do
-    cost = cost + 1
     for category in pairs(read(function() return drill.resource_categories end) or {}) do
       B.drills_of[category] = B.drills_of[category] or {}
       B.drills_of[category][name] = true
     end
   end
-  return cost
 end
 -- Entities a control places (trees, plants), once.
 function ROOT_STEPS.controlled(B)
-  local cost = 1
   for name, entity in pairs(prototypes.get_entity_filtered({ { filter = "type", type = each_key(HAND_TYPES) } })) do
-    cost = cost + 1
     local control = read(function() return entity.autoplace_specification.control end)
     if control then
       B.controlled[control] = B.controlled[control] or {}
@@ -187,71 +174,50 @@ function ROOT_STEPS.controlled(B)
     end
   end
   for _, names in pairs(B.controlled) do table.sort(names) end
-  return cost
 end
 function ROOT_STEPS.location(B, location_name)
-  local R, cost = B.R, 1
+  local R = B.R
   local location = prototypes.space_location[location_name]
   local settings = read(function() return location.map_gen_settings end)
   if settings then
     R.planets[#R.planets + 1] = location_name
     local autoplace = settings.autoplace_settings or {}
     for _, name in ipairs(each_key(autoplace.entity and autoplace.entity.settings)) do
-      cost = cost + 1
       local entity = prototypes.entity and prototypes.entity[name]
       if entity then entity_roots(B, location_name, entity) end
     end
     for _, control in ipairs(each_key(settings.autoplace_controls)) do
-      cost = cost + 1
       for _, name in ipairs(B.controlled[control] or {}) do
-        cost = cost + 1
         entity_roots(B, location_name, prototypes.entity[name])
       end
     end
     for _, name in ipairs(each_key(autoplace.tile and autoplace.tile.settings)) do
-      cost = cost + 1
       local tile = prototypes.tile and prototypes.tile[name]
       add(B, location_name, tile and read(function() return tile.fluid.name end), "offshore")
     end
   end
-  cost = cost + asteroid_roots(B, location_name, read(function() return location.asteroid_spawn_definitions end))
+  asteroid_roots(B, location_name, read(function() return location.asteroid_spawn_definitions end))
   R.properties[location_name] = read(function() return location.surface_properties end) or {}
-  return cost
 end
 function ROOT_STEPS.connection(B, connection_name)
   local connection = prototypes.space_connection[connection_name]
-  return 1 + asteroid_roots(B, connection_name, read(function() return connection.asteroid_spawn_definitions end))
+  asteroid_roots(B, connection_name, read(function() return connection.asteroid_spawn_definitions end))
 end
 function ROOT_STEPS.sort(B)
-  local cost = 1
   for _, list in pairs(B.R.by_product) do
-    cost = cost + 1
     table.sort(list, function(a, b) return a.planet == b.planet and a.via < b.via or a.planet < b.planet end)
   end
-  return cost
 end
 
--- The cost of catalogue step `index`, doing it (and any earlier step not yet
--- done here) unless the catalogue is already built; nil past the last step.
-local function roots_step(index)
-  if roots_cache then return roots_cache.costs[index] end
-  building = building or new_build()
-  local B = building
-  while B.done < math.min(index, #B.steps) do
-    local step = B.steps[B.done + 1]
-    B.costs[B.done + 1] = ROOT_STEPS[step.kind](B, step.name)
-    B.done = B.done + 1
-  end
-  local cost = B.costs[index] -- nil past the last step
-  if B.done == #B.steps then
-    roots_cache, building = { R = B.R, costs = B.costs }, nil
-  end
-  return cost
+local function build_roots()
+  local B = new_build()
+  for _, step in ipairs(B.steps) do ROOT_STEPS[step.kind](B, step.name) end
+  return B.R
 end
-
 local function roots()
-  if not roots_cache then roots_step(math.huge) end
-  return roots_cache.R
+  -- (A save from before it has none until then; M.init is below.)
+  if storage.production_roots == nil then M.init() end
+  return storage.production_roots
 end
 
 -- The liquids of a location's own map-generated tiles (an offshore pump
@@ -408,30 +374,64 @@ local function names_key(rows)
   return table.concat(names, "|")
 end
 
--- Whether another recipe undoes this one (key: its name in force.recipes):
--- its products are this one's ingredients and its ingredients this one's
--- products, as a barrel's fill and empty are. Such a pair only loops an
--- item back; a lookup in the index per ingredient.
-local function undone(force, key, recipe, by_product)
-  local ins, outs = names_key(recipe.ingredients), names_key(recipe.products)
-  if ins == "" then return false end
-  for _, ingredient in ipairs(recipe.ingredients or {}) do
-    for _, other_key in ipairs(by_product[ingredient.name] or {}) do
-      local other = other_key ~= key and force.recipes[other_key]
-      if other and names_key(other.products) == ins and names_key(other.ingredients) == outs then return true end
+-- Prototype facts a request looks up instead of reading them in a tick:
+-- `undone`, the recipes another (unhidden) recipe undoes (its products are
+-- this one's ingredients and its ingredients this one's products, as a
+-- barrel's fill and empty are; such a pair only loops an item back), and
+-- `unlocks`, each recipe's unlocking technologies, sorted. Reading them
+-- means every recipe's ingredients and products and every technology's
+-- effects (thousands of new tables), so M.init reads them when the mod
+-- starts or its prototypes change (on_init, on_configuration_changed) into
+-- storage, the same on every peer.
+local function recipe_facts()
+  local by_key, keys = {}, {}
+  for name, recipe in pairs(prototypes.recipe or {}) do
+    local ins, outs = names_key(read(function() return recipe.ingredients end)),
+      names_key(read(function() return recipe.products end))
+    keys[name] = { ins = ins, outs = outs }
+    if not read(function() return recipe.hidden end) then
+      local key = ins .. "\n" .. outs
+      by_key[key] = by_key[key] or {}
+      table.insert(by_key[key], name)
     end
   end
-  return false
+  local undone = {}
+  for name, key in pairs(keys) do
+    if key.ins ~= "" then
+      for _, other in ipairs(by_key[key.outs .. "\n" .. key.ins] or {}) do
+        if other ~= name then undone[name] = true; break end
+      end
+    end
+  end
+  local unlocks = {}
+  for name, technology in pairs(prototypes.technology or {}) do
+    local effects = read(function() return technology.effects end)
+    for _, effect in pairs(type(effects) == "table" and effects or {}) do
+      if effect.type == "unlock-recipe" and type(effect.recipe) == "string" then
+        local list = unlocks[effect.recipe] or {}
+        unlocks[effect.recipe] = list
+        if list[#list] ~= name then list[#list + 1] = name end
+      end
+    end
+  end
+  for _, list in pairs(unlocks) do table.sort(list) end
+  return { undone = undone, unlocks = unlocks }
+end
+function M.init()
+  storage.production_roots, storage.recipe_facts = build_roots(), recipe_facts()
+end
+local function facts()
+  -- (A save from before it has none until then.)
+  if storage.recipe_facts == nil then M.init() end
+  return storage.recipe_facts
 end
 
--- The technologies whose effects unlock any of these recipes, sorted (one
--- pass over the force's technologies; only a refusal reads it).
-local function unlocked_by(force, recipes)
-  local wanted, found = {}, {}
-  for _, recipe in ipairs(recipes) do wanted[recipe.name] = true end
-  for name, technology in pairs(force.technologies or {}) do
-    for _, effect in pairs(technology_effects(technology)) do
-      if effect.type == "unlock-recipe" and wanted[effect.recipe] then found[#found + 1] = name; break end
+-- The technologies whose effects unlock any of these recipes, sorted.
+local function unlocked_by(recipes)
+  local unlocks, seen, found = facts().unlocks, {}, {}
+  for _, recipe in ipairs(recipes) do
+    for _, name in ipairs(unlocks[recipe.name] or {}) do
+      if not seen[name] then seen[name] = true; found[#found + 1] = name end
     end
   end
   table.sort(found)
@@ -447,14 +447,15 @@ local function candidate_recipes(force, product, permitted_locked, location, by_
     local recipe = force.recipes[name]
     -- Surface conditions are read only for the few recipes that make it.
     if location == nil or conditions_hold(recipe_conditions(recipe), location) then
-      rows[#rows + 1] = { key = name, recipe = recipe,
+      rows[#rows + 1] = { recipe = recipe,
         usable = recipe.enabled or permitted_locked and permitted_locked[name] or false }
     end
   end
   if #rows > 1 then
     local kept = {}
+    local undone = facts().undone
     for _, row in ipairs(rows) do
-      if not undone(force, row.key, row.recipe, by_product) then kept[#kept + 1] = row end
+      if not undone[row.recipe.name] then kept[#kept + 1] = row end
     end
     if #kept > 0 then rows = kept end
   end
@@ -500,7 +501,7 @@ local function expand_targets(force, targets, choices, options)
     if #locked > 0 and not options.partial then
       local names = {}
       for _, recipe in ipairs(locked) do names[#names + 1] = recipe.name end
-      local technologies = unlocked_by(force, locked)
+      local technologies = unlocked_by(locked)
       error(string.format("NO_UNLOCKED_ROUTE: no progression route for %s: producing recipes are not unlocked (%s; %s)",
         product, table.concat(names, ", "), #technologies > 0 and ("unlocked by " .. table.concat(technologies, ", "))
           or "no technology unlocks them"), 0)
@@ -942,15 +943,11 @@ end
 -- the recipe searches are index lookups, the rest grows with the tree.
 M.EXPAND_WORK = 200
 M.EXPAND_NODE_WORK = 4
--- What one prototype entry a resource catalogue step reads is charged.
-M.ROOT_ENTRY_WORK = 2
-
 -- production_requirements as a job (control.lua registers it): the recipes
--- by product first, INDEX_RECIPE_WORK per recipe over ticks, then the resource
--- catalogue a step per work item (charged by the entries it reads, also
--- when this peer has it already), then the expansion whole, once
--- EXPAND_WORK fits what is left of the tick or after one deferral to a
--- fresh tick, charged by the nodes it made.
+-- by product first, INDEX_RECIPE_WORK per recipe over ticks, then the
+-- expansion whole (the resource catalogue and recipe facts are M.init's,
+-- in storage), once EXPAND_WORK fits what is left of the tick or after one
+-- deferral to a fresh tick, charged by the nodes it made.
 M.job = {
   start = function(params)
     validate(params)
@@ -963,12 +960,6 @@ M.job = {
       budget.left = budget.left - math.ceil(#S.index.names / 16)
     end
     if not index_step(force, S.index, budget) then return nil end
-    while not S.roots_done do
-      if budget.left <= 0 then return nil end
-      local cost = roots_step(S.roots_step or 1)
-      if not cost then S.roots_done = true; break end
-      S.roots_step, budget.left = (S.roots_step or 1) + 1, budget.left - M.ROOT_ENTRY_WORK * cost
-    end
     if budget.left < M.EXPAND_WORK and not S.waited then
       S.waited = true
       return nil

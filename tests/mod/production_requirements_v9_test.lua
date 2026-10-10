@@ -30,13 +30,17 @@ function prototypes.get_entity_filtered(filters)
   for name, proto in pairs(prototypes.entity or {}) do if wanted[proto.type] then found[name] = proto end end
   return mock.custom_table(found)
 end
--- Roots are built once per load (prototypes never change at runtime): a
--- test that changes prototype data loads the module again.
+-- Roots are read into storage when the mod starts or its prototypes change
+-- (prototypes never change at runtime): a test that changes prototype data
+-- loads the module again and runs its init, as on_configuration_changed.
 local function reload()
   package.loaded["scripts.production_requirements"] = nil
-  return require("scripts.production_requirements")
+  local module = require("scripts.production_requirements")
+  module.init()
+  return module
 end
 _G.game = { tick = 42 }
+_G.storage = {}
 _G.defines = { flow_precision_index = { five_seconds = 1, one_minute = 2, ten_minutes = 3, one_hour = 4 } }
 local production = require("scripts.production_requirements")
 local ambiguous, ambiguity = pcall(production.production_requirements, { targets = { widget = 3 } })
@@ -320,10 +324,9 @@ check(multiple.partial == true and multiple.ambiguities[1].kind == "location_unl
   and multiple.ambiguities[1].candidates[1] == "mineral-science" and multiple.ambiguities[1].candidates[2] == "second-unlock"
   and next(multiple.remaining_science_packs) == nil and #multiple.missing_technologies == 0,
   "multiple location unlocks require a choice without fabricated science or technologies")
--- The resource catalogue is built a step per work item: the first request
--- after a cold cache spreads it over ticks, and a peer whose cache is warm
--- charges the same work tick by tick (a job's progress is game state on
--- every peer) and answers the same.
+-- The resource catalogue is read whole at init, never in a tick: the job
+-- reads no prototype for it, and a later load (storage kept, no init)
+-- answers the same without reading it again.
 do
   local function same(a, b)
     if type(a) ~= "table" or type(b) ~= "table" then return a == b end
@@ -333,40 +336,24 @@ do
   end
   local jobs = require("scripts.jobs")
   local entity = native_autoplace.autoplace_settings.entity
-  local saved = entity.settings
+  local saved, filter = entity.settings, prototypes.get_entity_filtered
   local many = {}
   for name in pairs(saved) do many[name] = {} end
   for i = 1, 400 do many["autoplaced-" .. i] = {} end
   entity.settings = many
+  local walks = 0
+  prototypes.get_entity_filtered = function(filters) walks = walks + 1; return filter(filters) end
   production = reload()
+  local built = walks
   local params = { targets = { ["iron-plate"] = 7 }, recipe_choices = { ["iron-plate"] = "smelting" } }
-  local spent = {}
-  local job = { start = production.job.start, step = function(S, budget)
-    local before = budget.left
-    local result = production.job.step(S, budget)
-    spent[#spent + 1] = before - budget.left
-    return result
-  end }
-  local cold, cold_ticks = jobs.run_now(job, params)
-  local cold_spent = spent
-  spent = {}
-  local warm, warm_ticks = jobs.run_now(job, params)
-  local most = 0
-  for _, n in ipairs(cold_spent) do most = math.max(most, n) end
-  check(cold ~= nil and cold.raw["iron-ore"] == 7 and cold_ticks > 1 and most <= jobs.WORK_PER_TICK + production.ROOT_ENTRY_WORK * 402,
-    "the first request after a cold cache builds the catalogue over " .. cold_ticks .. " ticks")
-  check(warm_ticks == cold_ticks and same(spent, cold_spent) and same(warm, cold),
-    "a warm catalogue is charged the same work each tick and answers the same")
-  -- A peer that loaded mid-build catches up on its next step, charged alike.
-  production = reload()
-  local S = production.job.start(params)
-  local first
-  repeat first = production.job.step(S, { left = 20 }) until first ~= nil or (S.roots_step or 1) > 1
-  local mid, at = first == nil and not S.roots_done, S.roots_step
-  production = reload()
-  local resumed = jobs.run_now({ start = function() return S end, step = production.job.step }, params)
-  check(mid and same(resumed, cold), "a catalogue build interrupted by a load (at step " .. tostring(at)
-    .. ") finishes with the same answer")
+  local answer, ticks = jobs.run_now(production.job, params)
+  check(built == 2 and walks == 2 and answer ~= nil and answer.raw["iron-ore"] == 7,
+    "init reads the catalogue; the job (" .. ticks .. " ticks) reads none of it")
+  package.loaded["scripts.production_requirements"] = nil
+  production = require("scripts.production_requirements")
+  local loaded = jobs.run_now(production.job, params)
+  check(walks == 2 and same(loaded, answer), "a later load answers from storage, the same")
+  prototypes.get_entity_filtered = filter
   entity.settings = saved
   production = reload()
 end
@@ -383,6 +370,15 @@ end
   force.recipes.lube_empty = recipe("empty-lube-barrel", { { name = "lube-barrel", amount = 1 } },
     { { name = "barrel", amount = 1 }, { name = "lube", amount = 50 } }, true, 0.2, "crafting-with-fluid")
   force.recipes.lube = recipe("lube", { { name = "steel-sheet", amount = 1 } }, { { name = "lube", amount = 10 } }, true, 1, "chemistry")
+  -- Which recipes another undoes is prototype data, read at init (here
+  -- from the mock's recipes, as the game's force recipes mirror them).
+  local function sync_prototypes()
+    prototypes.recipe, prototypes.technology = {}, {}
+    for _, r in pairs(force.recipes) do prototypes.recipe[r.name] = r end
+    for name, t in pairs(force.technologies or {}) do prototypes.technology[name] = t.prototype or {} end
+    production.init()
+  end
+  sync_prototypes()
   local barrels = production.production_requirements({ targets = { barrel = 2, lube = 20 } })
   local by_item = {}
   for _, node in ipairs(barrels.nodes) do by_item[node.item] = node.recipe end
@@ -399,13 +395,65 @@ end
     "an ambiguous route refuses RECIPE_CHOICE_NEEDED")
   force.technologies["future-tech"] = { name = "future-tech", researched = false, prerequisites = {},
     prototype = { effects = { { type = "unlock-recipe", recipe = "locked" } } } }
+  sync_prototypes()
   local ok_locked, locked = pcall(production.production_requirements, { targets = { future = 1 } })
   check(not ok_locked and tostring(locked):find(
     "NO_UNLOCKED_ROUTE: no progression route for future: producing recipes are not unlocked (locked; unlocked by future-tech)", 1, true) ~= nil
     and errors.deliberate(locked), "a locked-only product refuses NO_UNLOCKED_ROUTE, naming the technology that unlocks it")
   force.technologies["future-tech"] = nil
+  sync_prototypes()
   local ok_none, none = pcall(production.production_requirements, { targets = { future = 1 } })
   check(not ok_none and tostring(none):find("(locked; no technology unlocks them)", 1, true) ~= nil,
     "with no technology unlocking it the refusal says so")
+end)()
+
+-- The init-built facts match a search of the recipes themselves: a recipe
+-- is undone when another unhidden recipe has its ingredients as products
+-- and its products as ingredients (the per-request check 0.38 made), and a
+-- recipe's unlocking technologies are those whose effects name it.
+;(function()
+  local function r(name, ins, outs, hidden)
+    local rows = function(list) local out = {}; for _, n in ipairs(list) do out[#out + 1] = { name = n, amount = 1 } end; return out end
+    return { name = name, ingredients = rows(ins), products = rows(outs), hidden = hidden }
+  end
+  local recipes = {
+    r("barrel", { "steel" }, { "barrel" }), r("fill", { "barrel", "water" }, { "water-barrel" }),
+    r("empty", { "water-barrel" }, { "water", "barrel" }),
+    -- undone only by a hidden recipe: kept
+    r("melt", { "ice" }, { "water" }), r("freeze", { "water" }, { "ice" }, true),
+    -- one swaps with itself: kept alone, undone by an identical twin
+    r("flip", { "a", "b" }, { "a", "b" }), r("twin-1", { "c" }, { "c" }), r("twin-2", { "c" }, { "c" }),
+    r("mine", {}, { "ore" }), r("smelt", { "ore" }, { "plate" }),
+  }
+  prototypes.recipe = {}
+  for _, recipe in ipairs(recipes) do prototypes.recipe[recipe.name] = recipe end
+  prototypes.technology = {
+    ["t-b"] = { effects = { { type = "unlock-recipe", recipe = "fill" }, { type = "unlock-recipe", recipe = "empty" } } },
+    ["t-a"] = { effects = { { type = "unlock-recipe", recipe = "fill" }, { type = "unlock-space-location", space_location = "x" } } },
+    ["t-c"] = {},
+  }
+  production.init()
+  local function key(rows) local n = {}; for _, row in ipairs(rows) do n[#n + 1] = row.name end; table.sort(n); return table.concat(n, "|") end
+  local expected = {}
+  for _, recipe in ipairs(recipes) do
+    for _, other in ipairs(recipes) do
+      if other ~= recipe and not other.hidden and #recipe.ingredients > 0
+        and key(other.products) == key(recipe.ingredients) and key(other.ingredients) == key(recipe.products) then
+        expected[recipe.name] = true
+      end
+    end
+  end
+  local facts = storage.recipe_facts
+  local same = true
+  for _, recipe in ipairs(recipes) do
+    if (facts.undone[recipe.name] == true) ~= (expected[recipe.name] == true) then same = false end
+  end
+  check(same and facts.undone.fill and facts.undone.empty and not facts.undone.melt and not facts.undone.flip
+    and facts.undone["twin-1"] and not facts.undone.mine,
+    "the init-built set of undone recipes matches a search of every recipe pair")
+  check(table.concat(facts.unlocks.fill, ",") == "t-a,t-b" and table.concat(facts.unlocks.empty, ",") == "t-b"
+    and facts.unlocks.smelt == nil, "the init-built unlocks name each recipe's technologies, sorted")
+  storage.recipe_facts = nil
+  prototypes.recipe, prototypes.technology = nil, nil
 end)()
 os.exit(failures == 0 and 0 or 1)

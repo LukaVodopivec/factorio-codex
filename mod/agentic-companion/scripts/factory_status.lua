@@ -58,6 +58,7 @@ local benchmark = require("scripts.benchmark")
 local watches = require("scripts.watches")
 local journal = require("scripts.journal")
 local errors = require("scripts.errors")
+local entity_settings = require("scripts.entity_settings")
 
 local M = {}
 
@@ -419,13 +420,43 @@ local function packs_made(force, needed)
   return made
 end
 
+-- The first own inserter dropping into a lab whose filter keeps `pack`
+-- out (a whitelist without it, a blacklist with it): {name, position,
+-- mode, filters}, else nil. One small area query around the lab (inside
+-- charted chunks) and a few reads per inserter in it.
+local FILTER_MARGIN = 2.5
+local function filtered_out_by(lab, pack)
+  local ok, found = pcall(function()
+    local box, surface, force = lab.bounding_box, lab.surface, lab.force
+    local area = { left_top = { x = box.left_top.x - FILTER_MARGIN, y = box.left_top.y - FILTER_MARGIN },
+      right_bottom = { x = box.right_bottom.x + FILTER_MARGIN, y = box.right_bottom.y + FILTER_MARGIN } }
+    if not surfaces.footprint_charted(force, surface, area, surfaces.is_platform(surface)) then return nil end
+    for _, inserter in ipairs(surface.find_entities_filtered({ area = area, type = { "inserter" }, force = force })) do
+      local target = inserter.drop_target
+      if target and target.unit_number == lab.unit_number then
+        local settings = entity_settings.current(inserter).inserter
+        local filters = settings and settings.filters or {}
+        if #filters > 0 then
+          local listed = false
+          for _, name in ipairs(filters) do if name == pack then listed = true end end
+          if listed == (settings.mode == "blacklist") then
+            return { name = inserter.name, position = xy(inserter.position), mode = settings.mode, filters = filters }
+          end
+        end
+      end
+    end
+  end)
+  return ok and found or nil
+end
+
 -- Labs lacking each needed pack: starved_by {pack = count of labs}, nil
 -- while none lacks one, from the sampler's labs whose status misses packs
 -- and that have not progressed in 10 s, each one's inventory read (at most
 -- MAX_LACKING_LABS labs; starved_unread counts the rest); starved_at {pack =
 -- positions}: up to MAX_LACKING_AT lab positions per pack,
 -- MAX_LACKING_POSITIONS in all (the packs most labs lack first); a lab on
--- another surface than the read names its surface.
+-- another surface than the read names its surface, and one fed by an
+-- inserter whose filter keeps that pack out names it (filtered_out_by).
 local MAX_LACKING_LABS, MAX_LACKING_AT, MAX_LACKING_POSITIONS = 48, 4, 8
 local function starved_labs(needed, read_surface)
   local packs = {}
@@ -458,7 +489,9 @@ local function starved_labs(needed, read_surface)
     for i = 1, math.min(MAX_LACKING_AT, left, #entry.labs) do
       local lab = entry.labs[i]
       local surface = lab.surface ~= read_surface and surfaces.by_index(lab.surface)
-      at[i] = { x = lab.position.x, y = lab.position.y, surface = surface and surfaces.ref(surface) or nil }
+      at[i] = { x = lab.position.x, y = lab.position.y, surface = surface and surfaces.ref(surface) or nil,
+        filtered_out_by = lab.entity and filtered_out_by(lab.entity, name) or nil }
+      jobs.charge(4)
     end
     left = left - #at
     if #at > 0 then starved_at[name] = at end

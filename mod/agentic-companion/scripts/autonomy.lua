@@ -1413,7 +1413,8 @@ end
 -- science packs and that have not progressed in the last 10 s, with which
 -- of `packs` (names) each holds none of: reads each such lab's input
 -- inventory, at most `limit` labs. Returns rows {position, surface, lacks =
--- {names}}, the inventory reads made and how many such labs were not read.
+-- {names}, entity}, the inventory reads made and how many such labs were not
+-- read.
 function M.labs_lacking(packs, limit)
   local a = data()
   local rows, reads, read_labs, unread = {}, 0, 0, 0
@@ -1444,7 +1445,8 @@ function M.labs_lacking(packs, limit)
           end)
           reads = reads + 1 + #packs
           if ok and #lacks > 0 then
-            rows[#rows + 1] = { position = { x = rec.position.x, y = rec.position.y }, surface = rec.surface, lacks = lacks }
+            rows[#rows + 1] = { position = { x = rec.position.x, y = rec.position.y }, surface = rec.surface, lacks = lacks,
+              entity = rec.entity }
           end
         end
       end

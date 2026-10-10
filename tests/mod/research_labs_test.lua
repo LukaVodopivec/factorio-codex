@@ -18,8 +18,9 @@ _G.script = { register_on_object_destroyed = function() return 1 end }
 _G.prototypes = { item = {}, recipe = {}, space_location = {} }
 
 local finds = 0
+local found_inserters = {}
 local nauvis = mock.surface({ index = 1, name = "nauvis", valid = true,
-  find_entities_filtered = function() finds = finds + 1; return {} end })
+  find_entities_filtered = function() finds = finds + 1; return found_inserters end })
 local automation = { name = "automation", research_unit_energy = 600, research_unit_count = 10,
   research_unit_ingredients = { { type = "item", name = "automation-science-pack", amount = 1 } } }
 -- Packs made: the force's one-minute flow statistics per factory surface.
@@ -221,6 +222,38 @@ check(crowded.starved_by[red] == 48 and crowded.starved_by[mil] == 48 and crowde
   and #crowded.starved_at[green] == 4 and #crowded.starved_at[red] == 4 and crowded.starved_at[mil] == nil
   and inventory_reads == 48,
   "at most 48 labs are read (starved_unread counts the rest); four positions a pack, eight in all")
+-- A starved lab whose feeding inserter's whitelist leaves the missing pack
+-- out names that inserter; a blacklist listing it does too; an inserter
+-- feeding another entity, or one whose filter lets the pack in, is no cause.
+do
+  local filtered = stocked(30, 1, { [red] = 1, [mil] = 1 })
+  filtered.entity = mock.entity({ valid = true, name = "lab", type = "lab", position = { x = 30, y = 7 },
+    unit_number = filtered.unit, surface = nauvis, force = force,
+    bounding_box = { left_top = { x = 28.5, y = 5.5 }, right_bottom = { x = 31.5, y = 8.5 } },
+    get_inventory = function() return mock.inventory({ get_item_count = function(name) return name == green and 0 or 1 end }) end })
+  local function inserter(x, target, mode, filters)
+    return mock.entity({ valid = true, name = "inserter", type = "inserter", position = { x = x, y = 9.5 },
+      drop_target = target, filter_slot_count = 5, use_filters = true, inserter_filter_mode = mode,
+      inserter_stack_size_override = 0, inserter_spoil_priority = "none",
+      get_filter = function(index) return filters[index] and { name = filters[index] } or nil end })
+  end
+  local other = mock.entity({ valid = true, unit_number = 9999 })
+  found_inserters = { inserter(29.5, other, "whitelist", { red }), inserter(30.5, filtered.entity, "whitelist", { red, green }),
+    inserter(31.5, filtered.entity, "whitelist", { red, mil }) }
+  sampled({ filtered })
+  local named = read().labs.starved_at[green][1]
+  check(named.x == 30 and named.filtered_out_by and named.filtered_out_by.position.x == 31.5
+    and named.filtered_out_by.mode == "whitelist" and named.filtered_out_by.filters[1] == red
+    and named.filtered_out_by.filters[2] == mil and named.filtered_out_by.name == "inserter",
+    "a starved lab names the feeding inserter whose whitelist leaves the missing pack out")
+  found_inserters = { inserter(30.5, filtered.entity, "blacklist", { green }) }
+  check(read().labs.starved_at[green][1].filtered_out_by.mode == "blacklist",
+    "a feeding inserter whose blacklist lists the missing pack is named too")
+  found_inserters = { inserter(30.5, filtered.entity, "whitelist", { green }), inserter(29.5, other, "whitelist", { red }) }
+  check(read().labs.starved_at[green][1].filtered_out_by == nil,
+    "no filtered_out_by while every feeding filter lets the pack in")
+  found_inserters, finds = {}, 0
+end
 sampled({ stocked(0, 1, { [red] = 1, [green] = 1, [mil] = 1 }) })
 local stocked_up = read().labs
 check(stocked_up.starved_by == nil and stocked_up.starved_at == nil, "no lab lacking a pack: no starved_by or starved_at")
@@ -232,7 +265,7 @@ force.current_research = nil
 local idle = read()
 check(idle.labs.count == 1 and idle.unit_time_s == nil and idle.packs_per_minute_needed == nil and idle.eta_seconds == nil,
   "without current research only labs are shown")
-check(finds == 0, "the research section queries no entity")
+check(finds == 0, "with no lab starved the research section queries no entity")
 
 -- Float leftovers after the last lab goes never show demand or an eta.
 local real_labs = registry.labs

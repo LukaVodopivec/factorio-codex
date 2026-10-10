@@ -1,10 +1,10 @@
 # Live validation
 
-This guide validates release **0.37.0** against a real Factorio game: start a
+This guide validates release **0.38.0** against a real Factorio game: start a
 test server, connect a client, and check the tools and plans live. Offline
 tests (`npm test`) cover the same contracts with fixtures; only a live run
 shows the engine's own behaviour. Earlier live evidence below stays historical
-until a 0.37.0 run is recorded.
+until a 0.38.0 run is recorded.
 
 The reference setup uses two machines. The server machine has no dedicated
 GPU and is permanently headless: it runs only the dedicated server, the Node
@@ -193,6 +193,39 @@ alone is not evidence of usable framing.
    re-observe authoritative MCP state.
 
 ## Release checklists
+
+For the 0.38.0 release (travel recovery, live orders, supply and inventory
+facts, from trial 0013), record these observable checks:
+
+- A `travel` step waiting aboard re-checks the route: a platform whose
+  schedule no longer names the destination ends it `NO_ROUTE`, and one with no
+  working thruster that stands still away from the destination ends it
+  `PLATFORM_CANNOT_MOVE`. `plan_status`, `travel_phase` and
+  `observe_local.active_task` show the platform's state, speed, location,
+  working thrusters and the wait's deadline tick.
+- `travel` up waits for a platform whose next stop is the body's planet
+  instead of failing `PLATFORM_NOT_IN_ORBIT`; `LAND_REFUSED` carries the
+  platform's state, location, paused flag, hub and schedule record.
+- `cancel_plan {plan_id}` on the pilot surface cancels only a pilot plan
+  (`NOT_YOUR_PLAN`, `PLAN_NOT_PENDING` otherwise), logs origin
+  `cancel_plan/pilot`, and a launch or landing under way finishes.
+- A package whose every step names a platform runs beside a waiting travel
+  step, and the travel step still polls between its steps.
+- `next_event`'s body block has `packages_open`, `idle_seconds` and
+  `idle_since_tick`; `orders` shows each package's live plan outcome; a cargo
+  pod landing on a planet rides along in `space_events` without waking.
+- `observe_local.character` and the `factory_status` body show
+  `free_slots`; a fetch on a full body says "not looked for: inventory full",
+  and upkeep skips what the body cannot carry.
+- Supply smelting passes over furnaces an own inserter or loader serves, and
+  a shortfall lists `rejected_furnaces` and `untried_holders`.
+- `progression_status` lists `queueable_after_queued` and
+  `queue_eta_seconds`; the game accepts a technology behind its queued
+  prerequisites.
+- `platform_status` counts turrets and thrusters by name with ammo state,
+  never truncated; `describe_prototype` describes asteroids and ammo.
+- Ticks stay within 8 ms at about 230 machines, including `plan_status` and
+  `run_snapshot`.
 
 For the 0.37.0 release (make the obvious moves visible), record these
 observable checks:

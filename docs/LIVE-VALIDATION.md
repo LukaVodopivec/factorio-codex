@@ -1,10 +1,10 @@
 # Live validation
 
-This guide validates release **0.36.0** against a real Factorio game: start a
+This guide validates release **0.37.0** against a real Factorio game: start a
 test server, connect a client, and check the tools and plans live. Offline
 tests (`npm test`) cover the same contracts with fixtures; only a live run
 shows the engine's own behaviour. Earlier live evidence below stays historical
-until a 0.36.0 run is recorded.
+until a 0.37.0 run is recorded.
 
 The reference setup uses two machines. The server machine has no dedicated
 GPU and is permanently headless: it runs only the dedicated server, the Node

@@ -1198,12 +1198,35 @@ local function removed_result(action)
   return { status = REMOVED_ACTIONS[action], detail = "REMOVED_ACTION: " .. action .. " no longer exists",
     outcome = { code = "REMOVED_ACTION", action = action } }
 end
-local function wait_timeout_detail(step)
+-- What a wait_for_item has seen, arithmetic only: the count now, the net
+-- inflow per minute since the wait began (first read to latest), the
+-- seconds to the target at that inflow (absent while it does not rise; 0
+-- once met), the seconds waited and the timeout. trial 0013: a 300 s wait
+-- for 89 plates at 16/min timed out with no word on the rate.
+local function wait_progress(step)
   local start = tonumber(step._starting_count) or 0
   local current = tonumber(step._current_count) or start
   local elapsed = step._wait_started_tick and game.tick - step._wait_started_tick or 0
-  return string.format("ITEM_WAIT_TIMEOUT: timed out waiting for %d %s in %s: starting %d, current %d, observed delta %d after %d ticks",
-    step.count, step.item, step.inventory, start, current, current - start, elapsed)
+  local per_min = elapsed > 0 and math.floor((current - start) * 3600 / elapsed * 10 + 0.5) / 10 or nil
+  local to_target
+  if current >= step.count then to_target = 0
+  elseif per_min and per_min > 0 then to_target = math.ceil((step.count - current) * 60 / ((current - start) * 3600 / elapsed)) end
+  return { item = step.item, count = current, target = step.count, starting_count = start, net_per_min = per_min,
+    seconds_to_target = to_target, waited_s = math.floor(elapsed / 60), timeout_s = math.floor(wait_timeout_ticks(step) / 60) }
+end
+local function wait_timeout_detail(step)
+  local p = wait_progress(step)
+  local elapsed = step._wait_started_tick and game.tick - step._wait_started_tick or 0
+  local rate = p.seconds_to_target
+    and string.format("; net inflow %.1f/min: %d s more to %d at that rate", p.net_per_min, p.seconds_to_target, p.target)
+    or string.format("; net inflow %.1f/min: the count does not rise", p.net_per_min or 0)
+  return string.format("ITEM_WAIT_TIMEOUT: timed out waiting for %d %s in %s: starting %d, current %d, observed delta %d after %d ticks%s",
+    step.count, step.item, step.inventory, p.starting_count, p.count, p.count - p.starting_count, elapsed, rate)
+end
+local function wait_timeout_result(step)
+  local outcome = wait_progress(step)
+  outcome.code = "ITEM_WAIT_TIMEOUT"
+  return { status = "failed", detail = wait_timeout_detail(step), outcome = outcome }
 end
 local function wait_for_item(plan, step)
   plan.wait_started_tick = plan.wait_started_tick or game.tick
@@ -1221,7 +1244,7 @@ local function wait_for_item(plan, step)
   if (not entity or entity.error) and dx * dx + dy * dy > 900 then
     if timed_out then
       plan.wait_started_tick, plan.next_check_tick = nil, nil
-      return { status = "failed", detail = wait_timeout_detail(step) }
+      return wait_timeout_result(step)
     end
     local distance = math.sqrt(dx * dx + dy * dy)
     plan.wait_started_tick, plan.next_check_tick = nil, nil
@@ -1245,11 +1268,14 @@ local function wait_for_item(plan, step)
   step._current_count = found
   if found >= step.count then
     plan.wait_started_tick, plan.next_check_tick = nil, nil
-    return { status = "done", detail = step.inventory .. " has " .. found .. " " .. step.item }
+    local detail = step.inventory .. " has " .. found .. " " .. step.item
+    local outcome = wait_progress(step)
+    outcome.detail = detail
+    return { status = "done", detail = detail, outcome = outcome }
   end
   if timed_out then
     plan.wait_started_tick, plan.next_check_tick = nil, nil
-    return { status = "failed", detail = wait_timeout_detail(step) }
+    return wait_timeout_result(step)
   end
   plan.next_check_tick = game.tick + 30
 end
@@ -1272,7 +1298,7 @@ local function expire_parked_waits(tasks)
         step = plan.current_step, action = step.action, status = "failed", error = detail,
         code = step.action == "wait_for_research" and "RESEARCH_WAIT_TIMEOUT" or "ITEM_WAIT_TIMEOUT",
         result = step.action == "wait_for_research" and { code = "RESEARCH_WAIT_TIMEOUT",
-          technology = step.technology, elapsed_ticks = game.tick - plan.wait_started_tick } or nil,
+          technology = step.technology, elapsed_ticks = game.tick - plan.wait_started_tick } or wait_timeout_result(step).outcome,
       }
       plan.current_task = nil
       plan.wait_started_tick, plan.next_check_tick = nil, nil

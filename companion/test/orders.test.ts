@@ -112,8 +112,7 @@ describe("package auto-queue", () => {
     await createPackageQueue(() => dir, bridge).tick();
     expect(queuedPlans(call)).toHaveLength(2);
     expect(createOrdersTracker(() => dir).attach(result({ summary: "ok" })).structuredContent.orders.packages)
-      .toEqual([{ id: "iron-a", status: "queued", plan_id: 41, plan_status: "queued" },
-        { id: "iron-b", status: "queued", plan_id: 42, plan_status: "queued" }]);
+      .toEqual([{ id: "iron-a", status: "queued", plan_id: 41 }, { id: "iron-b", status: "queued", plan_id: 42 }]);
   });
 
   it("spans a package's footprint over its anchor and every position its steps name, padded", () => {
@@ -1048,6 +1047,8 @@ describe("live package outcomes", () => {
     state.packages["iron-a"]!.plan_ended_tick = 950;
     fs.writeFileSync(path.join(dir, "package-queue.json"), JSON.stringify(state));
     expect(packages({ active_plan_id: 41, package_plans: [41] })[0]).toEqual({ id: "iron-a", status: "queued", plan_id: 41, plan_status: "completed" });
+    // Without a live read only a recorded end is stated, never a stale queued.
+    expect(packages().map((row: any) => row.plan_status)).toEqual(["completed", undefined]);
     // A package the bridge has not reached is pending, with no plan_status.
     writeLedger(dir, 3, [furnaces("iron-b"), furnaces("iron-c")]);
     expect(packages({ package_plans: [42] })).toEqual([

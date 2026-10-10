@@ -88,13 +88,13 @@ export interface LivePlans {
 }
 
 /** A queued record's plan now: its recorded end, else (with a live read)
- *  running, queued or ended, else queued; captures only have no plan and are
- *  done. */
+ *  running, queued or ended; absent without a live read, which would only
+ *  repeat the stale queued. Captures only have no plan and are done. */
 function planStatusOf(record: PackageRecord, live?: LivePlans): PackagePlanStatus | undefined {
   if (record.status !== "queued") return undefined;
   if (record.plan_status !== undefined) return record.plan_status as PackagePlanStatus;
   if (record.plan_id === undefined) return "completed";
-  if (!live) return "queued";
+  if (!live) return undefined;
   if (live.active_plan_id === record.plan_id) return "running";
   if ((luaArray(live.package_plans ?? []) as unknown[]).includes(record.plan_id)) return "queued";
   const last = live.last_plan_ended;

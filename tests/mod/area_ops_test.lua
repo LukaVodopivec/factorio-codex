@@ -525,6 +525,43 @@ local cancelled = run(area_ops.deconstruct_action,
 check(cancelled.outcome.code == "DECONSTRUCTION_CANCELLED" and cancelled.outcome.done == 60 and not doomed[1].marked,
   "mode cancel cancels the orders")
 for _, e in ipairs(doomed) do e.valid = false end
+do
+  -- Cancel also removes own entity and tile ghosts; a filter matches what
+  -- they would build (tile names allowed there). A filter elsewhere names
+  -- entities only: a tile name refuses FILTER_NOT_ENTITY, no Lua fault.
+  prototypes.tile["stone-path"] = { name = "stone-path" }
+  local function ghost(kind, ghost_name, x, force)
+    local e = { valid = true, name = kind, type = kind, ghost_name = ghost_name, position = { x = x, y = 230.5 },
+      force = force or own, bounding_box = { left_top = { x = x - 0.5, y = 230 }, right_bottom = { x = x + 0.5, y = 231 } } }
+    e.destroy = function(args) e.valid, e.raised = false, args and args.raise_destroy end
+    world[#world + 1] = e
+    return e
+  end
+  local chest_ghost = ghost("entity-ghost", "wooden-chest", 201.5)
+  local path_ghost = ghost("tile-ghost", "stone-path", 202.5)
+  local foreign = ghost("entity-ghost", "wooden-chest", 203.5, nature)
+  local area = { left_top = { x = 200, y = 229 }, right_bottom = { x = 206, y = 232 } }
+  local tiles_only = run(area_ops.deconstruct_action, { area = area, mode = "cancel", filter = { "stone-path" } })
+  check(tiles_only.outcome.code == "DECONSTRUCTION_CANCELLED" and not path_ghost.valid and path_ghost.raised
+    and chest_ghost.valid and tiles_only.outcome.ghosts_removed == 1,
+    "cancel with a tile name removes that tile's own ghosts only")
+  local all = run(area_ops.deconstruct_action, { area = area, mode = "cancel" })
+  check(all.outcome.done == 1 and all.outcome.ghosts_removed == 1 and not chest_ghost.valid and foreign.valid,
+    "cancel removes own entity ghosts in the area, never another force's")
+  foreign.valid = false
+  local spec = area_ops.deconstruct_action
+  local ok_tile, why = pcall(spec.validate, { area = area, filter = { "stone-path" } }, 1)
+  check(not ok_tile and tostring(why):find("^FILTER_NOT_ENTITY: ") ~= nil and tostring(why):find("a tile, not an entity", 1, true) ~= nil,
+    "a tile name in a hand or robots filter refuses FILTER_NOT_ENTITY at queue time")
+  local ok_unknown, unknown = pcall(spec.validate, { area = area, filter = { "nonsense" }, mode = "cancel" }, 1)
+  check(not ok_unknown and tostring(unknown):find("FILTER_NOT_ENTITY", 1, true) ~= nil
+    and pcall(spec.validate, { area = area, filter = { "stone-path" }, mode = "cancel" }, 1),
+    "a name that is no entity refuses; cancel takes tile names")
+  local task = spec.make_task({ area = area, filter = { "stone-path" } })
+  local started, start_error = pcall(spec.runner.start, task)
+  check(not started and tostring(start_error):find("^FILTER_NOT_ENTITY: ") ~= nil,
+    "a hand task begun with a tile filter refuses with its code before any query")
+end
 
 -- Hand: the mine runner is the body's; here a fake one records the order.
 local mined = {}
@@ -622,6 +659,24 @@ check(by_robots.outcome.code == "UPGRADE_ORDERED" and #upgrade_orders == 2 and u
 inventory["fast-transport-belt"] = 0
 local short = run(area_ops.upgrade_action, { center = { x = 309, y = 309 }, radius = 2, from = "transport-belt", to = "fast-transport-belt" })
 check(short.status == "done" and short.outcome.total == 0, "an area without the entity has nothing to upgrade")
+do
+  -- A full body fetches no replacement: the failure says the inventory was full.
+  spawn("transport-belt", { x = 320.5, y = 300.5 }, 4)
+  local main = body.get_main_inventory
+  body.get_main_inventory = function()
+    return { get_insertable_count = function() return 0 end, count_empty_stacks = function() return 0 end }
+  end
+  -- No own line makes it (the shortfall's rate read).
+  local autonomy = require("scripts.autonomy")
+  local producing = autonomy.producing
+  autonomy.producing = function() return 0, 0 end
+  local full = run(area_ops.upgrade_action, { center = { x = 320, y = 300 }, radius = 2, from = "transport-belt",
+    to = "fast-transport-belt" })
+  body.get_main_inventory, autonomy.producing = main, producing
+  check(full.status == "failed" and full.outcome.code == "UPGRADE_FAILED" and full.outcome.inventory_full == true
+    and full.outcome.free_slots == 0 and full.outcome.failed[1].reason:find("my inventory was full", 1, true) ~= nil,
+    "an upgrade a full body could not fetch for says inventory_full, not only that it has none")
+end
 
 -- ----------------------------------------------------------- copy_settings
 

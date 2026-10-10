@@ -585,8 +585,20 @@ reset()
 room = 0
 chest({ x = 2.5, y = 0.5 }, { ["iron-plate"] = 100 })
 local full = run({ items = { { name = "iron-plate", count = 10 } } })
-check(#calls == 0 and full.status == "failed" and full.detail:match("my inventory is full"),
-  "with a full inventory no source is visited and the shortfall says why")
+check(#calls == 0 and full.status == "failed" and full.detail:match("not looked for: inventory full %(0 free%)")
+  and not full.detail:match("no own chest") and full.outcome.shortfall[1].inventory_full == true
+  and supply.inventory_full(full),
+  "with a full inventory no source is visited and the shortfall says it looked for none, not that none holds it")
+body.get_main_inventory = function()
+  return { get_insertable_count = function() return 0 end, count_empty_stacks = function() return 0 end }
+end
+do
+  reset()
+  chest({ x = 2.5, y = 0.5 }, { ["iron-plate"] = 100 })
+  local full_slots = run({ items = { { name = "iron-plate", count = 10 } } })
+  check(full_slots.outcome.shortfall[1].free_slots == 0 and full_slots.detail:match("inventory full %(0 free%)"),
+    "a full-inventory shortfall row carries the free slots it read")
+end
 body.get_main_inventory = function() return stacks.view(inventory, function() return 1000 end) end
 
 -- Smelted items are not hand-craftable: the shortfall names why.
@@ -1394,4 +1406,205 @@ do
   check(supply.hand_craft(body, { { name = "iron-plate", count = 1 } }) == nil,
     "hand_craft is nil when nothing would be hand-crafted")
 end
+
+-- Holders the registry last read holding the item but empty now are passed
+-- over a few at a time until one holds it; an empty take is not one of the
+-- six takes; the take cap names the holders it left.
+;(function()
+  local registry_mock = package.loaded["scripts.registry"]
+  local live_holders = registry_mock.holders_with
+  -- The registry's last read: a chest's `seen` items when set, else its live ones.
+  registry_mock.holders_with = function(item, position, cap, skip)
+    local rows = {}
+    for _, e in ipairs(world) do
+      local seen = e.seen or e.items
+      -- A destroyed chest stays listed until the registry's next read (gone).
+      if (e.valid or e.gone) and e.type == "container" and (seen[item] or 0) > 0 then
+        local row = { entity = e, type = e.type, position = e.position }
+        if not skip(row) then rows[#rows + 1] = row end
+      end
+    end
+    table.sort(rows, function(a, b) return a.position.x < b.position.x end)
+    while #rows > cap do table.remove(rows) end
+    return rows
+  end
+  supply.register_runner("extract", stub("extract", function(task)
+    local source = at(task.target)
+    if source.vanish then source.items = {} end
+    for name, count in pairs(task.items) do move(source, name, count) end
+    return { status = "done", detail = "took" }
+  end))
+  prototypes.item["steel-plate"] = prototypes.item["steel-plate"] or { stack_size = 100 }
+
+  reset()
+  for x = 2, 6 do chest({ x = x + 0.5, y = 0.5 }, {}).seen = { ["steel-plate"] = 10 } end
+  local far = chest({ x = 20.5, y = 0.5 }, { ["steel-plate"] = 50 })
+  local stale = run({ items = { { name = "steel-plate", count = 10 } } })
+  check(stale.status == "done" and #calls == 1 and calls[1].task.target.x == 20.5 and far.items["steel-plate"] == 40,
+    "holders the registry last saw holding the item but empty now are passed over until one holds it")
+
+  reset()
+  for x = 2, 6 do
+    local gone = chest({ x = x + 0.5, y = 0.5 }, {})
+    gone.seen, gone.gone, gone.valid = { ["steel-plate"] = 10 }, true, false
+  end
+  local beyond = chest({ x = 20.5, y = 0.5 }, { ["steel-plate"] = 50 })
+  local gone_run = run({ items = { { name = "steel-plate", count = 10 } } })
+  check(gone_run.status == "done" and #calls == 1 and calls[1].task.target.x == 20.5 and beyond.items["steel-plate"] == 40,
+    "registry holders whose chest is gone are passed over too, so the scan reaches one that holds it")
+
+  reset()
+  for x = 2, 4 do chest({ x = x + 0.5, y = 0.5 }, { ["steel-plate"] = 5 }).vanish = true end
+  for x = 5, 9 do chest({ x = x + 0.5, y = 0.5 }, { ["steel-plate"] = 1 }) end
+  chest({ x = 20.5, y = 0.5 }, { ["steel-plate"] = 50 })
+  local emptied = run({ items = { { name = "steel-plate", count = 10 } } })
+  check(emptied.status == "done" and #calls == 9 and calls[9].task.target.x == 20.5 and inventory["steel-plate"] == 10,
+    "takes that found their source empty are not among the six: three empty and six real takes fill the need")
+  reset()
+  for x = 2, 7 do chest({ x = x + 0.5, y = 0.5 }, { ["steel-plate"] = 5 }).vanish = true end
+  chest({ x = 20.5, y = 0.5 }, { ["steel-plate"] = 50 })
+  local walked_empty = run({ items = { { name = "steel-plate", count = 10 } } })
+  check(walked_empty.status == "failed" and #calls == 6
+    and walked_empty.detail:find("6 more were empty); untried: chest at (20.5, 0.5) holds 50", 1, true) ~= nil,
+    "empty takes are bounded too (six), and the holders left are named")
+
+  reset()
+  for x = 2, 9 do chest({ x = x + 0.5, y = 0.5 }, { ["steel-plate"] = 1 }) end
+  local capped = run({ items = { { name = "steel-plate", count = 8 } } })
+  local row = capped.outcome.shortfall[1]
+  check(capped.status == "partial" and #calls == 6 and inventory["steel-plate"] == 6 and row.untried_holders
+    and #row.untried_holders == 2 and row.untried_holders[1].x == 8.5 and row.untried_holders[1].count == 1
+    and row.untried_holders[1].kind == "chest"
+    and capped.detail:find("took from 6 sources (at most 6 per item; 0 more were empty); untried: chest at (8.5, 0.5) holds 1", 1, true),
+    "the take cap ends the search and the shortfall lists the holders it did not try, with position and count")
+  registry_mock.holders_with = live_holders
+end)()
+
+-- Smelting passes over a furnace an own inserter or loader serves (a
+-- line's, even while starved and idle), and the shortfall names each
+-- furnace passed over and why.
+;(function()
+  local function idle_furnace_at(x, unit)
+    local f = add({ type = "furnace", name = "stone-furnace", position = { x = x, y = 0 }, items = {}, unit_number = unit,
+      bounding_box = { left_top = { x = x - 1, y = -1 }, right_bottom = { x = x + 1, y = 1 } },
+      prototype = { crafting_categories = { smelting = true }, get_crafting_speed = function() return 2 end } })
+    f.source = {}
+    f.get_inventory = function(id)
+      local book = id == defines.inventory.furnace_source and f.source or f.items
+      return { get_item_count = function(name)
+        if name then return book[name] or 0 end
+        local total = 0; for _, n in pairs(book) do total = total + n end; return total
+      end }
+    end
+    f.get_output_inventory = function() return holder(f.items) end
+    f.get_fuel_inventory = function() return { is_empty = function() return false end } end
+    f.is_crafting = function() return false end
+    return f
+  end
+  supply.register_runner("extract", stub("extract", function(task)
+    local source = at(task.target)
+    for name, count in pairs(task.items) do move(source, name, count) end
+    return { status = "done", detail = "took" }
+  end))
+  -- The body's load smelts at once here.
+  supply.register_runner("insert", stub("insert", function(task)
+    local f = at(task.target)
+    for name, count in pairs(task.items) do
+      inventory[name] = inventory[name] - count
+      if name == "iron-ore" then f.items["iron-plate"] = (f.items["iron-plate"] or 0) + count end
+    end
+    return { status = "done", detail = "inserted", outcome = { transfers = {} } }
+  end))
+  local function served_queries(from)
+    local n = 0
+    for index = from + 1, #queries do
+      local q = queries[index]
+      if type(q.type) == "table" and q.type[1] == "inserter" then
+        n = n + 1
+        if not (q.limit <= 24 and q.radius < 6 and q.position) then n = n + 100 end
+      end
+    end
+    return n
+  end
+
+  reset()
+  chest({ x = 1.5, y = 3.5 }, { ["iron-ore"] = 20 })
+  local line = idle_furnace_at(4, 51)
+  add({ type = "inserter", name = "inserter", position = { x = 4.5, y = 1.5 }, drop_target = line })
+  local free = idle_furnace_at(9, 52)
+  local smelted = run({ items = { { name = "iron-plate", count = 5 } } })
+  local load
+  for _, call in ipairs(calls) do if call.kind == "insert" then load = call end end
+  check(smelted.status == "done" and load and load.task.target.x == 9 and free.items["iron-plate"] == 0
+    and (line.items["iron-plate"] or 0) == 0,
+    "supply smelting passes over an idle furnace an own inserter feeds and loads the free one")
+  local checked = served_queries(0)
+  check(checked >= 1 and checked <= 2, "each furnace is checked once, by one bounded query around it (" .. checked .. ")")
+
+  reset()
+  chest({ x = 1.5, y = 3.5 }, { ["iron-ore"] = 20 })
+  local fed_line = idle_furnace_at(4, 53)
+  add({ type = "inserter", name = "long-handed-inserter", position = { x = 4.5, y = -2.5 }, pickup_target = fed_line })
+  local loaded = idle_furnace_at(9, 54)
+  add({ type = "loader-1x1", name = "loader-1x1", position = { x = 10.5, y = 0.5 }, loader_container = loaded })
+  local refused = run({ items = { { name = "iron-plate", count = 5 } } })
+  local rejected = refused.outcome.shortfall[1].rejected_furnaces
+  check(refused.status == "failed" and rejected and #rejected == 2 and rejected[1].x == 4
+    and rejected[1].reason == "an own long-handed-inserter at (4.5, -2.5) feeds or empties it"
+    and rejected[2].reason:find("loader%-1x1") ~= nil
+    and refused.detail:find("passed over stone-furnace at (4.0, 0.0): an own long-handed-inserter", 1, true) ~= nil,
+    "with every furnace served, the shortfall names each furnace passed over and the inserter or loader serving it")
+
+  -- More furnaces than one tick checks: the search resumes next tick.
+  reset()
+  chest({ x = 1.5, y = 3.5 }, { ["iron-ore"] = 20 })
+  for i = 1, 10 do
+    local f = idle_furnace_at(2 + 3 * i, 60 + i)
+    add({ type = "inserter", name = "inserter", position = { x = 2 + 3 * i, y = 1.5 }, drop_target = f })
+  end
+  local far_free = idle_furnace_at(50, 99)
+  local spread = { items = { { name = "iron-plate", count = 5 } } }
+  supply.start(spread)
+  local most, result = 0, nil
+  for _ = 1, 400 do
+    local before = #queries
+    result = supply.tick(spread)
+    most = math.max(most, served_queries(before))
+    if result then break end
+  end
+  check(result and result.status == "done" and far_free.items["iron-plate"] == 0 and most <= 8,
+    "eleven candidate furnaces are checked at most eight a tick (" .. most .. ")")
+
+  -- The dry run's smelt estimate counts no served furnace.
+  reset()
+  chest({ x = 1.5, y = 3.5 }, { ["iron-ore"] = 20 })
+  local only = idle_furnace_at(4, 70)
+  local feeder = add({ type = "inserter", name = "inserter", position = { x = 4.5, y = 1.5 }, drop_target = only })
+  local rows = supply.unobtainable(body, { { name = "iron-plate", count = 5 } })
+  check(#rows == 1 and rows[1].reason:find("no idle own furnace smelts it (smelting; one an own inserter or loader serves is a line's)", 1, true) ~= nil,
+    "the dry run counts no idle furnace an own inserter serves")
+  feeder.valid = false
+  check(#supply.unobtainable(body, { { name = "iron-plate", count = 5 } }) == 0,
+    "an idle furnace no inserter serves smelts the dry run's plates")
+
+  -- An insert whose fetch ended on a full body says so in its outcome.
+  reset()
+  local main = body.get_main_inventory
+  body.get_main_inventory = function()
+    return { get_insertable_count = function() return 0 end, count_empty_stacks = function() return 0 end,
+      get_item_count = function(name) return inventory[name] or 0 end, get_contents = function() return {} end }
+  end
+  local target = add({ type = "furnace", name = "stone-furnace", position = { x = 2.5, y = 0.5 }, items = {} })
+  target.get_output_inventory = function() return holder({}) end
+  target.insert = function(stack) return stack.count end
+  chest({ x = 6.5, y = 0.5 }, { coal = 20 })
+  local full_insert = { id = 21, target = { x = 2.5, y = 0.5 }, items = { coal = 5 } }
+  transfer.insert.start(full_insert)
+  local outcome
+  for _ = 1, 10 do outcome = transfer.insert.tick(full_insert); if outcome then break end end
+  body.get_main_inventory = main
+  check(outcome and outcome.status == "failed" and outcome.outcome.code == "ZERO_PROGRESS"
+    and outcome.outcome.inventory_full == true and outcome.detail:find("inventory full", 1, true) ~= nil,
+    "an insert a full body could not fetch for carries inventory_full")
+end)()
 os.exit(failures == 0 and 0 or 1)

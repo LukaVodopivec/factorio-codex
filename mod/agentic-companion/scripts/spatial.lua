@@ -564,7 +564,8 @@ function M.character_state(c)
     end
     return contents
   end
-  local inventory = inventory_contents(c.get_main_inventory())
+  local main = c.get_main_inventory()
+  local inventory = inventory_contents(main)
   local ammo_inventory = inventory_contents(c.get_inventory(defines.inventory.character_ammo))
   -- queue_s: the seconds the queue still needs at the body's crafting speed.
   local ok_summary, summary = pcall(craft.queue_summary, c)
@@ -585,6 +586,8 @@ function M.character_state(c)
   if not human_ok then human_idle_ticks = nil end
   return { position = { x = c.position.x, y = c.position.y }, health = c.health,
     inventory = inventory, inventory_scope = "main", ammo_inventory = ammo_inventory,
+    -- Empty main-inventory slots: at 0 a fetch, pickup or mining of a new item fails.
+    free_slots = items.free_slots(main),
     active_task = tasks.active_summary(), queue_depth = tasks.queue_length(),
     human_control = human_control, human_idle_ticks = human_idle_ticks,
     crafting = crafting, reach_distance = c.reach_distance, build_distance = c.build_distance,

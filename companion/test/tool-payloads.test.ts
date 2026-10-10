@@ -175,6 +175,28 @@ describe("public MCP to Lua DTO mappings", () => {
     expect(descriptions.factory_status).toMatch(/patches: the four nearest resource patches with their outline \(bbox: left_top, right_bottom\), omitted_patches counting the rest/);
   });
 
+  it("names the full-body, chain and plan-time facts in the descriptions, as facts only", () => {
+    const descriptions: Record<string, string> = {};
+    registerMcpTools({ registerTool(name, config: any) { descriptions[name] = config.description; } },
+      async () => ({ call: vi.fn() } as unknown as Bridge), validConfig);
+    const added: Array<[string, RegExp]> = [
+      ["plan_status", /walk_s, tiles and craft_wait_s: the plan's seconds and tiles walking and its seconds waiting on hand-crafts/],
+      ["plan_status", /satisfies_chain: true on a partial plan whose last step's insert only met a full target \(TARGET_CAPACITY\)/],
+      ["next_event", /plan_ended \(with the plan's step outcomes and inventory change, and walk_s, tiles and craft_wait_s/],
+      ["activity_log", /walk_s, tiles and craft_wait_s \(as plan_status\)/],
+      ["mine", /With no room for what it yields it fails INVENTORY_FULL/],
+      ["insert_items", /inventory_full: true when auto_supply found the inventory full/],
+      ["build_ghosts", /inventory_full \(with free_slots\) when a fetch found the inventory full/],
+      ["upgrade_area", /inventory_full \(with free_slots\) when a fetch found the inventory full/],
+      ["queue_plan", /upkeep_skipped \{tick, items, free_slots\}/],
+    ];
+    const remedy = /\b(should|must build|you need|consider|recommend\w*|build more|add more|instead build|it is best|try to)\b/i;
+    for (const [tool, fact] of added) {
+      expect(descriptions[tool], tool).toMatch(fact);
+      expect(descriptions[tool]!.match(fact)![0], tool).not.toMatch(remedy);
+    }
+  });
+
   it("keeps the active step's supply and crafting diagnostics of a plan read", () => {
     const supply = { stage: "auto_supply", supply: { phase: "craft", item: "electronic-circuit", wanted: 40 } };
     const crafting = { recipe: "electronic-circuit", count: 40, queue_s: 18.5 };
@@ -711,6 +733,9 @@ describe("read-only FIFO state", () => {
     expect(normalizeFifo({ queue_depth: 0, idle_seconds: 31 })?.hint).toBe(FIFO_IDLE_HINT);
     expect(normalizeFifo(undefined)).toBeUndefined();
     expect(normalizeFifo({ queue_depth: 0, upkeep_off_since_tick: 900 })?.upkeep_off_since_tick).toBe(900);
+    expect(normalizeFifo({ queue_depth: 0, upkeep_skipped: { tick: 700, items: ["coal"], free_slots: 0 } })?.upkeep_skipped)
+      .toEqual({ tick: 700, items: ["coal"], free_slots: 0 });
+    expect(normalizeFifo({ queue_depth: 0, upkeep_skipped: { tick: 700, items: {} } })).not.toHaveProperty("upkeep_skipped");
   });
 
   it("passes the queued plans' demand totals through the FIFO block", () => {

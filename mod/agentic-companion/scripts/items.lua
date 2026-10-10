@@ -3,6 +3,7 @@
 --                        so a summary never counts a rare plate as a normal
 --                        one (nothing over-reports what supply can move)
 --   sum_contents(inv)    {[key] = count} of an inventory's get_contents()
+--   free_slots(inv)      its empty slots (count_empty_stacks), or nil
 --   spoilable(name)      whether the item spoils (cached per name)
 --   spoil(inv, names)    {[name] = {spoils_in_s, spoil_percent_max}} for the
 --                        spoilable names given, one pass over the slots
@@ -42,6 +43,14 @@ function M.sum_contents(inventory)
     end
   end
   return out
+end
+
+-- The empty slots of an inventory (the body's main: a full one takes no new
+-- item at all), or nil when it cannot be read.
+function M.free_slots(inventory)
+  if not inventory then return nil end
+  local ok, free = pcall(function() return inventory.count_empty_stacks() end)
+  return ok and tonumber(free) or nil
 end
 
 local spoils = {}

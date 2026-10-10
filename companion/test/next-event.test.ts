@@ -58,6 +58,20 @@ describe.each(["full", "read-only"] as McpSurface[])("next_event MCP readback (%
     expect(call.mock.calls.map(([method]) => method)).toEqual(["event_state", "plan_status"]);
   });
 
+  it("carries the plan's walk_s, tiles and craft_wait_s when the mod reports them", async () => {
+    const call = vi.fn(async (method: string) => method === "event_state"
+      ? { ...busy, last_plan_ended: { plan_id: 4, status: "completed", tick: 95 } }
+      : { source: "pilot", status: "completed", outcomes: [], inventory_delta: {}, walk_s: 41.5, tiles: 369.4, craft_wait_s: 12 });
+    const value = await handler({ call } as unknown as Bridge)({ timeout_seconds: 1, since_tick: 90 });
+    expect(value.structuredContent).toMatchObject({ event: "plan_ended", walk_s: 41.5, tiles: 369.4, craft_wait_s: 12 });
+    const bare = vi.fn(async (method: string) => method === "event_state"
+      ? { ...busy, last_plan_ended: { plan_id: 4, status: "completed", tick: 95 } }
+      : { source: "pilot", status: "completed", outcomes: [], inventory_delta: {} });
+    const without = await handler({ call: bare } as unknown as Bridge)({ timeout_seconds: 1, since_tick: 90 });
+    expect(without.structuredContent).not.toHaveProperty("walk_s");
+    expect(without.structuredContent).not.toHaveProperty("craft_wait_s");
+  });
+
   it("retains native failure when detailed outcomes are unavailable", async () => {
     const call = vi.fn(async (method: string) => {
       if (method === "plan_status") throw new Error("unknown plan_id");

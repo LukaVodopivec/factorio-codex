@@ -365,4 +365,42 @@ do
   entity.settings = saved
   production = reload()
 end
+
+-- A recipe another undoes (a barrel's fill and empty) is no route while
+-- another recipe makes the product; refusals lead with their code and a
+-- locked route names the technologies that unlock it.
+;(function()
+  for _, name in ipairs({ "barrel", "lube-barrel", "steel-sheet" }) do prototypes.item[name] = {} end
+  prototypes.fluid.lube = {}
+  force.recipes.barrel = recipe("barrel", { { name = "steel-sheet", amount = 1 } }, { { name = "barrel", amount = 1 } }, true, 1, "crafting")
+  force.recipes.lube_fill = recipe("lube-barrel", { { name = "barrel", amount = 1 }, { name = "lube", amount = 50 } },
+    { { name = "lube-barrel", amount = 1 } }, true, 0.2, "crafting-with-fluid")
+  force.recipes.lube_empty = recipe("empty-lube-barrel", { { name = "lube-barrel", amount = 1 } },
+    { { name = "barrel", amount = 1 }, { name = "lube", amount = 50 } }, true, 0.2, "crafting-with-fluid")
+  force.recipes.lube = recipe("lube", { { name = "steel-sheet", amount = 1 } }, { { name = "lube", amount = 10 } }, true, 1, "chemistry")
+  local barrels = production.production_requirements({ targets = { barrel = 2, lube = 20 } })
+  local by_item = {}
+  for _, node in ipairs(barrels.nodes) do by_item[node.item] = node.recipe end
+  check(by_item.barrel == "barrel" and by_item.lube == "lube" and barrels.raw["steel-sheet"] == 4,
+    "barrel fill and empty recipes are passed over while another recipe makes barrels and lube: no recipe choice needed")
+  local filled = production.production_requirements({ targets = { ["lube-barrel"] = 1 } })
+  local fill
+  for _, node in ipairs(filled.nodes) do if node.item == "lube-barrel" then fill = node.recipe end end
+  check(fill == "lube-barrel", "a filled barrel, which only the fill recipe makes, keeps that route")
+  for key in pairs({ barrel = 1, lube_fill = 1, lube_empty = 1, lube = 1 }) do force.recipes[key] = nil end
+
+  local ok_choice, choice = pcall(production.production_requirements, { targets = { widget = 1 } })
+  check(not ok_choice and tostring(choice):find("^RECIPE_CHOICE_NEEDED: ambiguous production route for widget") ~= nil,
+    "an ambiguous route refuses RECIPE_CHOICE_NEEDED")
+  force.technologies["future-tech"] = { name = "future-tech", researched = false, prerequisites = {},
+    prototype = { effects = { { type = "unlock-recipe", recipe = "locked" } } } }
+  local ok_locked, locked = pcall(production.production_requirements, { targets = { future = 1 } })
+  check(not ok_locked and tostring(locked):find(
+    "NO_UNLOCKED_ROUTE: no progression route for future: producing recipes are not unlocked (locked; unlocked by future-tech)", 1, true) ~= nil
+    and errors.deliberate(locked), "a locked-only product refuses NO_UNLOCKED_ROUTE, naming the technology that unlocks it")
+  force.technologies["future-tech"] = nil
+  local ok_none, none = pcall(production.production_requirements, { targets = { future = 1 } })
+  check(not ok_none and tostring(none):find("(locked; no technology unlocks them)", 1, true) ~= nil,
+    "with no technology unlocking it the refusal says so")
+end)()
 os.exit(failures == 0 and 0 or 1)

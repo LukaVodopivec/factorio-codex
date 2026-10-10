@@ -145,10 +145,14 @@ export async function waitForEvent(bridge: Bridge, input: NextEventInput, source
       ...idleResearch(state) } } : {};
     const surface = plan.surface === undefined ? {} : { surface: plan.surface };
     try {
-      const status = await bridge.call<{ outcomes?: unknown; inventory_delta?: unknown; source?: string }>("plan_status", { plan_id: plan.plan_id });
+      const status = await bridge.call<{ outcomes?: unknown; inventory_delta?: unknown; source?: string;
+        walk_s?: number; tiles?: number; craft_wait_s?: number }>("plan_status", { plan_id: plan.plan_id });
+      // Where the plan's time went: walking (seconds, tiles) and waiting on hand-crafts.
+      const time = Object.fromEntries((["walk_s", "tiles", "craft_wait_s"] as const)
+        .flatMap((key) => typeof status?.[key] === "number" ? [[key, status[key]]] : []));
       return done("plan_ended", state, { plan_id: plan.plan_id, status: plan.status, ...surface,
         ...(status?.source === undefined ? {} : { source: status.source }),
-        outcomes: luaArray(status?.outcomes ?? []), inventory_delta: record(status?.inventory_delta), ...finished });
+        outcomes: luaArray(status?.outcomes ?? []), inventory_delta: record(status?.inventory_delta), ...time, ...finished });
     } catch { return done("plan_ended", state, { plan_id: plan.plan_id, status: plan.status, ...surface, ...finished }); }
   };
   const watched = (state: EventState) => {

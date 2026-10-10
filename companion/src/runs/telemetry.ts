@@ -64,6 +64,9 @@ export const runSnapshotSchema = z.object({
     queued_demand: itemTotals.optional(), omitted_queued_demand: z.number().int().positive().optional(),
     short_by: itemTotals.optional(), omitted_short_by: z.number().int().positive().optional(),
     upkeep_off_since_tick: z.number().int().nonnegative().optional(),
+    /** The latest upkeep pass skipped steps for items a full body could not fetch (chores.lua). */
+    upkeep_skipped: z.object({ tick: z.number().int().nonnegative(), items: z.array(z.string()).min(1),
+      free_slots: z.number().int().nonnegative().optional() }).strict().optional(),
     human_control: z.boolean(), human_idle_ticks: z.number().int().nonnegative().optional(),
     body: snapshotBodySchema.extend({ bound_for: z.string().optional() }).strict(),
   }).strict().optional(),
@@ -153,7 +156,7 @@ const bodySummarySchema = z.object({ window_ticks: whole, busy_share: z.number()
   states: z.record(z.string(), shareRow),
   gaps: z.record(z.string(), z.object({ count: whole, total_seconds: z.number().nonnegative(),
     mean_seconds: z.number().nonnegative(), longest_seconds: z.number().nonnegative().nullable() }).strict()),
-  /** Body phases of pilot and package plans in the window, and tiles walked (mod 0.37 on). */
+  /** Body phases of pilot and package plans in the window (upkeep and aboard their own from 0.38), and tiles walked (mod 0.37 on). */
   phases: z.record(z.string(), shareRow).optional(), tiles: z.number().nonnegative().optional(),
 }).strict();
 const runEventsSchema = z.object({

@@ -81,6 +81,9 @@ local function fifo_state()
     queued_demand = demand.queued_demand, omitted_queued_demand = demand.omitted_queued_demand,
     short_by = demand.short_by, omitted_short_by = demand.omitted_short_by,
     upkeep_off_since_tick = not t.last_finished_tick and t.last_cancel_all_tick or nil,
+    -- {tick, items, free_slots} while the latest upkeep pass skipped steps
+    -- for items a full body could not fetch (chores.lua).
+    upkeep_skipped = storage.chores and storage.chores.skipped_full or nil,
     human_control = human_control, human_idle_ticks = human_idle_ticks,
     -- Where the body is (body_summary).
     body = body_summary() }

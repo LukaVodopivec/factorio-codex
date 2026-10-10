@@ -564,4 +564,42 @@ check(chores.boundary_upkeep(game.tick) ~= nil and #queued == reach_count + 1 an
   "at a work site the boundary pass reaches the dry burner, not a low-fuel burner or a lab; near the body a low one still counts")
 body.force.current_research = nil
 storage.tasks.work_sites = nil
+
+-- A body with no room for the fuel fetches none: a step it cannot fill
+-- from what it carries is skipped (said once, in storage.chores.skipped_full
+-- for the fifo block), one it can fill partly keeps what it carries.
+;(function()
+  local free = 0
+  body.get_main_inventory = function()
+    return { get_insertable_count = function() return free end, count_empty_stacks = function() return 0 end }
+  end
+  sampled({ [31] = machine(31, 5, "no_fuel"), [32] = machine(32, 9, "no_fuel") })
+  storage.chores.refueled, storage.chores.fed_labs = {}, {}
+  room, reserved = "idle", nil
+  carried, stocked = { coal = 0 }, { coal = 40 }
+  local before = #queued
+  game.tick = game.tick + 600
+  chores.upkeep(game.tick)
+  local decisions = {}
+  for _, row in ipairs(storage.chores.last_selection.refuel.candidates) do decisions[row.unit] = row.decision end
+  check(#queued == before and storage.chores.last_selection.queue_status == "no_steps"
+    and decisions[31] == "inventory_full" and decisions[32] == "inventory_full"
+    and storage.chores.skipped_full and storage.chores.skipped_full.items[1] == "coal"
+    and storage.chores.skipped_full.free_slots == 0 and storage.chores.skipped_full.tick == game.tick,
+    "a full body that carries no fuel queues no refuel it would have to fetch, and says so once")
+  carried = { coal = 12 }
+  game.tick = game.tick + 600
+  chores.upkeep(game.tick)
+  local partial = queued[#queued]
+  check(#queued == before + 1 and #partial.steps == 2 and partial.steps[1].items.coal == 10
+    and partial.steps[2].items.coal == 2 and storage.chores.skipped_full == nil,
+    "a full body refuels with what it carries: the carried fuel is shared out, nothing is fetched")
+  free, carried = 50, { coal = 0 }
+  storage.chores.refueled = {}
+  game.tick = game.tick + 600
+  chores.upkeep(game.tick)
+  check(#queued == before + 2 and queued[#queued].steps[1].items.coal == 10 and storage.chores.skipped_full == nil,
+    "with room the body fetches the fuel as before")
+  body.get_main_inventory = nil
+end)()
 os.exit(failures == 0 and 0 or 1)

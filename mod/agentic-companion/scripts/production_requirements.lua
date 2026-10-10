@@ -395,15 +395,72 @@ local function whole_index(force)
   return index.by_product
 end
 
+local function technology_effects(technology)
+  local ok, effects = pcall(function() return technology.prototype.effects end)
+  return ok and type(effects) == "table" and effects or {}
+end
+
+-- The names of a recipe's ingredients or products, as one sorted key.
+local function names_key(rows)
+  local names = {}
+  for _, row in ipairs(rows or {}) do if row.name then names[#names + 1] = row.name end end
+  table.sort(names)
+  return table.concat(names, "|")
+end
+
+-- Whether another recipe undoes this one (key: its name in force.recipes):
+-- its products are this one's ingredients and its ingredients this one's
+-- products, as a barrel's fill and empty are. Such a pair only loops an
+-- item back; a lookup in the index per ingredient.
+local function undone(force, key, recipe, by_product)
+  local ins, outs = names_key(recipe.ingredients), names_key(recipe.products)
+  if ins == "" then return false end
+  for _, ingredient in ipairs(recipe.ingredients or {}) do
+    for _, other_key in ipairs(by_product[ingredient.name] or {}) do
+      local other = other_key ~= key and force.recipes[other_key]
+      if other and names_key(other.products) == ins and names_key(other.ingredients) == outs then return true end
+    end
+  end
+  return false
+end
+
+-- The technologies whose effects unlock any of these recipes, sorted (one
+-- pass over the force's technologies; only a refusal reads it).
+local function unlocked_by(force, recipes)
+  local wanted, found = {}, {}
+  for _, recipe in ipairs(recipes) do wanted[recipe.name] = true end
+  for name, technology in pairs(force.technologies or {}) do
+    for _, effect in pairs(technology_effects(technology)) do
+      if effect.type == "unlock-recipe" and wanted[effect.recipe] then found[#found + 1] = name; break end
+    end
+  end
+  table.sort(found)
+  return found
+end
+
+-- The recipes that make a product, enabled (or permitted locked) and
+-- locked. A recipe another one undoes (barrel fill and empty) is passed
+-- over while any other recipe makes the product: it is a loop, not a route.
 local function candidate_recipes(force, product, permitted_locked, location, by_product)
-  local candidates, locked = {}, {}
+  local rows = {}
   for _, name in ipairs(by_product[product] or {}) do
     local recipe = force.recipes[name]
     -- Surface conditions are read only for the few recipes that make it.
     if location == nil or conditions_hold(recipe_conditions(recipe), location) then
-      if recipe.enabled or permitted_locked and permitted_locked[name] then candidates[#candidates + 1] = recipe
-      else locked[#locked + 1] = recipe end
+      rows[#rows + 1] = { key = name, recipe = recipe,
+        usable = recipe.enabled or permitted_locked and permitted_locked[name] or false }
     end
+  end
+  if #rows > 1 then
+    local kept = {}
+    for _, row in ipairs(rows) do
+      if not undone(force, row.key, row.recipe, by_product) then kept[#kept + 1] = row end
+    end
+    if #kept > 0 then rows = kept end
+  end
+  local candidates, locked = {}, {}
+  for _, row in ipairs(rows) do
+    if row.usable then candidates[#candidates + 1] = row.recipe else locked[#locked + 1] = row.recipe end
   end
   table.sort(candidates, function(a, b) return a.name < b.name end)
   table.sort(locked, function(a, b) return a.name < b.name end)
@@ -433,13 +490,21 @@ local function expand_targets(force, targets, choices, options)
     if #candidates > 1 then
       local names = {}; for _, recipe in ipairs(candidates) do names[#names + 1] = recipe.name end
       if not options.partial then
-        error("ambiguous production route for " .. product .. ": " .. table.concat(names, ", ") .. "; supply recipe_choices." .. product, 0)
+        error("RECIPE_CHOICE_NEEDED: ambiguous production route for " .. product .. ": " .. table.concat(names, ", ")
+          .. "; supply recipe_choices." .. product, 0)
       end
       ambiguities[#ambiguities + 1] = { kind = "recipe_choice", product = product, candidates = names }
       return nil
     end
     if #candidates == 1 then return candidates[1] end
-    if #locked > 0 and not options.partial then error("no progression route for " .. product .. ": producing recipes are not unlocked", 0) end
+    if #locked > 0 and not options.partial then
+      local names = {}
+      for _, recipe in ipairs(locked) do names[#names + 1] = recipe.name end
+      local technologies = unlocked_by(force, locked)
+      error(string.format("NO_UNLOCKED_ROUTE: no progression route for %s: producing recipes are not unlocked (%s; %s)",
+        product, table.concat(names, ", "), #technologies > 0 and ("unlocked by " .. table.concat(technologies, ", "))
+          or "no technology unlocks them"), 0)
+    end
     return nil
   end
 
@@ -500,11 +565,6 @@ local function expand_targets(force, targets, choices, options)
   return { nodes = nodes, raw = raw, products = all_products,
     total_craft_time_seconds_at_speed_1 = total_time, ambiguities = ambiguities,
     variable_operating_requirements = variable }
-end
-
-local function technology_effects(technology)
-  local ok, effects = pcall(function() return technology.prototype.effects end)
-  return ok and type(effects) == "table" and effects or {}
 end
 
 local function closure_for(force, target_name)

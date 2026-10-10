@@ -176,12 +176,14 @@ do
 end
 
 -- Body phases: each pilot or package tick is one phase, walk first (tiles
--- add up the distance moved), then mine, smelt_wait, craft_wait, other; no
--- upkeep, hold or idle tick counts. They add up to the pilot and package ticks.
+-- add up the distance moved), then mine, smelt_wait, craft_wait, other; an
+-- upkeep tick is upkeep; no hold or idle tick counts. They add up to the
+-- pilot, package and upkeep ticks. The plan keeps its own walk and
+-- craft_wait time.
 do
   storage.tasks.body_time = { since_tick = game.tick, state = "idle", state_since = game.tick, ticks = {}, gaps = {},
     phases = {}, tiles = 0 }
-  tasks.queue_plan({ steps = { { action = "walk_to", x = 50, y = 0 } } })
+  local walked = tasks.queue_plan({ steps = { { action = "walk_to", x = 50, y = 0 } } })
   ticks(4) -- dispatched in the first tick: 3 ticks standing still
   for _ = 1, 5 do body.position = { x = body.position.x + 0.2, y = body.position.y }; ticks(1) end
   body.position = { x = body.position.x + 40, y = body.position.y } -- a landing, not a walk
@@ -209,11 +211,37 @@ do
   check(phases.walk == 6 and phases.mine == 2 and phases.smelt_wait == 2 and phases.craft_wait == 3
     and phases.other == 3 + 1 + 2, "each pilot or package tick is one phase, walk first")
   check(time.tiles == 1.2, "tiles add up the distance walked; a jump of 40 tiles is no walk (" .. tostring(time.tiles) .. ")")
-  check(sum == time.ticks.pilot + time.ticks.package and time.ticks.upkeep == 5,
-    "the phases add up to the pilot and package ticks; upkeep is left out (" .. sum .. ")")
+  check(sum == time.ticks.pilot + time.ticks.package + time.ticks.upkeep and time.ticks.upkeep == 5
+    and phases.upkeep == 5, "the phases add up to the pilot, package and upkeep ticks; upkeep is its own (" .. sum .. ")")
+  local plan = tasks.plan_status({ plan_id = walked.plan_id })
+  check(plan.walk_s == 0.1 and plan.tiles == 1.2 and plan.craft_wait_s == 0.1,
+    "the plan keeps its walk seconds, tiles and craft_wait seconds (" .. tostring(plan.walk_s) .. ", "
+    .. tostring(plan.tiles) .. ", " .. tostring(plan.craft_wait_s) .. ")")
+  local row = tasks.activity_log({ since_plan_id = walked.plan_id - 1 }).entries[1]
+  check(row.plan_id == walked.plan_id and row.walk_s == 0.1 and row.tiles == 1.2 and row.craft_wait_s == 0.1,
+    "its activity_log row carries the same walk_s, tiles and craft_wait_s")
   local snapshot = tasks.body_time()
   snapshot.phases.walk = 0
   check(storage.tasks.body_time.phases.walk == 6, "the read copies the phases")
+end
+
+-- Aboard a platform the body has no character on a surface: a plan's
+-- ticks there (a travel wait) are the aboard phase.
+do
+  storage.tasks.body_time = { since_tick = game.tick, state = "idle", state_since = game.tick, ticks = {}, gaps = {},
+    phases = {}, tiles = 0 }
+  -- A step that waits until cancelled, like a travel wait.
+  tasks.register_action("test_wait", { runner = { start = function() end, tick = function() return nil end,
+    waiting = function() return true end }, make_task = function() return {} end, remote = function() return true end })
+  tasks.queue_plan({ steps = { { action = "test_wait" } } })
+  ticks(1)
+  player.hub = { valid = true, surface = { name = "dawn" }, position = { x = 0, y = 0 } }
+  ticks(4)
+  player.hub = nil
+  tasks.cancel({ all = true, origin = "test/body-time" })
+  ticks(1)
+  local time = tasks.body_time()
+  check(time.phases.aboard == 4 and (time.phases.walk or 0) == 0, "pilot ticks aboard a platform are the aboard phase")
 end
 
 -- A save without the counter (before state.init made it) reads nil and is not accounted.

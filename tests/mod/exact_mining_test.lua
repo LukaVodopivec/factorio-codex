@@ -161,6 +161,8 @@ local full_task = { target = { x = 0, y = 0 } }; mine.start(full_task)
 local full = mine.tick(full_task)
 check(full and full.status == "failed" and full.detail:match("inventory is full") ~= nil,
   "mining rejects partial capacity that cannot accept the complete product stack")
+check(full.outcome and full.outcome.code == "INVENTORY_FULL" and full.detail:match("^INVENTORY_FULL: ") ~= nil
+  and full.outcome.completed == 0, "mining with no room names INVENTORY_FULL, not an unclassified failure")
 check(inventory_total() == 1 and inventory.insert == nil and body.mining_state.mining == false
   and exact.amount == 100 and scripted_mine_calls == 0,
   "partial-capacity preflight is read-only and never starts mining")
@@ -272,6 +274,7 @@ check(mine.tick(filled_task) == nil and body.mining_state.mining, "natural minin
 engine_insert("stone", 4)
 local filled = mine.tick(filled_task)
 check(filled and filled.status == "failed" and filled.detail:match("inventory is full") ~= nil
+  and filled.outcome.code == "INVENTORY_FULL"
   and not body.mining_state.mining and exact.amount == 100,
   "natural mining stops when the inventory fills during a cycle")
 body.prototype = nil
@@ -344,6 +347,7 @@ machine_contents = { ["iron-ore"] = 4 }
 local filled_before_result = mine.tick(filled_before_mining)
 check(filled_before_result and filled_before_result.status == "failed" and not body.mining_state.mining
   and filled_before_result.detail:match("no room for the entity and its contents")
+  and filled_before_result.outcome.code == "INVENTORY_FULL"
   and machine.valid and covered_resource.amount == 100,
   "owned mining checks that the entity and its contents fit before it starts")
 machine_contents = {}

@@ -322,11 +322,16 @@ local function drill_hint(c, task)
   return hint
 end
 
-local function partial_failure(task, reason)
+-- code (optional) leads the detail and is the outcome's: INVENTORY_FULL
+-- when the body has no room for what the next cycle yields.
+local function partial_failure(task, reason, code)
   return {
     status = "failed",
-    detail = string.format("mining %s stopped: requested %d cycles, completed %d, actual gain %d items — %s",
+    detail = (code and (code .. ": ") or "") .. string.format(
+      "mining %s stopped: requested %d cycles, completed %d, actual gain %d items — %s",
       task._entity_name, task._requested, task._completed, task._actual_gain, reason),
+    outcome = code and { code = code, completed = task._completed, requested = task._requested,
+      actual_gain = task._actual_gain } or nil,
   }
 end
 
@@ -466,7 +471,7 @@ function M.tick(task)
     local contents = task._target_kind == "owned" and entity_contents(e) or nil
     if not character_accepts_products(inv, e, contents) then
       return partial_failure(task, contents and next(contents) and "Codex inventory has no room for the entity and its contents"
-        or "Codex inventory is full")
+        or "Codex inventory is full", "INVENTORY_FULL")
     end
     task._target_amount = entity_amount(e)
     task._inventory_before = {}
@@ -495,7 +500,7 @@ function M.tick(task)
     local inv = c.get_main_inventory()
     if inv and not character_accepts_products(inv, e, entity_contents(e)) then
       c.mining_state = { mining = false }
-      return partial_failure(task, "the entity's contents grew past the room in Codex inventory")
+      return partial_failure(task, "the entity's contents grew past the room in Codex inventory", "INVENTORY_FULL")
     end
   end
   local current_amount = entity_amount(e)
@@ -514,7 +519,7 @@ function M.tick(task)
       local inv = c.get_main_inventory()
       if inv and not character_accepts_products(inv, e, nil) then
         c.mining_state = { mining = false }
-        return partial_failure(task, "Codex inventory is full: it filled during the mining cycle")
+        return partial_failure(task, "Codex inventory is full: it filled during the mining cycle", "INVENTORY_FULL")
       end
     end
     -- A real connected client can clear LuaPlayer.selected from its native

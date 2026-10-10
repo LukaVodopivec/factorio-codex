@@ -25,7 +25,9 @@
 --   its target from there; beside a running craft it never moves what that
 --   craft makes or uses, and beside a parked wait_for_item it uses only what
 --   the body carries of the item the wait counts (tasks.upkeep_room). A burner still burning gets only a fuel its fuel
---   slot takes beside what is there.
+--   slot takes beside what is there. A body with no room for an item
+--   fetches none of it: a step it cannot fill from what it carries is
+--   skipped, and the fifo block says so (upkeep_skipped).
 -- * Plan-boundary upkeep: back-to-back plans leave no such moment, so just
 --   before the dispatcher starts a queued pilot or package plan, one
 --   ordinary pass runs first when a machine within 96 tiles of the body or
@@ -43,6 +45,7 @@ local tasks = require("scripts.tasks")
 local registry = require("scripts.registry")
 local explore = require("scripts.actions.explore")
 local supply = require("scripts.actions.supply")
+local items = require("scripts.items")
 
 local M = {}
 
@@ -243,11 +246,40 @@ local function low_fuel_for(c, entity, fuel, known, reserved)
   end
 end
 
+-- How many more of an item the body's main inventory takes (its own
+-- answer), read once per item a pass; nil when it cannot be read.
+local function body_room(c, name, known)
+  if known[name] == nil then
+    known[name] = read(function()
+      return c.get_main_inventory().get_insertable_count({ name = name, quality = "normal" })
+    end) or false
+  end
+  return known[name] or nil
+end
+
+-- An insert step's count of an item: the body brings what it carries and
+-- fetches the rest (insert's auto-supply), which a body with no room for the
+-- item cannot. Then the step keeps only what the body still carries of it
+-- (fit.left, shared by the pass's steps), or nil when that is none: the
+-- step is skipped and the item counted in fit.skipped.
+local function fit_to_body(c, name, count, fit)
+  local room = body_room(c, name, fit.room)
+  if room == nil or room > 0 then return count end
+  if fit.left[name] == nil then fit.left[name] = read(function() return c.get_item_count(name) end) or 0 end
+  local kept = math.min(count, fit.left[name])
+  fit.left[name] = fit.left[name] - kept
+  if kept <= 0 then
+    fit.skipped[name] = (fit.skipped[name] or 0) + 1
+    return nil
+  end
+  return kept
+end
+
 -- Insert steps that refuel own burner machines out of fuel (also near
 -- `dry_sites`), then those working on their last fuel item (also near
 -- `low_sites`): the machines sharing a fuel share what there is of it. Each
 -- step's machine is kept in `units` by the step.
-local function refuel_steps(c, tick, steps, audit, units, reserved, dry_sites, low_sites)
+local function refuel_steps(c, tick, steps, audit, units, reserved, dry_sites, low_sites, fit)
   local refueled = storage.chores.refueled
   local function cooling(unit)
     return refueled[unit] ~= nil and tick - refueled[unit] < REFUEL_COOLDOWN_TICKS
@@ -288,11 +320,16 @@ local function refuel_steps(c, tick, steps, audit, units, reserved, dry_sites, l
     end
     if each >= 1 then
       for _, machine in ipairs(list) do
-        local step = { action = "insert_items", x = machine.position.x, y = machine.position.y, items = { [name] = each } }
-        steps[#steps + 1], units[step] = step, machine.unit
-        if machine.evidence then machine.evidence.decision = "selected" end
-        audit.selected[#audit.selected + 1] = { unit = machine.unit, position = machine.position,
-          item = name, count = each, available_snapshot = available }
+        local count = fit_to_body(c, name, each, fit)
+        if count then
+          local step = { action = "insert_items", x = machine.position.x, y = machine.position.y, items = { [name] = count } }
+          steps[#steps + 1], units[step] = step, machine.unit
+          if machine.evidence then machine.evidence.decision = "selected" end
+          audit.selected[#audit.selected + 1] = { unit = machine.unit, position = machine.position,
+            item = name, count = count, available_snapshot = available }
+        elseif machine.evidence then
+          machine.evidence.decision = "inventory_full"
+        end
       end
     end
   end
@@ -328,7 +365,7 @@ end
 -- takes it goes to the nearest ones first (as fuel does). Packs in
 -- reserved `true` are left alone; reserved "carried" come only from what the
 -- body carries.
-local function lab_steps(c, tick, steps, reserved, sites)
+local function lab_steps(c, tick, steps, reserved, sites, fit)
   local research = c.force.current_research
   if not research then return end
   local names = {}
@@ -370,7 +407,8 @@ local function lab_steps(c, tick, steps, reserved, sites)
     local kept = list and math.min(#list, available) or 0
     for i = 1, kept do
       local row = labs[list[i]]
-      row.items[name] = math.min(PACKS_PER_LAB, row.rooms[name], math.max(1, math.floor(available / kept)))
+      row.items[name] = fit_to_body(c, name,
+        math.min(PACKS_PER_LAB, row.rooms[name], math.max(1, math.floor(available / kept))), fit)
       fed[lab_key(row.lab.unit, name)] = tick
     end
   end
@@ -407,9 +445,23 @@ local function pass(c, tick, room, reserved)
     refuel = { candidate_limit = MAX_CANDIDATES, selected_limit = MAX_REFUELS,
       retry_ticks = REFUEL_COOLDOWN_TICKS, candidates = {}, selected = {},
       observed_candidates = 0, scan_complete = true } }
-  refuel_steps(c, tick, steps, selection.refuel, units, reserved, sites, all_sites)
-  lab_steps(c, tick, steps, reserved, all_sites)
+  -- A body with no room for an item fetches none of it: steps that would
+  -- are skipped, and the fifo block says so (storage.chores.skipped_full)
+  -- while the latest pass skipped any.
+  local fit = { room = {}, left = {}, skipped = {} }
+  refuel_steps(c, tick, steps, selection.refuel, units, reserved, sites, all_sites, fit)
+  lab_steps(c, tick, steps, reserved, all_sites, fit)
   selection.step_count = #steps
+  if next(fit.skipped) then
+    local names = {}
+    for name in pairs(fit.skipped) do names[#names + 1] = name end
+    table.sort(names)
+    storage.chores.skipped_full = { tick = tick, items = names,
+      free_slots = items.free_slots(read(function() return c.get_main_inventory() end)) }
+    selection.skipped_full = names
+  else
+    storage.chores.skipped_full = nil
+  end
   if #steps > 0 and room ~= "idle" then
     steps[#steps + 1] = { action = "walk_to", x = c.position.x, y = c.position.y,
       arrival_mode = "vicinity", arrival_radius = RETURN_RADIUS, upkeep_return = true }

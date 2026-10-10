@@ -49,7 +49,14 @@ const packageSurface = z.string().regex(/^(?:[a-z][a-z0-9-]{0,39}|platform:[1-9]
 export const AFTER_PACKAGE_ID_RULE = "after_package_id: set it only when a package really needs its predecessor's result"
   + " (a capture of it, its landfill, its machines to connect, or items it makes that this package's first step needs:"
   + " only then is that first step's ITEM_UNOBTAINABLE left to run time); the FIFO already runs packages in ledger order,"
-  + " and a package whose predecessor ends partial, failed or cancelled is cancelled, never run";
+  + " and a package whose predecessor ends partial, failed or cancelled is cancelled, never run, except after a predecessor"
+  + " whose last step's insert ended partial only because its target was full (TARGET_CAPACITY)";
+/** A plan's active budget (tasks.lua tick_plan and each action's budget_steps), for queue_plan and the package help. */
+export const PLAN_BUDGET_RULE = "a plan's active budget is max(570 s, 12 s x its steps) from its start, human holds not"
+  + " charged; a hand build_layout counts each entity and route tile as a step, a hand blueprint_place each entity,"
+  + " build_ghosts 100, a hand deconstruct_area or upgrade_area 60, place_tiles one per 8 tiles, explore 2 plus one per"
+  + " 32 tiles of max_distance, travel its wait; past it the plan fails PLAN_BUDGET_EXCEEDED and queued hand-crafts keep"
+  + " running";
 /** Factory line states (autonomy.lua), as factory_status names them. */
 export const LINE_STATES = ["running", "starved", "output_full", "depleted", "no_fuel", "no_power", "frozen",
   "no_heat", "disabled", "idle"] as const;
@@ -376,7 +383,7 @@ export function packageContract(): string {
     `build_packages: at most 2 per update, together at most ${MAX_PACKAGE_BYTES} bytes of JSON; each package (required | optional):`,
     `  ${fieldLine(writtenPackage, ["steps"])}`,
     `  steps: 1-${MAX_PLAN_STEPS} of the steps below; blueprint_capture steps come first; travel is never a package step`,
-    `  ${AFTER_PACKAGE_ID_RULE}`, `  ${VERIFY_RULE}`, `  ${NOTES_RULE}, each an existing file beside the ledger`,
+    `  a package runs as one plan: ${PLAN_BUDGET_RULE}`, `  ${AFTER_PACKAGE_ID_RULE}`, `  ${VERIFY_RULE}`, `  ${NOTES_RULE}, each an existing file beside the ledger`,
     `research: at most ${MAX_RESEARCH} technologies in queue order, each once`,
     "steps (action: required | optional):", ...steps,
   ].join("\n");

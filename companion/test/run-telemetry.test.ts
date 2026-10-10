@@ -59,7 +59,8 @@ describe("five-minute run telemetry", () => {
 
   it("retains every fifo_state field a get_job result carries during active play", async () => {
     const busy = { ...fifo, queued_demand: { "iron-plate": 40, "copper-cable": 12 }, omitted_queued_demand: 3,
-      short_by: { "iron-plate": 15 }, omitted_short_by: 1, upkeep_off_since_tick: 3600 };
+      short_by: { "iron-plate": 15 }, omitted_short_by: 1, upkeep_off_since_tick: 3600,
+      upkeep_skipped: { tick: 3500, items: ["coal"], free_slots: 0 } };
     const rcon = { exec: async (cmd: string) => JSON.stringify({ ok: true, data: cmd.includes('"get_job"')
       ? { job_id: 1, job_status: "done", result: snapshot(200, 15), fifo: busy }
       : { job_id: 1, job_status: "pending" } }) } as unknown as RconClient;
@@ -68,7 +69,8 @@ describe("five-minute run telemetry", () => {
     expect(parsed.fifo).toEqual(busy);
     expect(checkpoint(parsed, snapshot(100, 5)).snapshot.fifo).toEqual(busy);
     for (const invalid of [{ ...busy, short_by: { "iron-plate": -1 } }, { ...busy, queued_demand: { "iron-plate": 1.5 } },
-      { ...busy, omitted_short_by: 0 }, { ...busy, upkeep_off_since_tick: "3600" }]) {
+      { ...busy, omitted_short_by: 0 }, { ...busy, upkeep_off_since_tick: "3600" },
+      { ...busy, upkeep_skipped: { tick: 3500, items: [] } }]) {
       expect(() => parseRunSnapshot({ ...snapshot(200, 15), fifo: invalid })).toThrow();
     }
   });

@@ -1651,9 +1651,9 @@ end
 -- acts on a space platform without the body (an extension's remote(step))
 -- needs none: the travel plan lends the FIFO (lent = "travel", back at the
 -- queue head, still running) and such packages run beside it, one at a
--- time, in queue order; the travel step takes the FIFO back when none is
--- left. Its arrival is an event it reads when it ticks again, and its
--- deadline is its own. Nothing else runs beside it, upkeep included.
+-- time, in queue order, the travel step ticking between every two of their
+-- steps; it takes the FIFO back when none is left. Its arrival is an event
+-- it reads when it ticks, and its deadline is its own. Nothing else runs beside it, upkeep included.
 local function remote_only(plan)
   if plan.type ~= "plan" or plan.completed_steps >= #plan.steps then return false end
   for index = plan.completed_steps + 1, #plan.steps do
@@ -1664,10 +1664,11 @@ local function remote_only(plan)
   return true
 end
 -- The queue index of the first package that may run beside a travel wait:
--- queued (not parked or lent), its predecessor done, every step remote.
+-- queued (not parked or lent) or a guest between its steps, its predecessor
+-- done, every step remote.
 local function beside_guest(queue)
   for index, queued in ipairs(queue) do
-    if queued.type == "plan" and queued.status == "queued" and not queued.lent
+    if queued.type == "plan" and (queued.status == "queued" or queued.beside_steps ~= nil) and not queued.lent
       and type(queued.source) == "string" and queued.source:sub(1, 8) == "package:"
       and (not queued.after_plan_id or predecessor_status(queued) == "completed")
       and remote_only(queued) then
@@ -1921,13 +1922,25 @@ local function note_work_site(tasks, c)
 end
 local function dispatch(tasks)
   local task = tasks.active
+  -- The travel step polls between every guest step (an arrival or a short
+  -- orbit stop is never missed behind a long package): a guest that ran a
+  -- step gives the FIFO back at its next step boundary and waits, still
+  -- running, right behind the travel plan, which lends it the FIFO again.
+  local head = tasks.queue[1]
+  if task and task.type == "plan" and task.beside_steps and not task.current_task
+    and task.completed_steps > task.beside_steps and head and head.lent == "travel" then
+    tasks.active = nil
+    table.insert(tasks.queue, 2, task)
+    task = nil
+  end
   if not task then
     if #tasks.queue == 0 then return end
-    local head = tasks.queue[1]
+    head = tasks.queue[1]
     -- A plan lending the body keeps its place: only upkeep goes first; a
-    -- travel wait lends the FIFO only to a platform-only package.
+    -- travel wait lends the FIFO only to a platform-only package, one guest
+    -- step at a time (guest_turn: the travel step ticks before the next).
     local guest
-    if head.lent == "travel" then
+    if head.lent == "travel" and not head.guest_turn then
       guest = beside_guest(tasks.queue)
     elseif head.lent and crafting_busy() then
       for index, queued in ipairs(tasks.queue) do
@@ -1935,6 +1948,7 @@ local function dispatch(tasks)
       end
     end
     local beside = head.lent == "travel" and guest ~= nil
+    head.guest_turn = beside or nil
     if head.lent then task = table.remove(tasks.queue, guest or 1) end
     local attempts = task and 0 or #tasks.queue
     for _ = 1, attempts do
@@ -1971,7 +1985,7 @@ local function dispatch(tasks)
       local tail = tasks.queue[#tasks.queue]
       task = table.remove(tasks.queue, ok and id and tail.id == id and #tasks.queue or 1)
     end
-    task.lent = nil
+    task.lent, task.guest_turn, task.beside_steps = nil, nil, beside and task.completed_steps or nil
     -- Where the body stands as a pilot or package plan begins: idle upkeep
     -- also serves machines near these work sites (chores.lua).
     if task.type == "plan" and task.source ~= "upkeep" and not task.started_tick and not beside then

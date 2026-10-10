@@ -139,4 +139,33 @@ check(ok and status_of(first.plan_id) == "completed" and status_of(second.plan_i
   and status_of(trip.plan_id) == "running",
   "a package chained to a completed guest runs beside the travel wait too")
 
+-- The travel step polls between every guest step: two multi-step guests
+-- never keep it from reading an arrival.
+fresh(); phase, arrived = "wait_arrival", false
+local polls, steps_run = {}, {}
+local travel_runner = package.loaded["scripts.actions.travel"].action.runner
+local plain_tick = travel_runner.tick
+travel_runner.tick = function(task) polls[#polls + 1] = game.tick; return plain_tick(task) end
+tasks.register_action("counted_platform_step", { runner = { start = function() end,
+  tick = function() steps_run[#steps_run + 1] = game.tick; return { status = "done", detail = "step" } end },
+  make_task = function() return {} end, remote = function() return true end })
+trip = tasks.queue_plan({ steps = { { action = "travel", to = "vulcanus" } } })
+local function counted(n) local list = {}; for i = 1, n do list[i] = { action = "counted_platform_step" } end; return list end
+local guest_a = tasks.queue_plan({ steps = counted(4), source = "package:guest_a" })
+local guest_b = tasks.queue_plan({ steps = counted(4), source = "package:guest_b" })
+ok = safe_run(40)
+local starved = 0
+for index = 2, #steps_run do
+  local between = false
+  for _, tick in ipairs(polls) do if tick > steps_run[index - 1] and tick < steps_run[index] then between = true end end
+  if not between then starved = starved + 1 end
+end
+check(ok and #steps_run == 8 and starved == 0 and status_of(guest_a.plan_id) == "completed"
+  and status_of(guest_b.plan_id) == "completed" and status_of(trip.plan_id) == "running",
+  "the lent travel step polls between every guest step (" .. starved .. " gaps without a poll)")
+arrived = true
+ok = safe_run(2)
+check(ok and status_of(trip.plan_id) == "completed", "the travel step still ends once it arrives")
+travel_runner.tick = plain_tick
+
 os.exit(failures == 0 and 0 or 1)

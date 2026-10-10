@@ -710,10 +710,13 @@ function Deconstruct.start(task)
   -- A filter of tile names only reads no entity.
   local entity_filter = names and names.entities
   local any_entity = not names or #names.entities > 0
+  -- Cancel reads only what it can act on (entities marked for
+  -- deconstruction), so a dense built area never fills the cap with the rest.
+  local marked = task.mode == "cancel" or nil
   local own_found = any_entity and surface.find_entities_filtered({ area = area, force = c.force, name = entity_filter,
-    limit = limit }) or {}
+    to_be_deconstructed = marked, limit = limit }) or {}
   local natural_found = (task._platform or not any_entity) and {} or surface.find_entities_filtered({ area = area,
-    type = NATURAL_TYPES, name = entity_filter, limit = limit })
+    type = NATURAL_TYPES, name = entity_filter, to_be_deconstructed = marked, limit = limit })
   -- Cancel: own ghosts too, read by type and matched to the filter here
   -- (ghost_name may be an entity's or a tile's).
   local ghosts_found = {}
@@ -729,7 +732,9 @@ function Deconstruct.start(task)
   task._list, task._done = {}, 0
   task._truncated = #own_found > MAX_AREA_ENTITIES or #natural_found > MAX_AREA_ENTITIES or #ghosts_found > MAX_AREA_ENTITIES
   task._by_name = {}
-  for _, found in ipairs({ own_found, natural_found, ghosts_found }) do
+  -- Ghosts first: cancel removes them, so a rerun reaches what the cap left.
+  for _, found in ipairs(task.mode == "cancel" and { ghosts_found, own_found, natural_found }
+    or { own_found, natural_found, ghosts_found }) do
     for _, e in ipairs(found) do
       if #task._list >= MAX_AREA_ENTITIES then task._truncated = true; break end
       local own = found ~= natural_found

@@ -103,7 +103,9 @@ surface = {
         or filter.position and geometry.overlaps({ left_top = filter.position, right_bottom = filter.position }, e.bounding_box)
         or filter.position and e.position.x == filter.position.x and e.position.y == filter.position.y
       if hit and matches(filter.type, e.type) and matches(filter.name, e.name)
-        and (not filter.force or filter.force == e.force) then
+        and (not filter.force or filter.force == e.force)
+        and (filter.to_be_deconstructed == nil
+          or (e.to_be_deconstructed ~= nil and e.to_be_deconstructed()) == filter.to_be_deconstructed) then
         out[#out + 1] = e
       end
       if filter.limit and #out >= filter.limit then break end
@@ -572,6 +574,43 @@ do
   local started, start_error = pcall(spec.runner.start, task)
   check(not started and tostring(start_error):find("^FILTER_NOT_ENTITY: ") ~= nil,
     "a hand task begun with a tile filter refuses with its code before any query")
+end
+do
+  -- Cancel in a dense built area: the cap holds only what cancel acts on
+  -- (marked entities and own ghosts, ghosts read first), so each run makes
+  -- progress until nothing is left.
+  local function belt(x, y, marked)
+    local e = spawn("transport-belt", { x = x, y = y })
+    e.marked = marked
+    e.to_be_deconstructed = function() return e.marked == true end
+    e.cancel_deconstruction = function() e.marked = false end
+    return e
+  end
+  local built, doomed_belts = {}, {}
+  for i = 0, 319 do built[#built + 1] = belt(400.5 + i % 40, 400.5 + math.floor(i / 40), false) end
+  for i = 0, 301 do doomed_belts[#doomed_belts + 1] = belt(400.5 + i % 40, 410.5 + math.floor(i / 40), true) end
+  local ghosts = {}
+  for i = 1, 2 do
+    local e = { valid = true, name = "entity-ghost", type = "entity-ghost", ghost_name = "transport-belt",
+      position = { x = 400.5 + i, y = 420.5 }, force = own }
+    e.destroy = function() e.valid = false end
+    world[#world + 1] = e
+    ghosts[i] = e
+  end
+  local area = { left_top = { x = 399, y = 399 }, right_bottom = { x = 441, y = 422 } }
+  local first = run(area_ops.deconstruct_action, { area = area, mode = "cancel", filter = { "transport-belt" } })
+  local still_marked = 0
+  for _, e in ipairs(doomed_belts) do if e.marked then still_marked = still_marked + 1 end end
+  check(first and first.outcome.ghosts_removed == 2 and not ghosts[1].valid and not ghosts[2].valid
+    and first.outcome.truncated and first.outcome.total == 300 and still_marked == 4,
+    "cancel in a dense area lists only marked entities and own ghosts, ghosts first")
+  local second = run(area_ops.deconstruct_action, { area = area, mode = "cancel", filter = { "transport-belt" } })
+  still_marked = 0
+  for _, e in ipairs(doomed_belts) do if e.marked then still_marked = still_marked + 1 end end
+  check(second and second.status == "done" and second.outcome.done == 4 and not second.outcome.truncated
+    and still_marked == 0, "running cancel again finishes what the first run left")
+  for _, e in ipairs(built) do e.valid = false end
+  for _, e in ipairs(doomed_belts) do e.valid = false end
 end
 
 -- Hand: the mine runner is the body's; here a fake one records the order.

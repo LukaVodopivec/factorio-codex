@@ -411,8 +411,14 @@ M.place_check_job = {
     end
     local layout = placed_layout(params, label)
     local anchor = anchor_of(params.position)
+    -- reserved: earlier package steps' placements, standing for this dry
+    -- run (build_layout's); list_placed: the answer lists placed, as
+    -- build_layout's does, for the package check's later steps.
+    build_layout.validate_reserved(params.reserved, label)
     return { name = params.name, mode = params.mode or "hand", anchor = anchor, layout = layout, phase = "at",
-      search = build_layout.search_start(c, { anchor = anchor, layouts = { layout } }) }
+      reserved = params.reserved, list_placed = params.list_placed == true or nil,
+      search = build_layout.search_start(c, { anchor = anchor, layouts = { layout }, check_only = true,
+        reserved = params.reserved }) }
   end,
   step = function(job, budget)
     if job.layout_check then
@@ -454,7 +460,8 @@ M.place_check_job = {
       -- Blocked here: look for the first free position near it.
       job.collisions = report.failed
       job.phase = "near"
-      job.search = build_layout.search_start(c, { site = { near = job.anchor }, layouts = { job.layout } })
+      job.search = build_layout.search_start(c, { site = { near = job.anchor }, layouts = { job.layout }, check_only = true,
+        reserved = job.reserved })
       return nil
     end
     local missing = {}
@@ -471,7 +478,9 @@ M.place_check_job = {
       missing = missing, unobtainable = unobtainable,
       free_position = report.ok and report.anchor or nil,
       free_reason = not report.ok and report.failed[1] and report.failed[1].reason or nil,
-      tool_unlock = blueprints.tool_unlock(c, "blueprint"), wires_ignored = job.layout.wires_ignored }
+      tool_unlock = blueprints.tool_unlock(c, "blueprint"), wires_ignored = job.layout.wires_ignored,
+      recipe_locked = s.recipe_locked,
+      placed = job.list_placed and job.phase == "at" and report.placed or nil }
     if job.mode == "ghosts" then out.construction_robots = blueprints.construction_robots(c, job.anchor) end
     if not report.ok then return out end
     -- What stands on ore, drills over mixed ore, fluid ports that meet

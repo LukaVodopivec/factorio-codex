@@ -1080,4 +1080,38 @@ check(not pcall(tasks.queue_plan, { steps = walk_step(), client_key = string.rep
   and not pcall(tasks.queue_plan, { steps = walk_step(), client_key = 7 }), "a client_key is a string of 1-64 characters")
 storage.tasks.queue, storage.tasks.active = {}, nil
 end)()
+
+-- A plan_status payload larger than one tick's encoding is never encoded
+-- whole in the RPC's tick: it is a job whose result is written over ticks
+-- (trial 0013: one plan_status took 17.5 ms, its median 0.3 ms). A small
+-- one is answered at once.
+;(function()
+  _G.helpers = _G.helpers or { table_to_json = dofile(here .. "/table_to_json.lua") }
+  local jobs = require("scripts.jobs")
+  storage.tasks.queue, storage.tasks.active, storage.jobs = {}, nil, nil
+  local small = tasks.queue_plan({ steps = { { action = "walk_to", x = 1, y = 1 } } })
+  local direct = tasks.plan_status({ plan_id = small.plan_id })
+  check(direct.plan_id == small.plan_id and direct.job_id == nil, "a small plan_status is answered at once")
+  local plan = storage.tasks.queue[1]
+  for i = 1, 120 do
+    plan.outcomes[i] = { step = 1, action = "walk_to", status = "completed",
+      result = { placed = { { name = "transport-belt", x = i, y = 0 }, { name = "transport-belt", x = i, y = 1 } } } }
+  end
+  local answer = tasks.plan_status({ plan_id = small.plan_id })
+  check(answer.job_status == "pending" and answer.kind == "plan_status" and answer.plan_id == nil,
+    "a large plan_status answers pending: its payload is encoded over ticks")
+  local most, ticks, out = 0, 0, nil
+  while not out and ticks < 50 do
+    game.tick, ticks = game.tick + 1, ticks + 1
+    jobs.on_tick()
+    most = math.max(most, storage.jobs.used)
+    if storage.jobs.by_id[answer.job_id].status ~= "pending" then out = jobs.get({ job_id = answer.job_id }) end
+  end
+  plan.outcomes[121] = { step = 1, action = "walk_to", status = "completed" }
+  check(out and out.job_status == "done" and out.result.plan_id == small.plan_id and #out.result.outcomes == 120
+    and out[jobs.RAW_JSON].result:find('"plan_id":' .. small.plan_id, 1, true) ~= nil
+    and ticks > 1 and most <= jobs.WORK_PER_TICK + jobs.ENCODE_NODES,
+    string.format("get_job returns it whole after %d ticks of at most %d work items each", ticks, most))
+  storage.tasks.queue, storage.jobs = {}, nil
+end)()
 os.exit(failures == 0 and 0 or 1)

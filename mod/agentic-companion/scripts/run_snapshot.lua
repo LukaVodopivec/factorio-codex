@@ -395,10 +395,11 @@ local PHASE_NEXT = { read = "progression", progression = "factory", factory = "l
 -- run_snapshot {window?}: the job definition (control.lua registers it).
 -- window = true (the recorder's baseline) marks the body-time window as
 -- the sample is taken (tasks.mark_body_window). The phases run in
--- PHASE_NEXT order, so a snapshot spans the ticks its work needs: a phase
--- runs once its cost (plus one item, so a spent budget always ends the
--- tick) fits what is left of the tick, else it is deferred once to a fresh
--- tick and then runs whatever its cost, like the jobs encoder's calls.
+-- PHASE_NEXT order, each in a tick of its own after the reads' ticks, so
+-- a snapshot spans at least one tick per phase: a phase runs once its cost
+-- (plus one item, so a spent budget always ends the tick) fits what is left
+-- of the tick, else it is deferred once to a fresh tick and then runs
+-- whatever its cost, like the jobs encoder's calls.
 M.job = {
   defer_encode = true,
   start = function(params)
@@ -411,11 +412,19 @@ M.job = {
     local body = companion.require_present()
     -- (A 0.34 snapshot in a loaded save has no phase: it was reading.)
     S.phase = S.phase or "read"
+    local worked = false
     while true do
       if budget.left <= 0 then return nil end
       if S.phase == "read" then
-        if S.cursor <= #S.surfaces then read_one(S, body.force, budget) else S.phase = PHASE_NEXT.read end
+        if S.cursor <= #S.surfaces then read_one(S, body.force, budget); worked = true else S.phase = PHASE_NEXT.read end
       else
+        -- One phase a tick, and never after other work in it: a phase's
+        -- cost is an estimate, and costs that fit one tick's budget together
+        -- took 15.8 ms in one (trial 0013: 29 of 203 snapshots over 8 ms,
+        -- the median growing with the factory). The snapshot is read
+        -- through get_job anyway, so the ticks cost nothing but latency.
+        if worked then return nil end
+        worked = true
         local phase = PHASES[S.phase]
         local cost = 1 + phase.cost(S, body)
         if cost > budget.left and not S.waited then

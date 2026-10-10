@@ -316,9 +316,17 @@ describe("Bridge.call for reads the game runs as jobs", () => {
     expect((busy as Error).message).toMatch(/^JOBS_BUSY: 8 jobs/);
   });
 
+  it("waits for a large plan_status the game encodes over ticks, as for any job", async () => {
+    const { rcon } = fakeRcon((cmd) => cmd.includes('"get_job"')
+      ? ok({ job_id: 3, kind: "plan_status", job_status: "done", result: { plan_id: 9, status: "completed", outcomes: [] } })
+      : pending(3, "plan_status"));
+    expect(await new Bridge(rcon, fakeClock().clock).call("plan_status", { plan_id: 9 }))
+      .toEqual({ plan_id: 9, status: "completed", outcomes: [] });
+  });
+
   it("never polls for a method the game does not run as a job", async () => {
     const { rcon, exec } = fakeRcon(() => ok({ job_id: 1, job_status: "pending" }));
-    expect(await new Bridge(rcon, fakeClock().clock).call("plan_status", { plan_id: 1 })).toEqual({ job_id: 1, job_status: "pending" });
+    expect(await new Bridge(rcon, fakeClock().clock).call("activity_log", {})).toEqual({ job_id: 1, job_status: "pending" });
     expect(exec).toHaveBeenCalledTimes(1);
   });
 });

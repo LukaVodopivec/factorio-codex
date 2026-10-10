@@ -30,6 +30,7 @@ local autonomy = require("scripts.autonomy")
 local errors = require("scripts.errors")
 local registry = require("scripts.registry")
 local journal = require("scripts.journal")
+local jobs = require("scripts.jobs")
 local M = {}
 -- Finished task and plan records are kept 5 minutes, a failed or partial
 -- one 30 (plan_status reads its outcomes).
@@ -877,14 +878,41 @@ local function plan_payload(plan)
     diagnostics = diagnostics,
   }
 end
+-- A plan_status payload of more than PLAN_STATUS_DIRECT_NODES nodes (a
+-- long plan's outcomes with their layouts and supply rows, its terminal
+-- observation) is never encoded whole in the RPC's tick: it is a job whose
+-- result the jobs encoder writes over ticks, read through get_job (the
+-- bridge waits for it). One plan_status took 17.5 ms (trial 0013) while
+-- the median stayed 0.3 ms: the cost is the payload's size. The lists the
+-- payload shares with the live plan are copied, so a step that ends while
+-- it is encoded changes nothing already counted.
+local PLAN_STATUS_DIRECT_NODES = jobs.WORK_PER_TICK
+M.PLAN_STATUS_DIRECT_NODES = PLAN_STATUS_DIRECT_NODES
+jobs.register("plan_status", {
+  defer_encode = true,
+  start = function(params) return { payload = params.payload } end,
+  step = function(state, budget)
+    budget.left = budget.left - 1
+    return state.payload
+  end,
+})
+local function plan_answer(plan)
+  local payload = plan_payload(plan)
+  if jobs.count_nodes(payload, PLAN_STATUS_DIRECT_NODES) <= PLAN_STATUS_DIRECT_NODES then return payload end
+  payload.outcomes = { table.unpack(payload.outcomes or {}) }
+  if payload.transitions then payload.transitions = { table.unpack(payload.transitions) } end
+  -- With every job slot taken (JOBS_BUSY) it is answered at once, as before.
+  local ok, pending = pcall(jobs.start, "plan_status", { payload = payload })
+  return ok and pending or payload
+end
 function M.plan_status(params)
   local id = tonumber(params.plan_id)
   if not id then error("plan_status requires plan_id") end
   local tasks = storage.tasks
-  if tasks.active and tasks.active.id == id and tasks.active.type == "plan" then return plan_payload(tasks.active) end
-  for _, queued in ipairs(tasks.queue) do if queued.id == id and queued.type == "plan" then return plan_payload(queued) end end
+  if tasks.active and tasks.active.id == id and tasks.active.type == "plan" then return plan_answer(tasks.active) end
+  for _, queued in ipairs(tasks.queue) do if queued.id == id and queued.type == "plan" then return plan_answer(queued) end end
   local record = tasks.records[id]
-  if record and record.plan then observe_terminal(record.plan); return plan_payload(record.plan) end
+  if record and record.plan then observe_terminal(record.plan); return plan_answer(record.plan) end
   error("unknown plan_id: " .. id .. ": never queued, or it ended more than " .. math.floor(RECORD_TTL_TICKS / 3600)
     .. " minutes ago (" .. math.floor(FAILED_RECORD_TTL_TICKS / 3600) .. " if it failed or was partial);"
     .. " activity_log keeps the last " .. ACTIVITY_LOG_SIZE .. " plan outcomes", 0)

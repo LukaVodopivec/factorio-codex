@@ -54,11 +54,12 @@ local function encode(tbl)
   return '{"ok":true,"data":' .. body .. "}"
 end
 
+-- Returns the encoded reply's size in bytes (the profiler logs it).
 local function respond(tbl, never_chunk)
   local json = encode(tbl)
   if never_chunk or #json <= M.CHUNK_SIZE then
     rcon.print(json)
-    return
+    return #json
   end
   local parts = {}
   for i = 1, #json, M.CHUNK_SIZE do
@@ -75,6 +76,7 @@ local function respond(tbl, never_chunk)
     parts = #parts,
     data = parts[1],
   }))
+  return #json
 end
 
 local function prune_outbox()
@@ -144,19 +146,19 @@ local function run(method, params_json)
   if not allowed then respond({ ok = false, error = errors.plain(admission_error) }); return end
   local ok, result = pcall(handler, params)
   if ok then
-    respond({ ok = true, data = result or {} }, method == "get_chunk")
+    return respond({ ok = true, data = result or {} }, method == "get_chunk")
   else
     local deliberate, message = errors.deliberate(result)
-    respond({ ok = false, error = deliberate and message or errors.record("rpc:" .. tostring(method), result) })
+    return respond({ ok = false, error = deliberate and message or errors.record("rpc:" .. tostring(method), result) })
   end
 end
 
--- Each command's whole Lua time (decode, handler, encode) goes to the game
--- log; get_chunk only replays stored parts and is not logged.
+-- Each command's whole Lua time (decode, handler, encode) and its reply's size go
+-- to the game log; get_chunk only replays stored parts and is not logged.
 function M.dispatch(method, params_json)
   local profiler = method ~= "get_chunk" and timing.start() or nil
-  run(method, params_json)
-  timing.log_rpc(method, profiler)
+  local bytes = run(method, params_json)
+  timing.log_rpc(method, profiler, bytes)
 end
 
 -- Built-in transport helpers; everything else registers from control.lua.

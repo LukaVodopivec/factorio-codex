@@ -1,24 +1,20 @@
 # Factorio reference
 
-How Factorio's numbers fit together, for planning and diagnosis. Written in
-this repository's own words from the game's rules; it holds no layouts,
-coordinates, blueprint strings or build orders. Exact values come from the
-live game: `describe_prototype` (speeds, energy, mining time, fuel slots),
-`production_requirements` (recipes, ingredient chains, craft time) and
-`factory_status` / `inspect_entity` (what is actually running). When this file
-and a live read disagree, the live read wins.
+How Factorio's numbers fit together, in this repository's own words: no
+layouts, coordinates, blueprint strings or build orders. Exact values come
+from live reads (`describe_prototype`, `production_requirements`,
+`factory_status`), which win over this file.
 
 ## Stock, flow and capacity
 
-- **Stock** is what exists now: items in the body, chests, machine slots and
-  belts. It answers "can I build this now?".
-- **Flow** is items per minute actually moving: what drills mine, furnaces
-  smelt and labs consume. It answers "is the factory growing?".
-- **Capacity** is the flow machines could reach if fed and emptied. A machine
-  with no input, no fuel or a full output has capacity but no flow.
-- Progress in a trial is flow that machines sustain on their own. A large
-  stock that no machine turns into something else is not progress; a machine
-  that only runs while the body feeds it is not yet automated.
+- **Stock** is what exists now (body, chests, machine slots, belts); **flow**
+  is items per minute actually moving; **capacity** is the flow machines could
+  reach if fed and emptied.
+- Progress is flow that machines sustain on their own. Stock no machine uses
+  is not progress; a machine that runs only while the body feeds it is not
+  automated.
+- Carried items are out of the factory: no machine uses them. A full body
+  fails fetches, pickups and upkeep; a chest holds stock without body slots.
 
 ## Rates from game data
 
@@ -47,9 +43,8 @@ and a live read disagree, the live read wins.
 - **Fuel slot space versus fuel validity.** A machine refuses a fuel item when
   the item is the wrong category (a stone furnace burns chemical fuel, not
   nutrients) or when the slot is already full; check which before retrying.
-- **Burning versus reserve.** The item in the fuel slot is the reserve; the
-  machine also holds energy from the item it is burning. Removing reserve fuel
-  stops the machine soon; it never fixes a full output.
+- **Burning versus reserve.** The fuel slot is the reserve; removing it
+  stops the machine soon and never fixes a full output.
 - **Electric machines** draw their energy use from the network. When demand
   exceeds generation, every machine on that network slows in proportion, so a
   power shortage looks like many slow machines, not one stopped one.
@@ -90,6 +85,11 @@ and a live read disagree, the live read wins.
 - Price a design in plates and compare that with the plates the factory
   measurably makes. A long belt route can cost more than the line it feeds
   returns for many minutes; short local connections pay back first.
+- A design's build time is its total material divided by the slowest measured
+  rate at which that material arrives (for a platform, also the payload per
+  launch); compare it with the horizon before committing.
+- To confirm a feed, measure the consumer's own output: the fed item may also
+  be made elsewhere on the surface.
 
 ## Geometry
 
@@ -113,15 +113,10 @@ run's report confirm each one on the real site.
 
 ## Keep, rebuild or retire
 
-- Every building has a running cost: its fuel, the body's trips to feed or
-  empty it (`factory_status` lines show `hand_transfers` and `hand_seconds`,
-  the body time spent serving that line by hand in the last ten minutes),
+- Every building has a running cost: its fuel, the body's trips to serve it
+  (`hand_seconds`: body time serving a line by hand in the last ten minutes),
   and the materials and space it ties up. What it gives back is the flow it
   adds where something uses it.
-- Mod upkeep refuels burners (burner inserters too) and feeds labs only
-  within 96 tiles of the body (after two idle minutes, also of recent work
-  sites; between plans, when a burner is dry a minute, their dry burners).
-  A part further away runs dry unless it is connected or the body goes there.
 - Judge older parts again as the factory grows. Building something is not a
   reason to keep it; only what it does for the factory now is. A part that
   costs more than it gives (a far outpost the body keeps walking to, a line
@@ -135,19 +130,19 @@ run's report confirm each one on the real site.
   gears, which need plates, which need a fuelled furnace fed by a drill. The
   first of each must come from carried stock, hand-mined resources and hand
   crafting; after that, machines should make the parts.
-- Before committing to a design, check that every entity in it can be made
-  from what you carry or can make soon. An entity that needs a material you
-  do not yet produce (iron plates for an iron chest, circuits for an
-  inserter) blocks the whole design until that material flows.
+- An entity in a design that needs a material you do not yet produce (iron
+  plates for an iron chest) blocks the whole design until that material flows.
 - The cheapest entity that does the job ties up the fewest materials (a
   burner machine needs no power, a smaller container may still hold enough);
   a better one pays once its materials flow.
 
 ## Research
 
-- Labs consume science packs only while a research is active and only the
-  packs that research asks for. A lab with packs but no active research does
-  nothing.
+- Labs work only on the first technology in the queue, consuming only the
+  packs it asks for. A pack it needs that labs lack stalls every lab working
+  on it, and an empty queue idles every lab.
+- A technology can be queued behind its own queued prerequisites; it starts
+  once they finish.
 - Research counts toward progress only when machines make the packs and labs
   consume them. A science chain is: plates and gears (red science), then
   inserters and belts (green science), each made by assemblers and carried to
@@ -174,13 +169,18 @@ run's report confirm each one on the real site.
   network's storage, or from the body's inventory by robots it carries with a
   personal roboport in worn armor (`queue_plan`'s `equip`).
 
-## Reading the tools
+- A plan's active budget is max(570 s, 12 s x its steps) from its start,
+  human holds not charged (`queue_plan` says what counts as a step); past it
+  the plan fails `PLAN_BUDGET_EXCEEDED` and queued hand-crafts keep running.
 
-- `describe_prototype` gives the per-machine numbers the formulas above take;
-  `production_requirements` with `per_minute` does the rate arithmetic for a
-  target rate. Their descriptions list the fields.
-- `factory_status` line states map onto the sections above: `starved` and
-  `output_full` are flow problems, `no_fuel` and `no_power` energy problems,
-  `depleted` a drill whose ore ran out; `cause` and `cause_position` say what
-  and where. A running line's `degraded` names its worst member problem (a
-  dry boiler beside working engines) before the line stops.
+## Space platforms
+
+- Asteroids grow in size and gain types along routes away from the inner
+  planets. Each one that reaches a platform damages what it hits, and a
+  faster platform meets more of them. Turrets shoot only with ammo delivered
+  into them; damage research raises their damage (`describe_prototype` gives
+  an asteroid's health and resistances and an ammo's damage).
+- A platform whose thrusters are destroyed stops travelling. Damage is
+  repaired with repair packs (researched), by hand or by construction robots.
+- A hub's import request is filled only while the platform is stopped in the
+  supplier's orbit. A schedule stop with no wait conditions is left at once.

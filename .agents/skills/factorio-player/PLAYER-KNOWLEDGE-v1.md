@@ -30,8 +30,8 @@ nothing carries over to another run.
 - Steam power: an offshore pump supplies water, a fuelled boiler makes steam,
   and one boiler supplies two steam engines. Poles join machines into an
   electric network; an unpowered machine stops.
-- Labs consume science packs only for the active research. Hand-crafting
-  takes real time.
+- Labs work only on the first queued technology, using only its packs.
+  Hand-crafting takes real time.
 
 ## Principles
 

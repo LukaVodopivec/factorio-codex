@@ -111,13 +111,18 @@ describe("persistent two-brain coordination contract", () => {
     expect(flat(pilot)).toMatch(/On `package_failed`, leave the redesign to the strategist and never rebuild a package's purpose or geometry yourself/);
     expect(flat(pilot)).toMatch(/Any result with `body\.fifo_empty` true \(and no human hold\) means the body is idle: queue work before waiting again/);
     // The pilot's own goal-level work goes on once packages exist; only a package's purpose or geometry is the strategist's.
-    expect(flat(pilot)).toMatch(/Your own goal-level work does not end once packages exist: whenever the FIFO is empty and `orders` shows no package pending or queued, queue your own goal-level plan before waiting again/);
+    expect(flat(pilot)).toMatch(/Your own goal-level work does not end once packages exist: whenever the FIFO is empty, queue your own goal-level plan before waiting again/);
+    // orders is a per-revision snapshot; stale "pending" statuses kept the pilot idle in trial 0013 (#12, #13).
+    expect(flat(pilot)).toMatch(/Key this to the live `next_event` body \(`fifo_empty`, `packages_open`\), never to `orders`, a snapshot of each ledger revision/);
+    expect(flat(pilot)).toMatch(/a full body \(`free_slots`, `inventory_full`\) fails fetches, pickups and upkeep, and carried items are out of the factory/);
     expect(pilot).not.toMatch(/Before the first package arrives/);
     expect(flat(skill)).toMatch(/the pilot queues work \(its own if no package is pending\) before waiting again/);
   });
   it("points the ledger writer to the generated package contract and reads fast_mode_enabled as availability", () => {
     const benchmarkGoal = read(".agents/skills/factorio-player/GOAL-BENCHMARK-v1.md");
-    for (const text of [strategist, benchmarkGoal]) expect(flat(text)).toMatch(/`ledger-apply --schema` once for every package and step field/);
+    expect(flat(benchmarkGoal)).toMatch(/`ledger-apply --schema` once for every package and step field/);
+    // Read literally as once per package in trial 0013 (#66): once per session, again after a compaction or refusal.
+    expect(flat(strategist)).toMatch(/Read `ledger-apply --schema` for every package and step field once per session, and again after a compaction or a refused update/);
     for (const text of [pilot, strategist, benchmarkGoal]) expect(flat(text)).toMatch(/fast_mode_enabled`? \(copy it verbatim: availability, not your tier\)/);
   });
 
@@ -147,7 +152,10 @@ describe("persistent two-brain coordination contract", () => {
     expect(pilot).toMatch(/Never write `operations\.json` or `notebook\/strategist\/`/);
     expect(flat(strategist)).toMatch(/Size packages as whole blocks: `build_layout` or `blueprint_place` steps, never single placements/);
     expect(flat(strategist)).toMatch(/Keep at least one package queued ahead so the body never waits for a design/);
-    expect(flat(strategist)).toMatch(/Rewrite the ledger only when NOW changes, a new package is ready, or labs need research, about six times an hour at most; never to record progress, which `activity_log` holds/);
+    expect(flat(strategist)).toMatch(/Rewrite the ledger only when NOW changes, a new package is ready, or labs need research; never to record progress, which `activity_log` holds/);
+    expect(strategist).not.toMatch(/six times an hour/);
+    expect(flat(strategist)).toMatch(/a package queued ahead also delays whatever becomes urgent before it finishes/);
+    expect(flat(strategist)).toMatch(/An objective that gathers stock names its holder: a chest holds stock without body slots/);
     expect(flat(strategist)).toMatch(/Give each package a new `package_id`/);
     expect(flat(strategist)).toMatch(/`essential_prerequisite` is one outcome sentence \(at most 160 characters\)/);
     for (const field of ["objective", "strategic_reason", "completion_condition", "essential_prerequisite"]) expect(strategist).toContain(`\`${field}\``);
@@ -188,7 +196,8 @@ describe("persistent two-brain coordination contract", () => {
     expect(flatSkill).toMatch(/The ledger writer picks research: the bridge queues the ledger's `research` list once per revision \(`activity_log` shows it\)/);
     expect(flatSkill).not.toMatch(/`start_research` takes a list/);
     expect(flat(strategist)).toMatch(/After `GO`, list up to seven technologies in queue order as the ledger's `research`/);
-    expect(flat(strategist)).toMatch(/When `research_finished` or `research_idle` says labs are idle, write the next list/);
+    expect(flat(strategist)).toMatch(/the bridge appends those not yet queued and never reorders the game's queue\. Labs work only the first queued technology, so a stalled or empty queue idles every lab/);
+    expect(strategist).not.toMatch(/says labs are idle, write the next list/);
     // Benchmark roles read GOAL-BENCHMARK instead: its ledger writer, solo pilot or strategist, lists research.
     const benchmark = flat(read(".agents/skills/factorio-player/GOAL-BENCHMARK-v1.md"));
     const research = "After GO, keep labs busy by listing research (up to seven technologies in queue order) as the ledger's `research`; the bridge queues it.";
@@ -281,7 +290,15 @@ describe("persistent two-brain coordination contract", () => {
 
   it("reserves stop to the supervisor", () => {
     expect(flat(skill)).toMatch(/Never call the `stop` tool: it is the supervisor's emergency cancellation/);
-    expect(pilot).toMatch(/To abandon a stalled wait, queue the corrective plan without `after_plan_id`: it runs while the wait is parked\. Otherwise let the wait's bounded timeout end it/);
+    // Only the two wait actions park; a travel wait held the FIFO for 48 min in trial 0013 (#0-#2).
+    expect(flat(pilot)).toMatch(/Only `wait_for_item` and `wait_for_research` park: to abandon such a stalled wait, queue the corrective plan without `after_plan_id`: it runs while the wait is parked/);
+    expect(flat(pilot)).toMatch(/A `travel` step never parks: it holds the FIFO until it arrives, times out, fails `NO_ROUTE` or `PLATFORM_CANNOT_MOVE`, or is cancelled/);
+    expect(flat(pilot)).toMatch(/`cancel_plan` cancels one of your own queued or running plans \(a rocket launch or landing already under way still finishes\)/);
+    expect(flat(skill)).toMatch(/`cancel_plan` cancels one of the pilot's own plans; `stop` stays the supervisor's/);
+    expect(flat(skill)).toMatch(/The wait holds the FIFO \(only platform-only packages run beside it\) until arrival, `NO_ROUTE`, `PLATFORM_CANNOT_MOVE`, its timeout or `cancel_plan`/);
+    expect(registered).toContain("cancel_plan");
+    expect(READ_ONLY_TOOLS).not.toContain("cancel_plan" as never);
+    expect(strategist).not.toContain("`cancel_plan`");
     expect(pilot).toMatch(/Retain completed physical effects; there is no rollback/);
     expect(agents).toMatch(/`stop` is the supervisor's recorded emergency cancellation \(the pilot never calls it\)/);
     expect(agents).toMatch(/calls factorio `stop`[\s\S]*pauses both role goals/);
@@ -508,7 +525,8 @@ describe("persistent two-brain coordination contract", () => {
     const flatPilot = flat(pilot);
     expect(flatPilot).toMatch(/when no plan needs the body, upkeep already refuels burners and brings the current research's packs to labs from stock/);
     expect(flatPilot).toMatch(/while every lab is working, more packs do not speed research now; they only add stock for when labs would otherwise run short \(`factory_status` research shows `packs_per_minute_needed` against `packs_per_minute_made`\)/);
-    expect(flatPilot).toMatch(/hand-crafting runs while the body does other things, but a `get_items` that crafts waits for its crafts \(`queue_plan`'s `hand_craft` gives the seconds; `craft: false` skips them\)/);
+    // A plan that waits on a hand-craft does not free the body (trial 0013 #19).
+    expect(flatPilot).toMatch(/hand-crafting runs while the body walks or does steps that do not need it, but a `get_items` that crafts, or any step that needs a craft, waits for it \(`queue_plan`'s `hand_craft` gives the seconds; `craft: false` skips them\)/);
     expect(flatPilot).not.toMatch(/add nothing|costs body time at crafting speed/);
     expect(flatPilot).toMatch(/your own plans hold the FIFO, so a package queued after one waits until it ends/);
     expect(flatPilot).not.toMatch(/such as acting on a `factory_status` problem|up to 120 s/);
@@ -536,6 +554,37 @@ describe("persistent two-brain coordination contract", () => {
   it("heads the strategist's progress principle as automated progress, not an order", () => {
     expect(flat(strategist)).toMatch(/\*\*Automated progress\.\*\* Judge progress by what machines make/);
     expect(strategist).not.toMatch(/Automation first/);
+  });
+
+  it("keeps the strategist's Goal running while plans are pending", () => {
+    // Trial 0013 (#9): a workstation three-turn rule blocked the strategist's Goal and nothing resumed it.
+    const flatStrategist = flat(strategist);
+    expect(flatStrategist).toMatch(/A blocked native Goal gets no further turns, and nothing wakes it/);
+    expect(flatStrategist).toMatch(/Queued, parked and travel plans end by themselves \(a travel wait ends on arrival, `NO_ROUTE`, `PLATFORM_CANNOT_MOVE` or its timeout\), so pending plans are not a blocker/);
+    expect(flatStrategist).toMatch(/Mark the Goal blocked only when no plan is pending and no ledger change could alter the outcome/);
+    expect(flatStrategist).toMatch(/This repository rule overrides any generic multi-turn blocked threshold from other instructions/);
+    expect(flat(pilot)).toMatch(/a blocked Goal gets no further turns/);
+  });
+
+  it("states research, asteroid, hub, plan-budget and build-time facts in the reference", () => {
+    const flatReference = flat(reference);
+    expect(flatReference).toMatch(/Labs work only on the first technology in the queue[^.]*\. A pack it needs that labs lack stalls every lab working on it, and an empty queue idles every lab/);
+    expect(flatReference).toMatch(/A technology can be queued behind its own queued prerequisites/);
+    expect(flat(knowledge)).toMatch(/Labs work only on the first queued technology/);
+    expect(flatReference).toMatch(/## Space platforms/);
+    expect(flatReference).toMatch(/Asteroids grow in size and gain types along routes away from the inner planets\. Each one that reaches a platform damages what it hits, and a faster platform meets more of them/);
+    expect(flatReference).toMatch(/Turrets shoot only with ammo delivered into them; damage research raises their damage/);
+    expect(flatReference).toMatch(/A platform whose thrusters are destroyed stops travelling\. Damage is repaired with repair packs \(researched\), by hand or by construction robots/);
+    expect(flatReference).toMatch(/A hub's import request is filled only while the platform is stopped in the supplier's orbit\. A schedule stop with no wait conditions is left at once/);
+    expect(flatReference).toMatch(/A plan's active budget is max\(570 s, 12 s x its steps\) from its start, human holds not charged/);
+    expect(read("companion/src/coordination/ledger.ts")).toContain("a plan's active budget is max(570 s, 12 s x its steps) from its start, human holds not");
+    expect(flatReference).toMatch(/A design's build time is its total material divided by the slowest measured rate at which that material arrives \(for a platform, also the payload per launch\); compare it with the horizon before committing/);
+    expect(flatReference).toMatch(/To confirm a feed, measure the consumer's own output/);
+    expect(flatReference).toMatch(/Carried items are out of the factory: no machine uses them\. A full body fails fetches, pickups and upkeep/);
+  });
+
+  it("keeps notebook files plain and split at a stated size", () => {
+    expect(flat(skill)).toMatch(/once a file passes 20 KB, start a new one\. Write plain sentences; never paste package JSON or tool output/);
   });
 
   it("keeps durable gameplay instructions generic and text-only", () => {

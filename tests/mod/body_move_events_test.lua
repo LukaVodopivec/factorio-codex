@@ -86,6 +86,8 @@ check(#flags == 1 and flags[1].from == "nauvis" and flags[1].to == "vulcanus" an
   "a landing sets the surface cancel flag and records body_surface_changed")
 check(#arrivals == 1 and vulcanus.peaceful_mode == true and vulcanus.no_enemies_mode == true,
   "arriving on a planet applies its world policy and charts once")
+check(storage.milestones.landed_tick == 500 and storage.milestones.boarded_tick == nil,
+  "the first landing is the landed milestone; nothing boarded yet")
 moved({ player_index = 1 })
 check(#flags == 1, "the same surface again is no change")
 
@@ -108,6 +110,24 @@ check(#arrivals == 2, "an arrival is handled once")
 codex.physical_surface, character.surface = vulcanus, vulcanus
 moved({ player_index = 1 })
 check(#flags == 3 and #arrivals == 3, "a direct change while standing is a change and an arrival at once")
+
+-- Boarding a platform marks the boarded milestone once; landing again
+-- (the body stood on no planet meanwhile) keeps the first landed tick.
+do
+  local deck = { valid = true, index = 9, name = "platform-3", platform = { index = 3, name = "Dawn", valid = true } }
+  game.surfaces[9] = deck
+  game.tick = 700
+  codex.hub = { valid = true, surface = deck, position = { x = 0, y = 0 } }
+  moved({ player_index = 1 })
+  check(storage.milestones.boarded_tick == 700 and flags[#flags].state == "aboard_platform",
+    "boarding a platform is the boarded milestone")
+  game.tick = 800
+  codex.hub = nil
+  moved({ player_index = 1 })
+  check(storage.milestones.boarded_tick == 700 and storage.milestones.landed_tick == 500
+    and flags[#flags].state == "on_surface", "a later landing keeps the first landed and boarded ticks")
+  game.tick = 500
+end
 
 -- ping names a pending travel destination.
 bound_for = "platform:3"

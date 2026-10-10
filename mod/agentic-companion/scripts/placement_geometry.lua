@@ -355,8 +355,12 @@ end
 -- The resources a mining drill can mine, by name ("crude-oil"), joined with
 -- "or", from the resource prototypes of its categories (one engine-side
 -- filter, read only to word a refusal); nil when unknown or more than four.
+-- Read once per drill prototype and kept (a site search words a refusal for
+-- every candidate off the ore): prototypes never change while the mod's Lua
+-- state lives, so every peer derives the same text and none is game state.
 local MAX_NAMED_RESOURCES = 4
-function M.mineable_names(proto)
+local mineable_cache = {}
+local function mineable_text(proto)
   local categories = read(function() return proto.resource_categories end)
   if type(categories) ~= "table" then return nil end
   local ok, resources = pcall(function()
@@ -372,6 +376,16 @@ function M.mineable_names(proto)
   table.sort(names)
   if #names == 1 then return names[1] end
   return table.concat(names, ", ", 1, #names - 1) .. " or " .. names[#names]
+end
+function M.mineable_names(proto)
+  local name = read(function() return proto.name end)
+  if name == nil then return mineable_text(proto) end
+  local cached = mineable_cache[name]
+  if cached == nil then
+    cached = mineable_text(proto) or false
+    mineable_cache[name] = cached
+  end
+  return cached or nil
 end
 
 -- A drill's refusal for having nothing to mine, naming what it mines.

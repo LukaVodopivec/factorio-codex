@@ -371,6 +371,15 @@ check(well and well.position.x == 100.5 and well.position.y == 60.5 and well.out
 local dry_jack = find({ item = "pumpjack", preferred = { x = 120, y = 80 }, radius = 3, limit = 1 })
 check(#dry_jack.candidates == 0 and dry_jack.hint and dry_jack.hint:find("the mining area has no crude-oil", 1, true),
   "a pumpjack search off the oil says the mining area has no crude-oil: " .. tostring(dry_jack.hint))
+-- What a drill mines is read from the prototypes once and kept: a site
+-- search words a refusal for every candidate off the ore.
+local filtered_reads, filtered = 0, prototypes.get_entity_filtered
+prototypes.get_entity_filtered = function(...) filtered_reads = filtered_reads + 1; return filtered(...) end
+local again = find({ item = "pumpjack", preferred = { x = 120, y = 80 }, radius = 3, limit = 1 })
+check(filtered_reads == 0 and again.hint and again.hint:find("no crude-oil", 1, true)
+  and placement_geometry.mineable_names(protos["pumpjack"]) == "crude-oil" and filtered_reads == 0,
+  "a drill's mineable resources are read from the prototypes once, then kept: " .. filtered_reads .. " reads")
+prototypes.get_entity_filtered = filtered
 local piped_ok, piped_error = pcall(find, { item = "pumpjack", preferred = { x = 101, y = 61 }, radius = 2,
   output_recipient_item = "wooden-chest" })
 check(not piped_ok and tostring(piped_error):match("^find_placement: pumpjack outputs fluid"),

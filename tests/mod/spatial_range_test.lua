@@ -128,4 +128,32 @@ check(uncertain_mining["entity:variable-ore"].mining_time == 2
   and uncertain_mining["entity:chance-ore"].mining_products == nil,
   "describe_entity omits variable and probabilistic mining quantities from exact product facts")
 
+-- Asteroids and ammo: an asteroid's health and resistances; an ammo item's
+-- category, damage per shot (through nested results), projectile and
+-- modifiers.
+prototypes.entity["small-metallic-asteroid"] = { name = "small-metallic-asteroid", type = "asteroid",
+  get_max_health = function() return 100 end,
+  resistances = { physical = { decrease = 0, percent = 0.1 }, explosion = { decrease = 2, percent = 0.5 } } }
+prototypes.item["firearm-magazine"] = { name = "firearm-magazine", type = "ammo", stack_size = 200,
+  ammo_category = { name = "bullet" },
+  get_ammo_type = function() return { action = { { type = "direct", action_delivery = { { type = "instant",
+    target_effects = { { type = "create-entity", entity_name = "explosion-hit" },
+      { type = "damage", damage = { amount = 5, type = "physical" } } } } } } }, cooldown_modifier = 1 } end }
+prototypes.item.rocket = { name = "rocket", type = "ammo", stack_size = 200, ammo_category = { name = "rocket" },
+  get_ammo_type = function() return { action = { type = "direct", action_delivery = { type = "projectile", projectile = "rocket",
+    target_effects = { type = "nested-result", action = { type = "area", action_delivery = { type = "instant",
+      target_effects = { { type = "damage", damage = { amount = 20, type = "explosion" } } } } } } } }, range_modifier = 1.5 } end }
+local space = spatial.describe_prototype({ names = { "small-metallic-asteroid", "firearm-magazine", "rocket" } })
+local rock, magazine, rocket = space["small-metallic-asteroid"], space["firearm-magazine"], space.rocket
+check(rock.kind == "entity" and rock.max_health == 100 and #rock.resistances == 2 and rock.resistances[1].type == "explosion"
+  and rock.resistances[1].decrease == 2 and rock.resistances[2].percent == 0.1,
+  "an asteroid gives its health and resistances by damage type")
+check(magazine.kind == "item" and magazine.ammo.category == "bullet" and #magazine.ammo.damage == 1
+  and magazine.ammo.damage[1].amount == 5 and magazine.ammo.damage[1].type == "physical" and magazine.ammo.cooldown_modifier == 1
+  and magazine.ammo.projectiles == nil, "an ammo item gives its category and damage per shot")
+check(rocket.ammo.projectiles[1] == "rocket" and rocket.ammo.damage[1].amount == 20 and rocket.ammo.damage[1].type == "explosion"
+  and rocket.ammo.range_modifier == 1.5, "nested results and a fired projectile are followed")
+check(spatial.describe_prototype({ names = { "coal" }, kind = "item" })["item:coal"].ammo == nil
+  and rates["entity:burner-mining-drill"].max_health == nil, "other items and entities carry no ammo or asteroid facts")
+
 os.exit(failures == 0 and 0 or 1)

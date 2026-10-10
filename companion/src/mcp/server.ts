@@ -731,7 +731,7 @@ export function registerMcpTools(
     catch (error) { return failure(error); }
   });
   const deconstructInput = z.object(deconstructFields).strict().superRefine(issue(deconstructIssue));
-  tools.registerTool("deconstruct_area", { description: "Clear an area. mode hand (default): the body mines each of your buildings and the trees and rocks there; robots: mark them for construction robots; cancel: unmark. With platform (robots or cancel) the area is on that space platform and its hub takes the items back. filter limits it to those names." + areaNote, inputSchema: deconstructInput }, async (p, extra) => {
+  tools.registerTool("deconstruct_area", { description: "Clear an area. mode hand (default): the body mines each of your buildings and the trees and rocks there; robots: mark them for construction robots; cancel: unmark, and remove your entity and tile ghosts there. With platform (robots or cancel) the area is on that space platform and its hub takes the items back. filter limits it to those entity names (a tile name refuses FILTER_NOT_ENTITY; cancel also takes tile names, for tile ghosts)." + areaNote, inputSchema: deconstructInput }, async (p, extra) => {
     try { return await step("deconstruct_area")(deconstructInput.parse(p), extra?.signal); }
     catch (error) { return failure(error); }
   });

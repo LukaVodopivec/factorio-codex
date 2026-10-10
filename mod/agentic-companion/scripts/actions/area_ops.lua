@@ -21,6 +21,9 @@
 --     filter?, platform?}: hand mines each own entity (and trees and rocks);
 --     on a platform (robots or cancel only, remote: no body) the area is on
 --     its surface and the hub carries the orders out, its items back to it.
+--     filter names entities (a tile name refuses FILTER_NOT_ENTITY); cancel
+--     also removes own entity and tile ghosts there (filter: what they
+--     would build, tile names allowed).
 --   upgrade_area {area | center+radius, from, to, mode: hand | robots}: hand
 --     fast-replaces same-footprint entities in place (direction and recipe
 --     kept); anything else is reported, to be mined and placed instead.
@@ -650,12 +653,35 @@ local function validate_names(list, label)
   for _, name in ipairs(list) do if type(name) ~= "string" then error(label .. " must list names", 0) end end
 end
 
+-- filter's names split by kind: {entities, tiles}. A name that is no
+-- entity refuses FILTER_NOT_ENTITY (the engine faults on it in a query);
+-- cancel mode also takes tile names, for the tile ghosts it removes.
+local function filter_names(list, mode, label)
+  if list == nil then return nil end
+  local out = { entities = {}, tiles = {} }
+  for _, name in ipairs(list) do
+    if prototypes.entity and prototypes.entity[name] then
+      out.entities[#out.entities + 1] = name
+    elseif mode == "cancel" and prototypes.tile and prototypes.tile[name] then
+      out.tiles[#out.tiles + 1] = name
+    else
+      local tile = prototypes.tile and prototypes.tile[name]
+      error(string.format("FILTER_NOT_ENTITY: %s filter %s names %s; filter takes entity names%s", label, name,
+        tile and "a tile, not an entity" or "no entity", tile and " (and tile names in mode cancel, for tile ghosts)" or ""), 0)
+    end
+  end
+  return out
+end
+
+local GHOST_TYPES = { "entity-ghost", "tile-ghost" }
+
 local Deconstruct = {}
 Deconstruct.resume = supply.resume
 
 function Deconstruct.start(task)
   local c = actor(task.platform)
   local label = "deconstruct_area"
+  local names = filter_names(task.filter, task.mode or (task.platform ~= nil and "robots" or "hand"), label)
   local surface = c.surface
   if task.platform ~= nil then
     -- Remote: the platform's own entities, ordered for its hub.
@@ -672,17 +698,38 @@ function Deconstruct.start(task)
   -- Only candidates are read, own first, each query with its own limit: an
   -- unfiltered query on an ore field fills its limit with resources.
   local limit = MAX_AREA_ENTITIES + 1
-  local own_found = surface.find_entities_filtered({ area = area, force = c.force, name = task.filter, limit = limit })
-  local natural_found = task._platform and {} or surface.find_entities_filtered({ area = area, type = NATURAL_TYPES,
-    name = task.filter, limit = limit })
+  -- A filter of tile names only reads no entity.
+  local entity_filter = names and names.entities
+  local any_entity = not names or #names.entities > 0
+  local own_found = any_entity and surface.find_entities_filtered({ area = area, force = c.force, name = entity_filter,
+    limit = limit }) or {}
+  local natural_found = (task._platform or not any_entity) and {} or surface.find_entities_filtered({ area = area,
+    type = NATURAL_TYPES, name = entity_filter, limit = limit })
+  -- Cancel: own ghosts too, read by type and matched to the filter here
+  -- (ghost_name may be an entity's or a tile's).
+  local ghosts_found = {}
+  if task.mode == "cancel" then
+    ghosts_found = surface.find_entities_filtered({ area = area, force = c.force, type = GHOST_TYPES, limit = limit })
+  end
+  local wanted
+  if names then
+    wanted = {}
+    for _, name in ipairs(names.entities) do wanted[name] = true end
+    for _, name in ipairs(names.tiles) do wanted[name] = true end
+  end
   task._list, task._done = {}, 0
-  task._truncated = #own_found > MAX_AREA_ENTITIES or #natural_found > MAX_AREA_ENTITIES
+  task._truncated = #own_found > MAX_AREA_ENTITIES or #natural_found > MAX_AREA_ENTITIES or #ghosts_found > MAX_AREA_ENTITIES
   task._by_name = {}
-  for _, found in ipairs({ own_found, natural_found }) do
+  for _, found in ipairs({ own_found, natural_found, ghosts_found }) do
     for _, e in ipairs(found) do
       if #task._list >= MAX_AREA_ENTITIES then task._truncated = true; break end
-      local own = found == own_found
-      if e.valid and not (own and NEVER[e.type]) then
+      local own = found ~= natural_found
+      if found == ghosts_found then
+        local ok, ghost_name = pcall(function() return e.ghost_name end)
+        if e.valid and (not wanted or ok and wanted[ghost_name]) then
+          task._list[#task._list + 1] = { entity = e, own = true, ghost = true }
+        end
+      elseif e.valid and not (own and NEVER[e.type]) then
         local ok, minable = pcall(function() return e.prototype.mineable_properties.minable end)
         if ok and minable then task._list[#task._list + 1] = { entity = e, own = own } end
       end
@@ -700,7 +747,7 @@ local function deconstruct_result(task, c)
     or status == "done" and "AREA_CLEARED" or status == "partial" and "AREA_PARTIAL" or "AREA_NOT_CLEARED"
   local verb = task.mode == "cancel" and "cancelled deconstruction of" or hand and "mined" or "ordered deconstruction of"
   local extra = { done = task._done, total = task._total, by_name = task._by_name, truncated = task._truncated or nil,
-    stopped = task._stopped }
+    stopped = task._stopped, ghosts_removed = task._ghosts }
   if task._platform then
     extra.platform, extra.surface = task._platform, "platform:" .. task._platform.index
     extra.note = task.mode == "robots" and "the hub deconstructs them; their items go to the hub" or nil
@@ -727,7 +774,12 @@ function Deconstruct.tick(task)
       local e = entry.entity
       if e.valid then
         local ok, done
-        if task.mode == "cancel" then
+        local name = e.name
+        if task.mode == "cancel" and entry.ghost then
+          -- An own ghost is what was never built: cancelling removes it.
+          ok, done = pcall(function() e.destroy({ raise_destroy = true }); return true end)
+          if ok and done then task._ghosts = (task._ghosts or 0) + 1 end
+        elseif task.mode == "cancel" then
           ok, done = pcall(function()
             if not e.to_be_deconstructed() then return false end
             e.cancel_deconstruction(c.force)
@@ -736,7 +788,7 @@ function Deconstruct.tick(task)
         else
           ok, done = pcall(e.order_deconstruction, c.force)
         end
-        if ok and done then task._done = task._done + 1; count_name(task, e.name)
+        if ok and done then task._done = task._done + 1; count_name(task, name)
         elseif task.mode ~= "cancel" then add_failure(task, e, ok and "the game refused the order" or plain(done)) end
       end
     end
@@ -797,6 +849,7 @@ M.deconstruct_action = {
     end
     check_platform(step, label, { robots = true, cancel = true }, "robots or cancel")
     validate_names(step.filter, label .. " filter")
+    filter_names(step.filter, step.mode or (step.platform ~= nil and "robots" or "hand"), label)
   end,
   remote = function(step) return step.platform ~= nil end,
   budget_steps = function(step) return (step.platform == nil and (step.mode == nil or step.mode == "hand")) and 60 or 1 end,

@@ -566,7 +566,7 @@ local function ground(ctx, proto, pos, direction, adopt, end_type)
         end
       else
         ok = false
-        reason = proto.type == "mining-drill" and "no resource it can mine under it"
+        reason = proto.type == "mining-drill" and placement_geometry.no_resource_reason(proto)
           or proto.type == "offshore-pump" and "it needs a land tile with water behind it"
           or "the ground there is water or otherwise unbuildable"
       end
@@ -1074,9 +1074,16 @@ local function with_foundation(s, result)
   return result
 end
 
+-- The entity a site search puts on each candidate tile (the first drill or
+-- offshore pump), as its placed centre's offset from the anchor {dx, dy}:
+-- the snapped position, not the layout's dx/dy (a 3x3 pumpjack at dx 0
+-- stands at 0.5, so an anchor from the raw offset put it one tile off the
+-- oil it was meant for, trial 0013).
 local function key_entity(variant, kind)
-  for _, e in ipairs(variant.entities) do if e.proto.type == kind then return e end end
-  return variant.entities[1]
+  local index = 1
+  for i, e in ipairs(variant.entities) do if e.proto.type == kind then index = i; break end end
+  local placed = variant.rel[index].position
+  return { dx = placed.x - variant.base.x, dy = placed.y - variant.base.y }
 end
 
 -- ------------------------------------------------------------- resolution

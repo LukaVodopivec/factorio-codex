@@ -355,6 +355,22 @@ local nearest = math.huge
 for _, row in ipairs(smelt.placed) do nearest = math.min(nearest, (row.x - 10.5) ^ 2 + (row.y - 10.5) ^ 2) end
 check(smelt.ok and nearest < 25, "a layout sited near a point is placed around it")
 
+-- A pumpjack sited on crude oil stands centred on the well, whatever its
+-- layout offset (trial 0013: the anchor from its raw dx put a 3x3 pumpjack
+-- one tile off the oil, so no site ever fit).
+resources[#resources + 1] = { valid = true, name = "crude-oil", type = "resource", amount = 300000,
+  position = { x = 20.5, y = 30.5 } }
+local wells_ok, well_rows = true, {}
+for _, offset in ipairs({ { 0, 0 }, { 0.5, 0.5 }, { 1, -1 }, { -2, 3 } }) do
+  local well = check_layout({ check_only = true, site = { near = { x = 22, y = 28 }, on_resource = "crude-oil" },
+    entities = { { name = "pumpjack", dx = offset[1], dy = offset[2] } } })
+  local row = well.ok and well.placed[1]
+  well_rows[#well_rows + 1] = row and string.format("(%.1f, %.1f)", row.x, row.y) or tostring(well.failed[1] and well.failed[1].reason)
+  if not (row and row.x == 20.5 and row.y == 30.5) then wells_ok = false end
+end
+table.remove(resources)
+check(wells_ok, "a pumpjack sited on crude oil stands on the well for every layout offset: " .. table.concat(well_rows, " "))
+
 -- ----------------------------------------------------------- layout checks
 
 local function dry(params)
@@ -437,8 +453,13 @@ check(not lying_walled.ok and lying_walled.failed[1].reason:match("blocked by st
 -- A lying stack never hides the entity's own refusal: a drill over no ore.
 blockers = { blockers[1] }
 local lying_drill = dry({ anchor = { x = 20, y = 20 }, entities = { { name = "burner-mining-drill", dx = 0, dy = 0 } } })
-check(not lying_drill.ok and lying_drill.failed[1].reason:match(": no resource it can mine under it$")
-  and not lying_drill.ground_items, "a drill over a lying stack and no ore is refused for the missing ore")
+check(not lying_drill.ok and lying_drill.failed[1].reason:match(": no resource it can mine under it: its mining area has no copper%-ore or iron%-ore$")
+  and not lying_drill.ground_items, "a drill over a lying stack and no ore is refused for the missing ore, named")
+-- A pumpjack off the well names the oil it lacks, not a blocker.
+local dry_jack = dry({ anchor = { x = 24, y = 20 }, entities = { { name = "pumpjack", dx = 0, dy = 0 } } })
+check(not dry_jack.ok and dry_jack.failed[1].reason:match("its mining area has no crude%-oil$"),
+  "a pumpjack with no oil under it is refused with: its mining area has no crude-oil: "
+    .. tostring(dry_jack.failed[1] and dry_jack.failed[1].reason))
 -- Ore under every tile of a 9x9 footprint, read before a belt on it: the
 -- capped blocker search still reaches the belt.
 entities["test-silo"] = entity("test-silo", "container", 9, 9)

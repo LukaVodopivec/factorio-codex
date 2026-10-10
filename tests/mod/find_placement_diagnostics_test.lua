@@ -342,4 +342,76 @@ check(select(3, output_targets.recipient_at(body, point, "output", "inserter")) 
   "native endpoint tile must remain force-charted")
 force.is_chunk_charted = function() return true end
 
+-- A pumpjack is a fluid miner: no item endpoint is read for it, so a site
+-- however far from the body is found, each candidate with its fluid
+-- connections (trial 0013: 1264 of 1264 spots were rejected
+-- output_endpoint_unknown, read from the body's 30-tile view).
+protos["pumpjack"] = { name = "pumpjack", type = "mining-drill", tile_width = 3, tile_height = 3,
+  mining_drill_radius = 0.49, resource_categories = { ["basic-fluid"] = true },
+  collision_box = { left_top = { x = -1.2, y = -1.2 }, right_bottom = { x = 1.2, y = 1.2 } },
+  -- As 2.0 data has it: production_type none, an output pipe connection.
+  fluidbox_prototypes = { { index = 1, production_type = "none", pipe_connections = { { connection_type = "normal",
+    flow_direction = "output", positions = { { x = 1, y = -2 }, { x = 2, y = 1 }, { x = -1, y = 2 }, { x = -2, y = -1 } } } } } } }
+prototypes.item["pumpjack"] = { place_result = protos["pumpjack"] }
+prototypes.entity["crude-oil"] = { name = "crude-oil", type = "resource", resource_category = "basic-fluid" }
+prototypes.entity["iron-ore"] = { name = "iron-ore", type = "resource", resource_category = "basic-solid" }
+prototypes.get_entity_filtered = function()
+  return { ["crude-oil"] = prototypes.entity["crude-oil"], ["iron-ore"] = prototypes.entity["iron-ore"] }
+end
+entities, blocked_areas = {}, {}
+body.position = { x = 0.5, y = 0.5 }
+ore = { { valid = true, name = "crude-oil", type = "resource", amount = 300000, position = { x = 100.5, y = 60.5 },
+  prototype = { resource_category = "basic-fluid" } } }
+local jack = find({ item = "pumpjack", preferred = { x = 101, y = 61 }, radius = 4, limit = 2 })
+local well = jack.candidates[1]
+check(well and well.position.x == 100.5 and well.position.y == 60.5 and well.output_position == nil
+  and #well.fluid_connections == 1 and well.fluid_connections[1].position.x == 101.5
+  and well.resource_coverage[1].name == "crude-oil" and not (jack.rejections or {}).output_endpoint_unknown,
+  "a pumpjack 116 tiles from the body is found centred on the well, with its fluid connection and no item endpoint")
+local dry_jack = find({ item = "pumpjack", preferred = { x = 120, y = 80 }, radius = 3, limit = 1 })
+check(#dry_jack.candidates == 0 and dry_jack.hint and dry_jack.hint:find("the mining area has no crude-oil", 1, true),
+  "a pumpjack search off the oil says the mining area has no crude-oil: " .. tostring(dry_jack.hint))
+local piped_ok, piped_error = pcall(find, { item = "pumpjack", preferred = { x = 101, y = 61 }, radius = 2,
+  output_recipient_item = "wooden-chest" })
+check(not piped_ok and tostring(piped_error):match("^find_placement: pumpjack outputs fluid"),
+  "a pumpjack takes no item recipient, refused without a source location")
+ore = {}
+
+-- Drop recipients: a turret, a silo, a reactor take items; a hub and a
+-- landing pad are both pickups and recipients.
+protos["gun-turret"] = { name = "gun-turret", type = "ammo-turret", tile_width = 2, tile_height = 2,
+  collision_box = { left_top = { x = -ENGINE_HALF, y = -ENGINE_HALF }, right_bottom = { x = ENGINE_HALF, y = ENGINE_HALF } } }
+protos["cargo-landing-pad"] = { name = "cargo-landing-pad", type = "cargo-landing-pad", tile_width = 8, tile_height = 8,
+  collision_box = { left_top = { x = -3.9, y = -3.9 }, right_bottom = { x = 3.9, y = 3.9 } } }
+protos["stone-wall"] = { name = "stone-wall", type = "wall", tile_width = 1, tile_height = 1,
+  collision_box = { left_top = { x = -0.49, y = -0.49 }, right_bottom = { x = 0.49, y = 0.49 } } }
+for _, name in ipairs({ "gun-turret", "cargo-landing-pad", "stone-wall" }) do prototypes.item[name] = { place_result = protos[name] } end
+for _, kind in ipairs({ "ammo-turret", "artillery-turret", "rocket-silo", "reactor", "space-platform-hub", "cargo-landing-pad" }) do
+  check(output_targets.can_target_type(kind, "output"), kind .. " is a drop recipient")
+end
+check(output_targets.can_target_type("space-platform-hub", "input") and output_targets.can_target_type("cargo-landing-pad", "input")
+  and not output_targets.can_target_type("ammo-turret", "input") and not output_targets.can_target_type("rocket-silo", "input"),
+  "a hub and a landing pad are pickups too; a turret and a silo are not")
+entities = {}
+add_entity("gun-turret", { x = 40, y = -48 })
+add_entity("cargo-landing-pad", { x = 34, y = -48 })
+local fed = find({ item = "burner-inserter", preferred = { x = 38.5, y = -47.5 }, radius = 2, limit = 4,
+  input_target = { x = 34, y = -48 }, output_target = { x = 40, y = -48 } })
+check(fed.candidates[1] and fed.candidates[1].position.x == 38.5 and fed.candidates[1].output_target.name == "gun-turret"
+  and fed.candidates[1].input_target.name == "cargo-landing-pad",
+  "an inserter from a landing pad into a gun turret is found, no handler fault")
+add_entity("stone-wall", { x = 44.5, y = -47.5 })
+local wall_ok, wall_error = pcall(find, { item = "burner-inserter", preferred = { x = 43.5, y = -47.5 }, radius = 2,
+  output_target = { x = 44.5, y = -47.5 } })
+check(not wall_ok and tostring(wall_error):match("^TARGET_UNSUPPORTED: find_placement output_target identifies stone%-wall")
+  and not tostring(wall_error):find(".lua:", 1, true),
+  "an unsupported drop target is a coded refusal (TARGET_UNSUPPORTED), not a handler fault")
+local none_ok, none_error = pcall(find, { item = "burner-inserter", preferred = { x = 50.5, y = -47.5 }, radius = 2,
+  output_target = { x = 52.5, y = -47.5 } })
+check(not none_ok and tostring(none_error):match("^TARGET_NOT_FOUND: "),
+  "an output_target with no entity is TARGET_NOT_FOUND")
+local errors = require("scripts.errors")
+check(errors.deliberate(wall_error) and errors.deliberate(none_error) and errors.deliberate(piped_error),
+  "the dispatchers answer these refusals without filling the handler-fault ring")
+
 if failures > 0 then error(failures .. " find_placement diagnostics checks failed") end

@@ -24,7 +24,7 @@
     "test:mcp:built": "MCP_ENTRY=dist/cli.js MCP_SMOKE_OFFLINE=1 tsx test/mcp-smoke.ts"
   },
   "dependencies": {
-    "@clack/prompts": "^1.7.0",
+    "@clack/prompts": "^1.8.1",
     "@modelcontextprotocol/sdk": "^1.32.0",
     "zod": "^4.4.3"
   },

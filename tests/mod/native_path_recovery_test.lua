@@ -836,10 +836,18 @@ check(task._walk.phase == "frontier_waiting" and storage.path_request.id ~= firs
 deliver(nil, true); walk.step(task._walk, body, task.id)
 check(task._walk.frontier_probes[1].reason == "transient" and task._walk.frontier_index == 2,
   "a second transient reply is recorded and the next probe proceeds")
+-- Every probe refused: the body first steps toward the free tile centres
+-- beside it; this body stands still, so each direction ends without progress
+-- and the probes' failure stands.
 local function exhaust()
   local result
   while storage.path_request do
     deliver(nil, false)
+    result = walk.step(task._walk, body, task.id)
+  end
+  for _ = 1, 20 do
+    if result or task._walk.phase ~= "start_step" then break end
+    game.tick = game.tick + 30
     result = walk.step(task._walk, body, task.id)
   end
   return result, result and result.outcome and result.outcome.diagnostics.path
@@ -869,6 +877,11 @@ check(enclosed and enclosed.failed:match("^BODY_ENCLOSED:") and enclosed_path.fa
 "refused probes in both rings prove an enclosure that names the owned blocker toward the target, not a nearer one behind,"
     .. " and no tool to mine it")
 check(enclosed_path.recovery.termination_reason == nil, "a proven enclosure at the cap keeps its enclosure meaning")
+check(enclosed_path.start_step and enclosed_path.start_step.from.x == 0 and enclosed_path.start_step.reached == false
+  and enclosed_path.start_step.tried == #enclosed_path.start_step.targets and #enclosed_path.start_step.targets >= 1,
+  "an enclosure reports the start step it tried first and that it reached no free tile centre")
+check(not task._walk.escapes and not task._walk.escape_failed and not task._walk.escape_cleared_tick,
+  "a start step leaves the blocked-start escape's counters alone")
 -- What reaches the bot names the blocker it observed and nothing more: the
 -- walk ran no step-out, so none is said to have failed; it never tells the
 -- bot to mine part of a line.
@@ -892,5 +905,85 @@ local dense, dense_path = exhaust()
 check(dense and dense.failed:match("^BODY_ENCLOSED:") and dense_path.suggested_recovery.expected_name == "wooden-chest"
   and dense_path.suggested_recovery.x == 1 and #dense_path.owned_collision_candidates == 16,
   "a dense enclosure still names the owned blocker toward the target beyond the 16 reported colliders")
+
+-- The pathfinder can refuse the very spot a body stands on (pressed into a
+-- lava corner) while ordinary walking still leaves it: with every probe
+-- refused, the body steps to the nearest free tile centre, never a teleport,
+-- and the walk asks again from there.
+colliders = {}
+task = reset({ x = 10, y = 0 })
+walk.step(task._walk, body, task.id); deliver(nil, false); walk.step(task._walk, body, task.id)
+local stepped
+while storage.path_request do
+  deliver(nil, false)
+  stepped = walk.step(task._walk, body, task.id)
+end
+local step_target = task._walk.start_step and task._walk.start_step.targets[1]
+check(stepped == nil and task._walk.phase == "start_step" and step_target
+  and math.abs(step_target.x) == 0.5 and math.abs(step_target.y) == 0.5,
+  "a refused start steps toward the nearest free tile centre instead of failing")
+check(walk.step(task._walk, body, task.id) == nil and body.walking_state.walking and storage.path_request == nil,
+  "the start step is ordinary walking")
+body.position = { x = step_target.x, y = step_target.y }
+check(walk.step(task._walk, body, task.id) == nil and task._walk.phase == "waiting" and storage.path_request
+  and task._walk.start_step.reached and body.walking_state.walking == false,
+  "at the free tile centre the walk asks for its path again")
+deliver({ { x = 5, y = 0 }, { x = 10, y = 0 } })
+check(walk.step(task._walk, body, task.id) == nil and body.walking_state.walking, "the new path is walked")
+body.position = { x = 10, y = 0 }
+check(walk.step(task._walk, body, task.id) == "arrived", "the stepped walk arrives")
+task = reset({ x = 10, y = 0 })
+task._walk.start_step = { from = { x = 0, y = 0 }, targets = {}, tried = 0, reached = false }
+walk.step(task._walk, body, task.id); deliver(nil, false); walk.step(task._walk, body, task.id)
+task._walk.frontier_segments = 3
+local again = exhaust()
+check(again and again.failed:match("^PATH_NOT_FOUND:") and task._walk.phase ~= "start_step",
+  "a walk steps out once: a second refusal reports the failure")
+-- A body already on a free tile centre has no step to take there: with no
+-- other free centre, the refusal is reported after one round of probes.
+body.position = { x = 0.5, y = 0.5 }
+local saved_query = body.surface.find_entities_filtered
+body.surface.find_entities_filtered = function(filter)
+  local a = filter.area
+  if a and a.left_top.x > -5 and a.right_bottom.x < 6 and a.left_top.y > -5 and a.right_bottom.y < 6
+    and (a.right_bottom.x < 0.4 or a.left_top.x > 0.6 or a.right_bottom.y < 0.4 or a.left_top.y > 0.6) then
+    return { { valid = true, name = "stone-wall", type = "wall", position = { x = 0, y = 0 } } }
+  end
+  return saved_query(filter)
+end
+task = { id = 11, target = { x = 10, y = 0 } }
+_G.storage = { tasks = { active = task }, path_request = nil }
+task._walk = {}
+walk.begin(task._walk, body, task.target, 0.5)
+walk.step(task._walk, body, task.id); deliver(nil, false); walk.step(task._walk, body, task.id)
+task._walk.frontier_segments = 3
+local in_place = exhaust()
+check(in_place and in_place.failed:match("PATH_NOT_FOUND") and task._walk.start_step
+  and #task._walk.start_step.targets == 0 and not task._walk.start_step.reached,
+  "a body on its only free tile centre takes no start step and reports the refusal once")
+body.surface.find_entities_filtered = saved_query
+body.position = { x = 0, y = 0 }
+
+-- An approach reads a blocked start's escape counters: a start step that
+-- reached its tile and was refused again ends the approach with the walk's
+-- failure, not a silent second walk from scratch.
+body.position = { x = 0, y = 0 }
+task = { id = 9 }
+_G.storage = { tasks = { active = task }, path_request = nil }
+local requests_before = next_path_id
+local outcome
+for _ = 1, 200 do
+  outcome = approach.ensure(task, body, { x = 10, y = 0 }, 1)
+  if outcome then break end
+  if storage.path_request then deliver(nil, false)
+  elseif task._approach and task._approach.walk.phase == "start_step" then
+    local walk_state = task._approach.walk
+    body.position = walk_state.start_step.targets[walk_state.start_step.tried]
+  end
+  game.tick = game.tick + 1
+end
+check(type(outcome) == "table" and outcome.status == "failed" and outcome.detail:match("PATH_NOT_FOUND")
+  and task._approach == nil and task._approach_guard == nil and next_path_id - requests_before <= 40,
+  "an approach whose stepped walk is refused again fails once, without a second walk")
 
 os.exit(failures == 0 and 0 or 1)

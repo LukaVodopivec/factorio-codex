@@ -1,10 +1,10 @@
 # Live validation
 
-This guide validates release **0.38.0** against a real Factorio game: start a
+This guide validates release **0.38.1** against a real Factorio game: start a
 test server, connect a client, and check the tools and plans live. Offline
 tests (`npm test`) cover the same contracts with fixtures; only a live run
 shows the engine's own behaviour. Earlier live evidence below stays historical
-until a 0.38.0 run is recorded.
+until a 0.38.1 run is recorded.
 
 The reference setup uses two machines. The server machine has no dedicated
 GPU and is permanently headless: it runs only the dedicated server, the Node
@@ -193,6 +193,15 @@ alone is not evidence of usable framing.
    re-observe authoritative MCP state.
 
 ## Release checklists
+
+For the 0.38.1 release (a walk out of a spot the pathfinder refuses, from
+trial 0013), record this observable check:
+
+- A body pressed into a lava or water corner, where Factorio's pathfinder
+  refuses every path that starts at its exact position, steps by ordinary
+  walking to the nearest free tile centre and walks on from there; only a
+  second refusal ends the walk, and its `PATH_NOT_FOUND` or `BODY_ENCLOSED`
+  diagnostics name the `start_step` it tried.
 
 For the 0.38.0 release (travel recovery, live orders, supply and inventory
 facts, from trial 0013), record these observable checks:

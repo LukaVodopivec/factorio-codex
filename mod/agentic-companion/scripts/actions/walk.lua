@@ -606,9 +606,37 @@ local function resolve_frontiers(state, c)
     stop(c)
     return nil
   end
+  local code = occupancy and occupancy.state == "occupied" and "GOAL_OCCUPIED" or "PATH_NOT_FOUND"
+  local refused, inconclusive = false, false
+  for _, probe in ipairs(state.frontier_probes or {}) do
+    if probe.reason == "path_failed" then refused = true end
+    if probe.reason == "timeout" or probe.reason == "transient" or probe.reason == "path_uncharted" then inconclusive = true end
+  end
+  -- The pathfinder refused every probe from where the body stands. It can
+  -- refuse a spot that ordinary walking still leaves (a body pressed into a
+  -- lava or water corner): once per walk, the body steps to the nearest free
+  -- tile centre and asks again from there before it reports a failure. The
+  -- step keeps its own phase and record: an embedding approach reads a
+  -- blocked start's escape counters, which it leaves alone.
+  if code == "PATH_NOT_FOUND" and #(state.frontier_paths or {}) == 0 and refused and not inconclusive
+    and not state.start_step then
+    -- A tile centre the body already stands on is no step.
+    local targets = {}
+    for _, cell in ipairs(escape_cells(c)) do
+      if dist_sq(c.position, cell) > WAYPOINT_EXACT_SQ then targets[#targets + 1] = cell end
+    end
+    local step = { from = { x = c.position.x, y = c.position.y }, targets = targets, tried = 0, reached = false }
+    state.start_step = step
+    if #step.targets > 0 then
+      step.tried, step.attempt_tick, step.check_tick = 1, game.tick, game.tick
+      step.check_position = { x = c.position.x, y = c.position.y }
+      state.phase = "start_step"
+      stop(c)
+      return nil
+    end
+  end
   local evidence = blocker_evidence(state, c, state.target)
   local collision_candidates, collision_tiles, evidence_error = nearby_collision_evidence(c)
-  local code = occupancy and occupancy.state == "occupied" and "GOAL_OCCUPIED" or "PATH_NOT_FOUND"
   -- The pathfinder refused every probe it answered, and none ended
   -- inconclusive (timeout, backpressure, uncharted route): the body is
   -- enclosed. Name an owned blocker, one on the line toward the target
@@ -617,11 +645,6 @@ local function resolve_frontiers(state, c)
   -- The walk reports only what it observed; only code that ran a step-out
   -- says how it ended. Otherwise an empty frontier list stays PATH_NOT_FOUND.
   local suggested
-  local refused, inconclusive = false, false
-  for _, probe in ipairs(state.frontier_probes or {}) do
-    if probe.reason == "path_failed" then refused = true end
-    if probe.reason == "timeout" or probe.reason == "transient" or probe.reason == "path_uncharted" then inconclusive = true end
-  end
   if code == "PATH_NOT_FOUND" and #(state.frontier_paths or {}) == 0 and refused and not inconclusive then
     local dx, dy = state.target.x - c.position.x, state.target.y - c.position.y
     local length = math.sqrt(dx * dx + dy * dy)
@@ -662,6 +685,8 @@ local function resolve_frontiers(state, c)
     owned_collision_candidates = collision_candidates, collision_tiles = collision_tiles,
     cage_evidence_error = evidence_error,
     frontier_probes = state.frontier_probes,
+    start_step = state.start_step and { from = state.start_step.from, targets = state.start_step.targets,
+      tried = state.start_step.tried, reached = state.start_step.reached } or nil,
     failure_class = code == "BODY_ENCLOSED" and "PATH_NOT_FOUND" or nil,
     suggested_recovery = suggested }
   local reason = capped_with_progress and string.format(
@@ -675,6 +700,35 @@ local function resolve_frontiers(state, c)
       suggested.toward_goal and "owned blocker toward the goal" or "nearest owned blocker",
       suggested.expected_name, suggested.x, suggested.y) or ""),
     { code = code, diagnostics = { path = diagnostics } })
+end
+
+-- One tick of a start step: ordinary walking to a free tile centre beside a
+-- spot the pathfinder refused, a direction that makes no progress or runs out
+-- of time giving way to the next; there the walk asks for its path again.
+-- With none reached, the probes' failure stands.
+local function step_start(state, c, task_id)
+  local step, pos = state.start_step, c.position
+  if dist_sq(pos, step.targets[step.tried]) <= WAYPOINT_EXACT_SQ then
+    step.reached = true
+    stop(c)
+    request_path(state, c, task_id)
+    return nil
+  end
+  local stuck = false
+  if game.tick - step.check_tick >= ESCAPE_STUCK_TICKS then
+    stuck = dist_sq(pos, step.check_position) < STUCK_EPSILON_SQ
+    step.check_tick, step.check_position = game.tick, { x = pos.x, y = pos.y }
+  end
+  if stuck or game.tick - step.attempt_tick >= ESCAPE_TICKS then
+    if not step.targets[step.tried + 1] then
+      state.phase = "start_step_failed"
+      stop(c)
+      return resolve_frontiers(state, c)
+    end
+    step.tried, step.attempt_tick = step.tried + 1, game.tick
+  end
+  set_walking(c, { walking = true, direction = direction_toward(pos, step.targets[step.tried]) })
+  return nil
 end
 
 local function retry_or_fail(state, c, code, detail)
@@ -1210,6 +1264,7 @@ function M.step(state, c, task_id)
 
   if state.phase == "settling" then return step_settle(state, c, task_id) end
   if state.phase == "settle_search" then return step_settle_search(state, c) end
+  if state.phase == "start_step" then return step_start(state, c, task_id) end
 
   -- Arrival requires current proven clearance, including during an escape,
   -- and a body that no belt can carry away (a settle's routed walker leaves

@@ -1302,14 +1302,14 @@ local function advance(c, s, budget)
     if s.result then return s.result end
   end
   while true do
-    if not s.pending then
-      if ctx.calls >= MAX_WORK then
-        if s.anchor then
-          s.result = { anchor = s.anchor, failed = { { code = "CHECK_TOO_COSTLY", reason = BUDGET_SPENT } } }
-          return s.result
-        end
-        return not_found(s, true)
+    if ctx.calls >= MAX_WORK then
+      if s.anchor then
+        s.result = { anchor = s.anchor, failed = { { code = "CHECK_TOO_COSTLY", reason = BUDGET_SPENT } } }
+        return s.result
       end
+      return not_found(s, true)
+    end
+    if not s.pending then
       local candidate = next_candidate(s, soft)
       if candidate == nil then return nil end
       if candidate == false then return s.anchor and s.result or not_found(s, false) end

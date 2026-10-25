@@ -1910,6 +1910,6 @@ research choices or sequences. No remaining review finding was retained.
 
 Dependency versions were unchanged. The audit reported existing production
 advisories in five packages (two high, three moderate); these were captured
-separately as **VK-9261**, while development-only advisories are already tracked
-in **VK-4947**. The audit is not claimed clean. Source publication and any
+in a separate production-dependency follow-up, while development-only advisories
+have their own follow-up. The audit is not claimed clean. Source publication and any
 subsequent existing-save deployment remain separate from this isolated proof.

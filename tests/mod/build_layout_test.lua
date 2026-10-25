@@ -1089,6 +1089,51 @@ do
   check(own >= jobs.MIN_WORK and jobs.MIN_WORK - budget.left == own,
     string.format("a dry run left MIN_WORK does %d items of its own, charged one each", own))
 end
+do
+  -- Retained candidates must fail at the total ceiling, not yield forever
+  -- at the per-tick ceiling. Bound every call so the broken version fails
+  -- these assertions rather than hanging the offline suite.
+  crowded = false
+  for _, anchored in ipairs({ true, false }) do
+    for _, excess in ipairs({ 0, 1 }) do
+      local request = { layouts = { { entities = big.entities, connections = {} } } }
+      if anchored then request.anchor = big.site.near else request.site = big.site end
+      local s = layout.search_start(character, request)
+      local early
+      for _ = 1, 10 do
+        early = layout.search_step(character, s, { left = layout.WORK_PER_TICK })
+        if early or s.pending then break end
+      end
+      check(not early and s.pending ~= nil and s.ctx.calls < layout.MAX_WORK,
+        "a below-limit search yields with a pending candidate")
+      if not anchored then
+        s.tried = 1
+        s.best = { anchor = { x = 12, y = 14 }, passed = 1,
+          failed = { { index = 2, connection = 3, reason = "blocked footprint" } } }
+      end
+      s.ctx.calls = layout.MAX_WORK + excess
+      local calls, placements, queries = s.ctx.calls, engine.can_place, engine.find
+      local made, crafts = #created, crafted
+      local budget = { left = layout.WORK_PER_TICK }
+      local result = layout.search_step(character, s, budget)
+      local failed = result and result.failed and result.failed[1]
+      check(failed and failed.code == (anchored and "CHECK_TOO_COSTLY" or "SITE_NOT_FOUND")
+        and failed.reason:match("work budget"), "an exhausted pending search returns its terminal failure")
+      if not anchored then
+        check(failed and failed.index == 2 and failed.connection == 3
+          and failed.reason:match("closest try at anchor %(12, 14%) failed: blocked footprint"),
+          "an exhausted site search retains its closest-attempt details")
+      end
+      local stable = result ~= nil
+      for _ = 1, 3 do
+        stable = layout.search_step(character, s, budget) == result and stable
+      end
+      check(stable and s.ctx.calls == calls and budget.left == layout.WORK_PER_TICK
+        and engine.can_place == placements and engine.find == queries and #created == made and crafted == crafts,
+        "exhausted search results stay stable without more work or placement")
+    end
+  end
+end
 crowded = false
 geometry.overlaps = real_overlaps
 

@@ -254,7 +254,10 @@ package names its `surface` (a planet) and queues only while the body is
 there; until then `orders` shows it `waiting_surface`, which is not a failure. Only the
 pilot travels: a package never holds `travel`.
 The ledger writer picks research: the bridge queues the ledger's `research` list
-once per revision (`activity_log` shows it).
+once per revision (`activity_log` shows it). Lists append.
+`research: {mode: "replace", technologies: [...]}` replaces the queue, retaining
+native progress; explicit [] clears. Omitted research or an ordinary empty list
+does nothing.
 Results carry `orders` once per ledger change. A failed package appears as
 `package_failed` and in `activity_log`; the strategist alone redesigns it. There are no
 reports: the ledger is the strategist's only channel to the pilot.

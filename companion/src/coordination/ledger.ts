@@ -96,13 +96,13 @@ const buildPackage = packageFields.extend({ surface: packageSurface.default("nau
 const writtenPackage = packageFields.extend({ surface: packageSurface });
 const MAX_PACKAGE_BYTES = 8192;
 // The strategist's research selection: technologies in queue order. The
-// pilot's bridge queues them once for each revision that lists any, through
-// the mod's start_research, skipping those already researched or queued, and
-// records the outcome in activity_log (coordination/orders.ts).
+// pilot's bridge appends lists, skipping researched/queued names. An explicit
+// replacement object also applies an empty list, once per revision.
 export const MAX_RESEARCH = 7;
 const technology = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/, "technologies are names such as \"automation\"");
-const research = z.array(technology).max(MAX_RESEARCH)
+const researchList = z.array(technology).max(MAX_RESEARCH)
   .refine((names) => new Set(names).size === names.length, "research lists each technology once");
+const research = z.union([researchList, z.object({ mode: z.literal("replace"), technologies: researchList }).strict()]);
 
 export const operationsLedgerSchema = z.object({
   schema_version: z.literal(2), run: runSchema,
@@ -384,7 +384,8 @@ export function packageContract(): string {
     `  ${fieldLine(writtenPackage, ["steps"])}`,
     `  steps: 1-${MAX_PLAN_STEPS} of the steps below; blueprint_capture steps come first; travel is never a package step`,
     `  a package runs as one plan: ${PLAN_BUDGET_RULE}`, `  ${AFTER_PACKAGE_ID_RULE}`, `  ${VERIFY_RULE}`, `  ${NOTES_RULE}, each an existing file beside the ledger`,
-    `research: at most ${MAX_RESEARCH} technologies in queue order, each once`,
+    `research: an append list of at most ${MAX_RESEARCH} distinct technologies in queue order (omitted/empty: no-op),`
+      + ' or {mode: "replace", technologies: [...]} to replace the whole queue (explicit [] clears it); native progress is retained',
     "steps (action: required | optional):", ...steps,
   ].join("\n");
 }

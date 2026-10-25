@@ -25,7 +25,7 @@
 - Only the pilot travels: a package never holds `travel`. When NOW needs another planet, say what to build there and what to bring; packages for it wait as `waiting_surface` until the body arrives. Keep Nauvis in view with `factory_status` `elsewhere`.
 - On `package_failed`, redesign from fresh reads; never resubmit it unchanged. Packages written before an emergency stop stay held until you rewrite the ledger.
 
-**Research.** After `GO`, list up to seven technologies in queue order as the ledger's `research` (see `progression_status`); the bridge appends those not yet queued and never reorders the game's queue. Labs work only the first queued technology, so a stalled or empty queue idles every lab (`research_finished`, `research_idle`).
+**Research.** After `GO`, list up to seven technologies in queue order as the ledger's `research` (see `progression_status`). Use SKILL.md's replacement form to change or clear the queue. Labs work only the first queued technology; a stalled queue idles every lab (`research_finished`, `research_idle`).
 
 **Ledger writes.** Rewrite the ledger only when NOW changes, a new package is ready, or labs need research; never to record progress, which `activity_log` holds. Every update restates the packages you still want. From your worktree, pipe the update envelope to `node_modules/.bin/tsx companion/src/cli.ts ledger-apply --ledger <absolute operations.json path>`. If the ledger does not exist yet, create it once before `GO` with `{"init": true, "run": <the run object verbatim>, "source_tick": null, "update": ...}`. You are its sole writer: never hand-edit it or create another ledger, store, or service. A rejected update lists up to three issues; fix and resubmit.
 

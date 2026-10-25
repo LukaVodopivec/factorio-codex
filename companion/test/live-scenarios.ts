@@ -276,6 +276,78 @@ const tenth = (n: number) => Math.round(n * 10) / 10;
 type Scenario = { name: string; run: (bridge: Bridge) => Promise<string> };
 const scenarios: Scenario[] = [
   {
+    name: "research replacement switches blocked science and retains native earned progress and retry receipts",
+    async run(bridge) {
+      await lua(`${BUILD}
+        local f, s = game.forces.player, game.surfaces.nauvis
+        f.research_queue = {}
+        for _, name in ipairs({"automation-2", "lamp"}) do
+          for _, p in pairs(f.technologies[name].prerequisites) do p.research_recursive() end
+          f.technologies[name].researched = false
+        end
+        local eei = make(s, "electric-energy-interface", 18, 18)
+        eei.power_production, eei.electric_buffer_size = 1000000, 10000000
+        make(s, "substation", 21, 21)
+        local lab = make(s, "lab", 22, 22)
+        storage.research_fixture_lab = lab
+        lab.insert({name = "automation-science-pack", count = 100})
+        lab.insert({name = "logistic-science-pack", count = 100})
+      `);
+      const replace = (technologies: string[], origin?: string) => bridge.call<any>("start_research",
+        { mode: "replace", technologies, ...(origin ? { origin } : {}) });
+      const snapshot = () => lua<any>(`local f = game.forces.player local q = {}
+        for _, t in ipairs(f.research_queue) do q[#q+1] = t.name end
+        return {queue = q, current = f.current_research and f.current_research.name or false,
+          progress = f.current_research and f.research_progress or 0,
+          automation = f.technologies["automation-2"].saved_progress,
+          lamp = f.technologies.lamp.saved_progress}`);
+      try {
+        await bridge.call("start_research", { technology: "automation-2" });
+        await until("packs earn partial automation-2 progress", () => lua<boolean>(`return game.forces.player.research_progress > 0.02`));
+        const earned = await lua<number>(`storage.research_fixture_lab.active = false
+          storage.research_fixture_lab.remove_item({name = "logistic-science-pack", count = 1000})
+          return game.forces.player.research_progress`);
+        const append = await bridge.call<any>("start_research", { technologies: ["lamp"] });
+        expect(append.current_research === "automation-2" && list(append.research_queue).join(",") === "automation-2,lamp",
+          "ordinary append leaves the green-pack consumer active", append);
+        await replace(["lamp", "automation-2"]);
+        const switched = await snapshot();
+        expect(switched.current === "lamp" && Math.abs(switched.automation - earned) < 1e-9,
+          "replacement selects eligible red research and suspends earned green research progress", switched);
+        await lua(`storage.research_fixture_lab.active = true`);
+        await until("red packs earn partial lamp progress", () => lua<boolean>(`return game.forces.player.research_progress > 0.02`));
+        const lampEarned = await lua<number>(`storage.research_fixture_lab.active = false return game.forces.player.research_progress`);
+        await replace(["automation-2", "lamp"]);
+        const reordered = await snapshot();
+        expect(Math.abs(reordered.progress - earned) < 1e-9 && Math.abs(reordered.lamp - lampEarned) < 1e-9,
+          "reordering resumes active progress and preserves saved progress of the queued technology", reordered);
+        await replace(["automation-2", "lamp"]);
+        expect(JSON.stringify(await snapshot()) === JSON.stringify(reordered), "same queue preserves both progress values");
+        for (const technologies of [["lamp", "no-such-technology"], ["lamp", "lamp"], ["logistic-science-pack"]]) {
+          let refused = false;
+          try { await replace(technologies); } catch { refused = true; }
+          expect(refused && JSON.stringify(await snapshot()) === JSON.stringify(reordered), "invalid replacement is nonmutating", technologies);
+        }
+        await replace(["lamp"]);
+        expect((await snapshot()).automation === earned, "removing a technology preserves its saved progress");
+        const clear = await replace([]);
+        expect(clear.current_research === false && list(clear.research_queue).length === 0, "explicit empty replacement clears", clear);
+        const selection = ["lamp", "automation-2"];
+        await replace(selection, "ledger/r900001");
+        expect(Math.abs((await snapshot()).progress - lampEarned) < 1e-9, "reselect after clear resumes native progress");
+        await lua(`storage.research_fixture_lab.active = true`);
+        await until("native red research completes", () => lua<boolean>(`return game.forces.player.technologies.lamp.researched`), 180_000);
+        const retry = await replace(selection, "ledger/r900001");
+        expect(retry.duplicate === true && retry.current_research === "automation-2"
+          && list(retry.research_queue).join(",") === "automation-2", "lost-response retry does not replay completed research", retry);
+        return `native pack-earned progress: automation-2=${earned}, lamp=${lampEarned}; append, switch, reorder, remove, clear, resume, invalid nonmutation and post-completion receipt passed`;
+      } finally {
+        await lua(`local lab = storage.research_fixture_lab if lab and lab.valid then lab.destroy() end
+          storage.research_fixture_lab = nil game.forces.player.research_queue = {}`);
+      }
+    },
+  },
+  {
     name: "watch fires and the line sampler reads a powered assembler line and a dry boiler",
     async run(bridge) {
       await lua(`${BUILD}

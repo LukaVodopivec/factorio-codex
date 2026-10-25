@@ -114,8 +114,14 @@ The strategist writes no build package before `GO` (every pre-`GO` ledger write 
 The strategist selects research: the ledger's `research` lists up to seven
 technologies in queue order, and the same bridge queues them once per revision
 that lists any, through the mod's `start_research` with origin
-`ledger/r<revision>`, skipping those already researched or queued. The outcome
-is an `activity_log` row and the `research` record in `package-queue.json`;
+`ledger/r<revision>`, skipping those already researched or queued. Alternatively,
+`research: {mode: "replace", technologies: [...]}` replaces the entire queue,
+including `technologies: []` to clear it; omitted research or an ordinary empty
+list does nothing. Replacement validates all entries first, preserves native
+progress, and requires prerequisites researched or earlier in its new order.
+Replacement origins append the SHA-256 of the ledger run id, so a new ledger
+over a retained save cannot collide with the old run’s receipt.
+The outcome is an `activity_log` row and the `research` record in `package-queue.json`;
 only a ledger older than the last `stop` holds it. `research_finished` and
 idle-lab signals say plainly when no research is running. Tool results
 carry the strategist's orders whenever the ledger revision changes. There are no pilot

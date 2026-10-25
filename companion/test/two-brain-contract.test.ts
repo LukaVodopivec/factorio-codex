@@ -196,7 +196,11 @@ describe("persistent two-brain coordination contract", () => {
     expect(flatSkill).toMatch(/The ledger writer picks research: the bridge queues the ledger's `research` list once per revision \(`activity_log` shows it\)/);
     expect(flatSkill).not.toMatch(/`start_research` takes a list/);
     expect(flat(strategist)).toMatch(/After `GO`, list up to seven technologies in queue order as the ledger's `research`/);
-    expect(flat(strategist)).toMatch(/the bridge appends those not yet queued and never reorders the game's queue\. Labs work only the first queued technology, so a stalled or empty queue idles every lab/);
+    expect(flatSkill).toContain("Lists append.");
+    expect(flat(strategist)).toMatch(/Use SKILL.md's replacement form to change or clear the queue/);
+    expect(flatSkill).toContain('`research: {mode: "replace", technologies: [...]}`');
+    expect(flatSkill).toMatch(/explicit \[\] clears\. Omitted research or an ordinary empty list does nothing/);
+    expect(flat(strategist)).toMatch(/Labs work only the first queued technology; a stalled queue idles every lab/);
     expect(strategist).not.toMatch(/says labs are idle, write the next list/);
     // Benchmark roles read GOAL-BENCHMARK instead: its ledger writer, solo pilot or strategist, lists research.
     const benchmark = flat(read(".agents/skills/factorio-player/GOAL-BENCHMARK-v1.md"));

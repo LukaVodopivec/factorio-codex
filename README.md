@@ -283,7 +283,19 @@ them once, two minutes of game time after the package's plan ends, and reports
 re-queuing nothing; a failed or cancelled plan's metrics are `not_measured`. The strategist selects research the same way: the ledger's
 `research` list (technologies in queue order) is queued by that bridge once
 per revision, skipping what is already researched or queued, and recorded in
-`activity_log`. Every tool result carries `orders` (revision, NOW, package
+`activity_log`. To edit the whole queue instead, the ledger accepts
+`research: {mode: "replace", technologies: [...]}` with up to seven distinct
+technologies; explicit `technologies: []` clears it. Omitted research and ordinary
+empty lists remain no-ops. The full replacement is validated before mutation;
+prerequisites must be researched or earlier in that replacement. Native progress
+is retained through suspension and reselection. The existing full-surface
+`start_research` tool exposes the same `mode: "replace"` with `technologies`,
+while single-technology and list inputs default to append. Replies include
+`research_queue` and `current_research` (`false` when idle). Replacement activity
+records its intent and `replaced` or `failed` outcome. The bridge records an
+uncertain response as `unknown`, then recovers the save-local origin receipt
+without replaying an applied replacement after research advances. Its successful
+record keeps the actual application tick for save-rollback handling. Every tool result carries `orders` (revision, NOW, package
 statuses) once each time the ledger revision changes. The ledger is the strategist's
 only channel to the pilot.
 

@@ -31,16 +31,18 @@ afterEach(() => { vi.restoreAllMocks(); });
 
 describe("writer generation on the bridge", () => {
   it("stamps writes, never reads, once the process holds a generation", async () => {
-    const { rcon, sent } = fakeRcon(() => ({}));
+    const { rcon, sent } = fakeRcon((method) => method === "start_research"
+      ? { replaced: true, research_queue: {}, current_research: false, tick: 7 } : {});
     const bridge = new Bridge(rcon, clock);
     await bridge.call("queue_plan", { steps: [] });
     bridge.writerGeneration = 3;
     await bridge.call("queue_plan", { steps: [] });
     await bridge.call("cancel", { all: true });
+    await bridge.call("start_research", { mode: "replace", technologies: [] });
     await bridge.call("factory_status", {});
     await bridge.call("ping");
     expect(sent.map(({ method, params }) => [method, params.writer_generation])).toEqual([
-      ["queue_plan", undefined], ["queue_plan", 3], ["cancel", 3], ["factory_status", undefined], ["ping", undefined]]);
+      ["queue_plan", undefined], ["queue_plan", 3], ["cancel", 3], ["start_research", 3], ["factory_status", undefined], ["ping", undefined]]);
   });
 
   it("labels the supervisor's writes, never its reads, and claims no generation for them", async () => {
@@ -62,6 +64,17 @@ describe("writer generation on the bridge", () => {
 });
 
 describe("a lost answer", () => {
+  it("keeps malformed or empty research write replies unknown instead of recording a refusal", async () => {
+    for (const reply of ["", "not-json", JSON.stringify({ ok: true })]) {
+      const rcon = { exec: vi.fn(async () => reply) } as unknown as RconClient;
+      const bridge = new Bridge(rcon, clock);
+      expect(await bridge.call("start_research", { mode: "replace", technologies: [] }).catch((error) => error))
+        .toBeInstanceOf(OutcomeUnknownError);
+      if (reply !== JSON.stringify({ ok: true })) {
+        expect(await bridge.call("ping").catch((error) => error)).toBeInstanceOf(ModError);
+      }
+    }
+  });
   it("leaves a write's outcome unknown and a read's error as it was", async () => {
     const lost = new RconReplyLostError("RCON command timed out after 10000ms with 12 bytes of its reply received");
     const { rcon } = fakeRcon(() => lost);
@@ -142,8 +155,9 @@ describe("MCP results", () => {
     let calls = 0;
     const handlers = tools(async () => { calls++; throw unknown(); });
     expect((await handlers.start_research!({ technology: "automation" })).structuredContent).toMatchObject({ status: "outcome_unknown", code: "OUTCOME_UNKNOWN" });
+    expect((await handlers.start_research!({ mode: "replace", technologies: [] })).structuredContent).toMatchObject({ status: "outcome_unknown", code: "OUTCOME_UNKNOWN" });
     expect((await handlers.run_plan!({ steps: [{ action: "walk_to", x: 1, y: 2 }] })).structuredContent).toMatchObject({ status: "outcome_unknown", code: "OUTCOME_UNKNOWN" });
-    expect(calls).toBe(2);
+    expect(calls).toBe(3);
     const retired = tools(async () => { throw new WriterRetiredError("WRITER_RETIRED: writer generation 1 was replaced by generation 2"); });
     expect((await retired.queue_plan!({ steps: [{ action: "walk_to", x: 1, y: 2 }] })).structuredContent)
       .toMatchObject({ status: "failed", code: "WRITER_RETIRED", summary: "Error: WRITER_RETIRED: writer generation 1 was replaced by generation 2" });

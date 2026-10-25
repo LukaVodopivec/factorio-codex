@@ -157,17 +157,19 @@ export class Bridge {
     }
     const raw = reply.trim();
     if (!raw) {
-      throw new ModError(
+      const error = new ModError(
         "empty response from the game — is the agentic-companion mod installed and enabled on this save?",
       );
+      throw write ? outcomeUnknown(method, error) : error;
     }
     let envelope: ReturnType<typeof parseRpcEnvelope>;
     try {
       envelope = parseRpcEnvelope(raw);
     } catch (error) {
-      throw new ModError(
+      const failure = new ModError(
         `invalid protocol response from the game: ${raw.slice(0, 200)} (${error instanceof Error ? error.message : error})`,
       );
+      throw write ? outcomeUnknown(method, failure) : failure;
     }
     if (envelope.ok && envelope.chunked) {
       // Oversized response: part 1 came inline, fetch parts 2..N and reparse.
@@ -180,14 +182,25 @@ export class Bridge {
       try {
         envelope = parseRpcEnvelope(assembled);
       } catch {
-        throw new ModError(
+        const error = new ModError(
           `unparseable chunked response from the game (${head.parts} parts, ${assembled.length} bytes)`,
         );
+        throw write ? outcomeUnknown(method, error) : error;
       }
     }
     if (!envelope.ok) {
       if (envelope.error?.startsWith(WRITER_RETIRED)) throw new WriterRetiredError(envelope.error);
       throw new ModError(envelope.error ?? "unknown mod error");
+    }
+    if (method === "start_research" && (params as { mode?: string } | undefined)?.mode === "replace") {
+      const data = envelope.data as { replaced?: unknown; research_queue?: unknown; current_research?: unknown; tick?: unknown } | undefined;
+      const queue = data?.research_queue;
+      const names = Array.isArray(queue) ? queue : queue && typeof queue === "object" && Object.keys(queue).length === 0 ? [] : undefined;
+      if (data?.replaced !== true || !names || !names.every((name) => typeof name === "string")
+        || !(typeof data.current_research === "string" || data.current_research === false)
+        || typeof data.tick !== "number" || !Number.isSafeInteger(data.tick) || data.tick < 0) {
+        throw outcomeUnknown(method, new Error("missing or malformed replacement acknowledgement"));
+      }
     }
     return envelope.data as T;
   }

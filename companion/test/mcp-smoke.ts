@@ -82,6 +82,17 @@ try {
   const extractSchema = tools.find((tool: any) => tool.name === "extract_items")?.inputSchema ?? {};
   if ((extractSchema.required ?? []).includes("items")) throw new Error("extract_items must allow omitted items for all=true extraction");
   const planSchema = tools.find((tool: any) => tool.name === "build_plan")?.inputSchema?.properties ?? {};
+  const researchSchema = tools.find((tool: any) => tool.name === "start_research")?.inputSchema?.properties ?? {};
+  if (JSON.stringify(researchSchema.mode?.enum) !== JSON.stringify(["append", "replace"])
+    || researchSchema.technologies?.maxItems !== 7 || researchSchema.technologies?.minItems > 0) {
+    throw new Error("start_research must expose explicit replacement including an empty list");
+  }
+  for (const args of [{ mode: "replace", technology: "automation" }, { technologies: [] }, { mode: "replace" }]) {
+    const rejected = await request("tools/call", { name: "start_research", arguments: args });
+    if (!rejected.result?.isError || /Offline:/.test(rejected.result?.content?.[0]?.text ?? "")) {
+      throw new Error("invalid research selection reached runtime instead of input rejection");
+    }
+  }
   if (planSchema.stop_on_error?.default !== true || planSchema.steps?.maxItems !== 25) throw new Error("build_plan must default fail-fast and cap steps at 25");
   for (const name of ["place_entity", "build_plan", "queue_plan", "run_plan"]) {
     const schema = JSON.stringify(tools.find((tool: any) => tool.name === name)?.inputSchema ?? {});

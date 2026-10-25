@@ -314,6 +314,23 @@ describe("build packages the bridge queues", () => {
     }
   });
 
+  it("applies explicit research replacements, including clear, without making omitted research a replacement", () => {
+    const report = envelope();
+    for (const technologies of [["logistics", "automation"], []]) {
+      const selection = { mode: "replace", technologies };
+      const reduced = reduceLedger(ledger(), { ...report, update: { ...report.update, research: selection } });
+      expect(reduced.result.status).toBe("applied");
+      expect(reduced.ledger?.research).toEqual(selection);
+    }
+    for (const research of [{ mode: "replace" }, { mode: "replace", technologies: ["automation", "automation"] },
+      { mode: "replace", technologies: Array(8).fill("automation") }, { mode: "clear", technologies: [] }]) {
+      expect(reduceLedger(ledger(), { ...report, update: { ...report.update, research } }).result.status).toBe("discarded");
+    }
+    const replaced = { ...ledger(), research: { mode: "replace", technologies: [] } };
+    const { research: omitted, ...update } = report.update;
+    expect(reduceLedger(replaced, { ...report, update }).ledger?.research).toEqual([]);
+  });
+
   it("accepts goal-level packages of any plan action, up to 200 steps", () => {
     const blocks = { ...drillPair(), steps: [
       { action: "get_items", item: "stone-furnace", count: 8 },

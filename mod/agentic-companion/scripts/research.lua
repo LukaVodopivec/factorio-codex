@@ -104,9 +104,12 @@ function M.unit_time_s(technology)
   return ticks / 60
 end
 
--- start_research {technology} or {technologies = [...]}: a list is queued
+-- Default start_research {technology} or {technologies = [...]}: a list is queued
 -- in its order, each name checked as a single one would be; it stops at the
 -- first the game refuses and says which were queued.
+-- mode="replace" requires technologies (0-7 distinct eligible names), checks
+-- the complete order, then assigns the native queue, retaining native progress.
+-- With origin, replacements retain one save-local receipt for safe retries.
 -- With origin (the pilot's bridge applying the strategist's ledger research,
 -- "ledger/r<revision>"), a list skips what is already researched or queued,
 -- so a restated list adds only what is new, and each call is a row in
@@ -131,6 +134,81 @@ local function known(force, name)
   return false
 end
 
+local function queue_state(force)
+  local queue = {}
+  for _, technology in ipairs(force.research_queue or {}) do queue[#queue + 1] = technology.name end
+  return queue, force.current_research and force.current_research.name or false
+end
+
+local function same_list(a, b)
+  if #a ~= #b then return false end
+  for i, name in ipairs(a) do if name ~= b[i] then return false end end
+  return true
+end
+
+-- The native setter silently drops ineligible entries. Check the entire
+-- requested order before assigning it; prerequisites must already be done or
+-- precede their dependent in this replacement, not merely in the old queue.
+local function replace_queue(force, list)
+  local earlier = {}
+  for _, name in ipairs(list) do
+    if type(name) ~= "string" or name == "" then error("replacement technologies must be non-empty names", 0) end
+    if earlier[name] then error("duplicate replacement technology: " .. name, 0) end
+    local tech = force.technologies[name]
+    if not tech then error("unknown technology: " .. name, 0) end
+    if tech.researched then error("already researched: " .. name, 0) end
+    if not tech.enabled then error("technology is disabled: " .. name, 0) end
+    local trigger = research_trigger(tech)
+    if trigger then
+      error("cannot queue trigger technology " .. name .. "; complete its in-game " .. trigger_action(trigger) .. " trigger", 0)
+    end
+    local missing = {}
+    for prerequisite, value in pairs(tech.prerequisites) do
+      if not value.researched and not earlier[prerequisite] then missing[#missing + 1] = prerequisite end
+    end
+    if #missing > 0 then
+      table.sort(missing)
+      error("can't replace research with " .. name .. " — prerequisites must be researched or earlier in the replacement: "
+        .. table.concat(missing, ", "), 0)
+    end
+    earlier[name] = true
+  end
+  local before = queue_state(force)
+  -- Native assignment saves suspended progress and resumes saved progress.
+  -- Never write research_progress, saved_progress or researched here.
+  if not same_list(before, list) then force.research_queue = list end
+end
+
+local function replacement(list, origin)
+  local force = companion.require_present().force
+  -- One durable receipt for the latest ledger replacement, on the same save
+  -- line as its effect. A lost response must not replay after research moves
+  -- on, even after activity_log's bounded history has been pruned.
+  local receipt = storage.research_replacement
+  local duplicate = origin and receipt and receipt.origin == origin and receipt.force == force.index
+  if duplicate and not same_list(receipt.technologies, list) then
+    error("research origin already used for a different replacement", 0)
+  end
+  if not duplicate then
+    local ok, err = pcall(replace_queue, force, list)
+    local queue, current = queue_state(force)
+    receipt = { origin = origin, force = force.index, technologies = list, tick = game.tick,
+      error = not ok and bare(err) or nil }
+    if origin then
+      storage.research_replacement = receipt
+      if log_event then log_event({ kind = "research", tick = game.tick, origin = origin, mode = "replace",
+        technologies = list, research_queue = queue, current_research = current,
+        status = ok and "replaced" or "failed", error = receipt.error }) end
+      if log then pcall(log, "[agentic-companion] research origin=" .. origin .. " mode=replace status="
+        .. (ok and "replaced" or "failed") .. (receipt.error and (" error=" .. receipt.error) or "")) end
+    end
+  end
+  if receipt.error then error(receipt.error, 0) end
+  local queue, current = queue_state(force)
+  return { replaced = true, mode = "replace", technologies = list, research_queue = queue,
+    current_research = current, tick = receipt.tick, duplicate = duplicate and true or nil }
+end
+
 -- Queues list into out.technologies, skipping known ones into out.skipped.
 local function queue_list(list, out, skip_known)
   for _, name in ipairs(list) do
@@ -145,10 +223,9 @@ local function queue_list(list, out, skip_known)
       out.technologies[#out.technologies + 1] = name
     end
   end
-  local queue = {}
-  for _, technology in ipairs(companion.require_present().force.research_queue or {}) do queue[#queue + 1] = technology.name end
+  local queue, current = queue_state(companion.require_present().force)
   return { queued = true, technologies = out.technologies, skipped = #out.skipped > 0 and out.skipped or nil,
-    research_queue = queue }
+    research_queue = queue, current_research = current }
 end
 
 function M.start_research(params)
@@ -157,6 +234,20 @@ function M.start_research(params)
     error("start_research origin names who asks, at most " .. MAX_ORIGIN .. " characters", 0)
   end
   local list = params.technologies
+  if params.mode ~= nil and params.mode ~= "append" and params.mode ~= "replace" then
+    error("start_research mode must be append or replace", 0)
+  end
+  if params.mode == "replace" then
+    if params.technology ~= nil or type(list) ~= "table" or #list > MAX_TECHNOLOGIES then
+      error("replacement requires technologies = 0-" .. MAX_TECHNOLOGIES .. " distinct names in queue order", 0)
+    end
+    for key in pairs(list) do
+      if type(key) ~= "number" or key % 1 ~= 0 or key < 1 or key > #list then
+        error("replacement technologies must be an ordered list", 0)
+      end
+    end
+    return replacement(list, origin)
+  end
   if list == nil and origin == nil then return queue_one(params.technology) end
   if params.technology ~= nil or type(list) ~= "table" or #list < 1 or #list > MAX_TECHNOLOGIES then
     error("start_research takes technology or technologies = 1-" .. MAX_TECHNOLOGIES .. " names in queue order"
@@ -234,7 +325,8 @@ function queue_one(name)
       .. (#missing > 0 and " although its unresearched prerequisites are queued" or ""), 0)
   end
 
-  return { queued = true, technology = name }
+  local queue, current = queue_state(force)
+  return { queued = true, technology = name, research_queue = queue, current_research = current }
 end
 
 -- The research queue's time at the current labs' speed: per technology in

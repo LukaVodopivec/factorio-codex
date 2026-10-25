@@ -78,6 +78,7 @@ _G.game = { forces = { player = {
   research_queue = {},
   add_research = function() error("first-player/global force fallback was used") end,
 } } }
+_G.storage = {}
 
 local research = require("scripts.research")
 body = nil
@@ -284,5 +285,65 @@ local pilot = research.start_research({ technologies = { "optics" } })
 codex_force.research_queue = { optics }
 check(pilot.skipped == nil and #logged == 3 and not pcall(research.start_research, { technologies = { "optics" } }),
   "without origin nothing is skipped or logged: an already queued technology is refused")
+
+-- Invalid replacements must not touch the old queue (unlike append's
+-- documented partial result). The engine's progress semantics are exercised
+-- separately by the isolated live scenario, not simulated by this mock.
+codex_force.index = 1
+local native_queue = codex_force.research_queue
+codex_force.research_queue = nil
+setmetatable(codex_force, {
+  __index = function(_, key) if key == "research_queue" then return native_queue end end,
+  __newindex = function(self, key, value)
+    if key ~= "research_queue" then rawset(self, key, value); return end
+    native_queue = {}
+    for i, entry in ipairs(value) do native_queue[i] = type(entry) == "string" and self.technologies[entry] or entry end
+  end,
+})
+codex_force.research_queue = { optics, logistics }
+local original_queue = codex_force.research_queue
+local disabled = setmetatable({ name = "disabled", enabled = false, researched = false, prerequisites = {}, prototype = {} }, technology_api)
+local dependent = setmetatable({ name = "dependent", enabled = true, researched = false,
+  prerequisites = { logistics = logistics }, prototype = {} }, technology_api)
+codex_force.technologies.disabled, codex_force.technologies.dependent = disabled, dependent
+for _, case in ipairs({
+  { { "optics", "unknown" }, "unknown technology" },
+  { { "optics", "optics" }, "duplicate replacement" },
+  { { "disabled" }, "disabled" },
+  { { "steam-power" }, "already researched" },
+  { { "optics", "trigger-alpha" }, "cannot queue trigger" },
+  { { "dependent", "logistics" }, "prerequisites must be researched or earlier" },
+}) do
+  local ok, err = pcall(research.start_research, { mode = "replace", technologies = case[1] })
+  check(not ok and tostring(err):find(case[2], 1, true) and codex_force.research_queue == original_queue,
+    "invalid replacement leaves queue unchanged: " .. case[2])
+end
+check(not pcall(research.start_research, { mode = "replace" })
+  and not pcall(research.start_research, { mode = "replace", technology = "optics" })
+  and not pcall(research.start_research, { mode = "replace", technologies = { bad = "optics" } })
+  and not pcall(research.start_research, { mode = "replace", technologies = { "a", "b", "c", "d", "e", "f", "g", "h" } })
+  and not pcall(research.start_research, { mode = "other", technologies = {} })
+  and codex_force.research_queue == original_queue, "replacement requires an explicit ordered list of at most seven")
+local unchanged = research.start_research({ mode = "replace", technologies = { "optics", "logistics" } })
+check(unchanged.replaced and codex_force.research_queue == original_queue, "unchanged replacement does not assign the queue")
+local replaced = research.start_research({ mode = "replace", technologies = { "logistics", "dependent" }, origin = "ledger/r8" })
+check(replaced.replaced and replaced.research_queue[1] == "logistics" and replaced.research_queue[2] == "dependent"
+  and logged[4].mode == "replace" and logged[4].status == "replaced", "replacement accepts prerequisites earlier in its new order and records intent")
+-- Research advanced after the answer was lost: a receipt is still authoritative
+-- even after the activity ring is gone. A retry never writes the old selection.
+codex_force.research_queue = { optics }
+logistics.researched = true
+local advanced_queue = codex_force.research_queue
+local retry = research.start_research({ mode = "replace", technologies = { "logistics", "dependent" }, origin = "ledger/r8" })
+check(retry.duplicate and retry.tick == 1200 and codex_force.research_queue == advanced_queue
+  and retry.research_queue[1] == "optics" and #logged == 4, "lost-response retry returns receipt and live queue without replay after research advances")
+check(not pcall(research.start_research, { mode = "replace", technologies = {}, origin = "ledger/r8" })
+  and codex_force.research_queue == advanced_queue, "an origin cannot be reused with a different replacement")
+local clear = research.start_research({ mode = "replace", technologies = {}, origin = "ledger/r9" })
+check(clear.replaced and #codex_force.research_queue == 0 and logged[5].status == "replaced", "explicit empty replacement clears the queue")
+local failed = pcall(research.start_research, { mode = "replace", technologies = { "unknown" }, origin = "ledger/r10" })
+local failed_again = pcall(research.start_research, { mode = "replace", technologies = { "unknown" }, origin = "ledger/r10" })
+check(not failed and not failed_again and #logged == 6 and logged[6].status == "failed"
+  and #codex_force.research_queue == 0, "refused replacement has one durable failed outcome, with no mutation")
 
 os.exit(failures == 0 and 0 or 1)

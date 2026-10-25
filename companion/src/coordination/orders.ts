@@ -4,10 +4,11 @@
 // first making the blueprint captures a package starts with, while the body
 // is on the package's surface (a package whose every step names a platform:
 // while those platforms exist). The same bridge queues the ledger's research
-// once per revision that lists any, records when each package's plan ended
+// once per nonempty append or explicit replacement revision, records when each package's plan ended
 // and how, and measures a package's verify metrics once its plan has ended
 // and settled.
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { ModError, WriterRetiredError, type Bridge } from "../bridge.js";
 import type { PackageVerificationEvent } from "../mcp/events.js";
@@ -59,9 +60,11 @@ export interface FootprintChanged { count: number; changes: unknown[] }
 export interface CapturedBlueprint { name: string; entities: number; wires: number; origin?: { x: number; y: number } }
 /** The outcome of the ledger's research for one revision: queued (the
  *  technologies the game added; skipped: already researched or queued) or
- *  failed (the mod's refusal, which names those queued before it). */
+ *  failed (the mod's refusal, which names those queued before it). Explicit
+ *  replacements are replaced, or unknown until their receipt is recovered. */
 export interface ResearchRecord {
-  revision: number; status: "queued" | "failed"; technologies: string[];
+  revision: number; status: "queued" | "replaced" | "failed" | "unknown"; technologies: string[];
+  mode?: "replace"; research_queue?: string[]; current_research?: string | false;
   queued?: string[]; skipped?: string[]; reason?: string; at: string; tick?: number;
 }
 export interface PackageQueueState {
@@ -576,7 +579,7 @@ async function verifyPackages(b: Bridge, state: PackageQueueState, tick: number,
  *  queued only while a human holds the body, or while the ledger is older than
  *  the last emergency stop (packages written before a stop stay held until
  *  the strategist rewrites the ledger). The ledger's research is queued once
- *  per revision that lists any (origin ledger/r<revision>, a row in
+ *  per nonempty append or explicit replacement revision (a row in
  *  activity_log), held only by a stop, as packages are. A newer writer
  *  generation (a replacement pilot claimed one) retires it for good: it
  *  gives up its lock, so the new pilot's bridge queues from then on. */
@@ -640,18 +643,34 @@ export function createPackageQueue(runDir: RunDir, bridge: () => Promise<Bridge>
     const heldByStop = state.cancel_all !== undefined && ledgerWrittenMs(dir) <= Date.parse(state.cancel_all.observed_at);
     // Research moves no body, so neither a human hold nor the body's surface
     // holds it; a ledger older than the last stop does, as for packages.
-    if (ledger.research.length > 0 && state.research?.revision !== ledger.revision && !heldByStop) {
+    const selection = Array.isArray(ledger.research) ? { technologies: ledger.research } : ledger.research;
+    const replacing = "mode" in selection && selection.mode === "replace";
+    if ((replacing || selection.technologies.length > 0)
+      && (state.research?.revision !== ledger.revision || state.research.status === "unknown") && !heldByStop) {
       const at = () => ({ at: now().toISOString(), ...(typeof ping.tick === "number" ? { tick: ping.tick } : {}) });
-      const base = { revision: ledger.revision, technologies: ledger.research };
+      const base = { revision: ledger.revision, technologies: selection.technologies,
+        ...(replacing ? { mode: "replace" as const } : {}) };
+      // Persist the uncertain replacement before sending it. The save's
+      // origin receipt makes recovery safe even if the research has advanced.
+      if (replacing) { state.research = { ...base, status: "unknown", ...at() }; write(); }
       try {
-        const answer = await b.call<{ technologies?: unknown; skipped?: unknown }>("start_research",
-          { technologies: ledger.research, origin: `ledger/r${ledger.revision}` });
+        const answer = await b.call<{ technologies?: unknown; skipped?: unknown; research_queue?: unknown;
+          current_research?: string | false; tick?: number }>("start_research",
+          { ...selection, origin: `ledger/r${ledger.revision}${replacing ? `/${createHash("sha256").update(ledger.run.id).digest("hex")}` : ""}` });
         const skipped = luaArray(answer?.skipped ?? []) as string[];
-        state.research = { ...base, status: "queued", queued: luaArray(answer?.technologies ?? []) as string[],
-          ...(skipped.length > 0 ? { skipped } : {}), ...at() };
+        state.research = { ...base, status: replacing ? "replaced" : "queued",
+          ...(replacing ? {} : { queued: luaArray(answer?.technologies ?? []) as string[] }),
+          ...(answer?.research_queue === undefined ? {} : { research_queue: luaArray(answer.research_queue) as string[] }),
+          ...(answer?.current_research === undefined ? {} : { current_research: answer.current_research }),
+          ...(skipped.length > 0 ? { skipped } : {}), ...at(),
+          ...(typeof answer?.tick === "number" ? { tick: answer.tick } : {}) };
       } catch (error) {
-        // A lost answer is retried next pass: what it queued is then skipped.
-        if (!(error instanceof ModError)) throw error;
+        // Append retries skip known entries; replacement retries recover its
+        // durable origin receipt without replaying the assignment.
+        if (!(error instanceof ModError)) {
+          if (replacing) { state.research = { ...base, status: "unknown", reason: message(error), ...at() }; write(); }
+          throw error;
+        }
         state.research = { ...base, status: "failed", reason: message(error), ...at() };
       }
       write();

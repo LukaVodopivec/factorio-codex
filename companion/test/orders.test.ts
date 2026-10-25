@@ -25,10 +25,11 @@ const furnaces = (id: string, after: string | null = null) => ({
   steps: [{ action: "place_entity", x: 1.5, y: 2.5, name: "stone-furnace" },
     { action: "build_layout", site: { near: { x: 0, y: 0 } }, entities: [{ name: "stone-furnace", dx: 0, dy: 0 }] }],
 });
-function writeLedger(dir: string, revision: number, packages: unknown[], objective = "automate iron", research?: string[]) {
+function writeLedger(dir: string, revision: number, packages: unknown[], objective = "automate iron",
+  research?: string[] | { mode: "replace"; technologies: string[] }, runId = "run-1") {
   const priority = (text: string) => ({ objective: text, strategic_reason: "r", completion_condition: "c", essential_prerequisite: null });
   fs.writeFileSync(path.join(dir, "operations.json"), JSON.stringify({
-    schema_version: 2, run: { id: "run-1", release_sha: "a".repeat(40), baseline_save_sha256: "b".repeat(64),
+    schema_version: 2, run: { id: runId, release_sha: "a".repeat(40), baseline_save_sha256: "b".repeat(64),
       save_identity: "s", created_at: "2026-10-04T00:00:00Z",
       roles: { pilot: { model: "gpt-6-luna", reasoning: "low", fast: true }, strategist: { model: "gpt-6.1-sol", reasoning: "medium", fast: false } } },
     revision, source_tick: 10, phase: "start", bottleneck: "iron", latest_measured_capacity: [],
@@ -829,6 +830,68 @@ describe("package auto-queue", () => {
     const log = (await handlers.activity_log!({})).structuredContent;
     expect(log.research).toMatchObject({ revision: 4, status: "queued", technologies: ["automation"], queued: ["automation"] });
     expect(log.summary).toBe("1 row; last: research by ledger/r4: queued automation");
+  });
+
+  it("recovers explicit replacements including clears, once per revision, without treating unknown as failed", async () => {
+    const dir = runDir();
+    const selection = { mode: "replace" as const, technologies: ["logistics", "automation"] };
+    writeLedger(dir, 2, [], "research", selection);
+    let loseAnswer = true;
+    const { call, bridge } = fakeBridge({ start_research: () => {
+      if (loseAnswer) { loseAnswer = false; throw new Error("answer lost after replacement"); }
+      return { replaced: true, duplicate: true, technologies: selection.technologies,
+        research_queue: ["automation"], current_research: "automation", tick: 905 };
+    } });
+    await createPackageQueue(() => dir, bridge).tick();
+    expect(readPackageQueue(dir)?.research).toMatchObject({ revision: 2, mode: "replace", status: "unknown" });
+    // Restarted bridge recovers the same origin. Its receipt says the first
+    // technology already finished, so the record reflects the live queue.
+    await createPackageQueue(() => dir, bridge).tick();
+    expect(readPackageQueue(dir)?.research).toMatchObject({ revision: 2, status: "replaced", mode: "replace",
+      technologies: selection.technologies, research_queue: ["automation"], current_research: "automation", tick: 905 });
+    // Advance the mocked game beyond the receipt before another pass.
+    const later = fakeBridge({ ping: () => ({ companion_exists: true, tick: 1000 }) });
+    await createPackageQueue(() => dir, later.bridge).tick();
+    expect(later.call.mock.calls.some(([method]) => method === "start_research")).toBe(false);
+    expect(call.mock.calls.filter(([method]) => method === "start_research").map(([, args]) => args))
+      .toEqual([{ ...selection, origin: "ledger/r2/4e65d3fbe8ad6535681b021b30785b12b6c0e3f8878859a4148b3f58b8835db0" }, { ...selection, origin: "ledger/r2/4e65d3fbe8ad6535681b021b30785b12b6c0e3f8878859a4148b3f58b8835db0" }]);
+
+    writeLedger(dir, 3, [], "research", { mode: "replace", technologies: [] });
+    const cleared = fakeBridge({ start_research: () => ({ replaced: true, research_queue: {}, current_research: false, tick: 900 }) });
+    await createPackageQueue(() => dir, cleared.bridge).tick();
+    expect(cleared.call).toHaveBeenCalledWith("start_research", { mode: "replace", technologies: [], origin: "ledger/r3/4e65d3fbe8ad6535681b021b30785b12b6c0e3f8878859a4148b3f58b8835db0" });
+    expect(readPackageQueue(dir)?.research).toMatchObject({ status: "replaced", research_queue: [], current_research: false });
+    await createPackageQueue(() => dir, cleared.bridge).tick();
+    expect(cleared.call.mock.calls.filter(([method]) => method === "start_research")).toHaveLength(1);
+    // Upgrade resume archives the old ledger and starts a new run/revision
+    // sequence over the retained save; its receipt origin must be distinct.
+    const resumed = runDir();
+    writeLedger(resumed, 3, [], "research", { mode: "replace", technologies: [] }, "run-2");
+    await createPackageQueue(() => resumed, cleared.bridge).tick();
+    const origins = cleared.call.mock.calls.filter(([method]) => method === "start_research").map(([, args]) => args.origin);
+    expect(origins).toHaveLength(2);
+    expect(origins[0]).not.toEqual(origins[1]);
+    expect(origins[1]).toMatch(/^ledger\/r3\/[a-f0-9]{64}$/);
+  });
+
+  it("holds an empty replacement behind stop, records refusal, and reapplies after save rollback", async () => {
+    const dir = runDir();
+    writeLedger(dir, 2, [], "research", { mode: "replace", technologies: [] });
+    fs.utimesSync(path.join(dir, "operations.json"), new Date(0), new Date(0));
+    const held = fakeBridge({ event_state: () => ({ tick: 900, last_cancel_all_tick: 900 }) });
+    await createPackageQueue(() => dir, held.bridge).tick();
+    expect(held.call.mock.calls.some(([method]) => method === "start_research")).toBe(false);
+    writeLedger(dir, 3, [], "research", { mode: "replace", technologies: [] });
+    const rejected = fakeBridge({ start_research: () => { throw new ModError("replacement refused"); } });
+    await createPackageQueue(() => dir, rejected.bridge).tick();
+    expect(readPackageQueue(dir)?.research).toMatchObject({ revision: 3, status: "failed", mode: "replace" });
+    await createPackageQueue(() => dir, rejected.bridge).tick();
+    expect(rejected.call.mock.calls.filter(([method]) => method === "start_research")).toHaveLength(1);
+    const rollback = fakeBridge({ ping: () => ({ companion_exists: true, tick: 800 }),
+      start_research: () => ({ replaced: true, research_queue: {}, current_research: false, tick: 801 }) });
+    await createPackageQueue(() => dir, rollback.bridge).tick();
+    expect(rollback.call).toHaveBeenCalledWith("start_research", { mode: "replace", technologies: [], origin: "ledger/r3/4e65d3fbe8ad6535681b021b30785b12b6c0e3f8878859a4148b3f58b8835db0" });
+    expect(readPackageQueue(dir)?.research).toMatchObject({ status: "replaced", tick: 801 });
   });
 
   it("applies research again when its record is newer than the loaded save (a rollback)", async () => {

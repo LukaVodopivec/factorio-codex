@@ -899,6 +899,15 @@ dropped and its package queued again. The same bridge queues the ledger's
 `research` list once per revision that lists any (origin `ledger/r<revision>`,
 a `research` row in `activity_log`), skipping technologies already researched
 or queued; a stop holds it as it holds packages, a human hold does not.
+An explicit ledger replacement (`research: {mode: "replace", technologies: [...]}`)
+also applies an empty list to clear the queue. Ordinary empty or omitted research
+stays a no-op. Replacement outcomes include intent, resulting queue and active
+research; a lost response remains `unknown` until recovered by the same origin.
+Replacement origins are `ledger/r<revision>/<SHA-256 of run.id>` so an upgrade
+that starts a new ledger over the retained save cannot reuse an old receipt.
+The mod retains the latest ledger replacement receipt in its save so recovery
+does not replay a replacement after research advances. The bridge records its
+application tick and drops a record newer than a restored save, as for append.
 
 The pilot is the foreman: it waits on `next_event`, handles failed packages, an
 empty queue and local judgment with goal-level actions, owns immediate safety
@@ -1835,3 +1844,72 @@ remains unproven. The bridge's former catch-all cancellation handlers are a
 plausible mechanism demonstrated by source and offline regressions, not
 historical attribution. This correction requires offline readiness; it does
 not establish live deployment or live gameplay validation.
+
+
+### Research queue replacement: isolated Factorio 2.0.77 proof
+
+On 2026-10-25, the new research-replacement scenario in
+`companion/test/live-scenarios.ts` passed on a throwaway Factorio **2.0.77**
+headless server with candidate mod **0.38.1**, protocol **29**. The selected
+scenario used the existing suite's server, RCON, setup, profiling and cleanup
+code; the unrelated live scenarios were not run. It had separate save, mods,
+configuration and write-data directories, and dynamically allocated loopback
+ports. No active gameplay run was contacted or changed.
+
+The official [LuaForce 2.0.77 API](https://lua-api.factorio.com/2.0.77/classes/LuaForce.html#research_queue)
+documents whole-table queue assignment, explicit empty-queue cancellation and
+silent dropping of ineligible entries. Complete replacement validation therefore
+precedes the native setter. Production code never assigns `research_progress`,
+`saved_progress` or `researched`. A preliminary isolated engine probe confirmed
+native preservation through assignment, suspension, reordering and clearing;
+the candidate scenario then checked progress earned by real lab consumption.
+
+The fixture initially supplied both science types to earn partial Automation 2
+progress, then stopped its lab and removed all remaining logistic science.
+Appending Lamp left Automation 2 active. Explicit replacement selected Lamp,
+which consumes automation science only. The lab then earned partial Lamp
+progress before further queue edits.
+
+| Native observation | Result |
+| --- | --- |
+| Automation 2 pack-earned progress | `0.020555555555555258` |
+| Lamp pack-earned progress | `0.021777777777777802` |
+| Reorder and identical-queue replacement | Both progress values retained |
+| Remove, clear, and reselect | Suspended progress retained and resumed |
+| Unknown, duplicate, and completed selections | Refused with previous queue/progress unchanged |
+| Retry original replacement after Lamp completed natively | Duplicate receipt; Automation 2 remains the sole active entry |
+
+The final run reported 15 RPCs, maximum **0.15 ms**, no handler errors
+or script errors, and 19 profiling windows with worst average **0.092 ms/tick**.
+The owned server exited successfully and its throwaway data directory was
+removed. This is isolated engine validation, not installed gameplay validation
+or a deployment receipt.
+
+Offline checks passed with Node **22.23.2**: `npm ci`, `npm ls --all`,
+`npm run typecheck`, `npm run build`, `npm test` (513 companion tests, the full
+Lua suite and package verification), writable/read-only/built MCP smoke,
+`npm run package:mod`, the 16 Python agent-app contract tests, and
+`git diff --check`. The `scripts/agent-app verify --profile full` wrapper could
+not start because its fixed prerequisite lookup did not recognize the worker's
+workspace-local npm installation; its constituent checks were executed directly
+with that Node 22 toolchain. This is not a passed full-profile wrapper receipt.
+
+Semgrep **1.182.1**, `p/default`, scanned the explicitly named changed source
+and test files with no findings or errors. An initial baseline invocation
+selected zero files; explicit selection resolved that limit. Its initial
+parallel engine failed to allocate io_uring resources; the successful scan used
+one worker and the POSIX backend.
+
+Independent read-only review covered correctness, authorization, wiring, tests,
+and scope/simplicity. Two findings were fixed and skeptically re-reviewed:
+missing successful replacement data now remains an unknown outcome, and
+replacement origins include the run-id digest to prevent receipt collisions
+when an upgrade starts a new ledger over a retained save. The final instruction
+contract retains its byte limits and describes explicit replacement without
+research choices or sequences. No remaining review finding was retained.
+
+Dependency versions were unchanged. The audit reported existing production
+advisories in five packages (two high, three moderate); these were captured
+separately as **VK-9261**, while development-only advisories are already tracked
+in **VK-4947**. The audit is not claimed clean. Source publication and any
+subsequent existing-save deployment remain separate from this isolated proof.

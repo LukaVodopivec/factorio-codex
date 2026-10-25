@@ -81,4 +81,5 @@ Codex MCP to the RCON bridge to the mod.
 - Keep pull requests small and focused, with tests for changed behavior, and
   run `npm test` before opening one. Use Conventional Commit style titles
   (`fix(walk): ...`, `feat(timelapse): ...`).
-- Pull requests are reviewed by the maintainer, who decides what is merged.
+- Agents review pull requests and own technical verification and publication;
+  Luka decides product outcomes and hard-authority approvals.

@@ -8,7 +8,7 @@ import fs from "node:fs";
 export type ThoughtRole = "pilot" | "strategist" | "mining" | "logistics";
 export type ThoughtKind = "reasoning" | "message";
 export interface Thought { ts: string; role: ThoughtRole; kind: ThoughtKind; text: string }
-/** One thoughts.jsonl row: ts is the rollout time, said_at when the game showed it (null when the say failed or the role is not shown). */
+/** One thoughts.jsonl row: ts is the rollout time, said_at the successful say acknowledgement time (null when no acknowledgement was recorded). */
 export interface ThoughtRecord extends Thought { said_at: string | null }
 
 export const THOUGHT_LINE_MAX = 600;
@@ -203,7 +203,7 @@ export class RolloutTail {
 
 export interface ThoughtFeedOptions {
   /** Each role's rollout file, resolved on every tick: a replacement session
-   *  writes a new file, which is then followed from its start. */
+   *  writes a new file, whose existing complete lines are archived before live tailing. */
   sources: Array<{ role: ThoughtRole; file: () => string | null }>;
   say: (role: ThoughtRole, text: string) => Promise<unknown>;
   /** Roles shown in the game (default all); the others are only saved. */
@@ -215,24 +215,38 @@ export interface ThoughtFeedOptions {
   /** Every complete rollout line read, by role (the recorder's time split). */
   onLine?: (role: ThoughtRole, line: string) => void;
 }
-export interface ThoughtFeed { tick(): Promise<void>; stop(): void }
+export interface ThoughtFeed {
+  tick(): Promise<void>;
+  /** Stop polling, settle in-flight acknowledgements, and archive pending chunks. */
+  stop(): Promise<void>;
+}
 
 /** Polls each source once per interval and forwards at most one line per role per interval. */
 export function createThoughtFeed(options: ThoughtFeedOptions): ThoughtFeed {
   const roles = options.sources.map(({ role, file }) => {
     const first = file();
-    return { role, file, path: first, tail: first ? new RolloutTail(first) : null, queue: [] as Thought[], busy: false };
+    return { role, file, path: first, tail: first ? new RolloutTail(first) : null, queue: [] as Thought[] };
   });
+  const record = (thoughts: Thought[], saidAt: string | null = null) => {
+    const rows = thoughts.map(thought => `${JSON.stringify({ ...thought, said_at: saidAt } satisfies ThoughtRecord)}\n`);
+    try { if (rows.length) fs.appendFileSync(options.out, rows.join(""), { encoding: "utf8", mode: 0o600 }); }
+    catch { /* evidence unavailable: keep feeding the game */ }
+  };
+  let stopped = false;
   let shownNow: string | null = null;
-  const tick = async () => {
+  const runTick = async () => {
     const now = options.now?.read() ?? null;
     if (options.now && now !== null && now !== shownNow) {
       try { await options.now.say(now); shownNow = now; } catch { /* game unavailable: retried next tick */ }
     }
+    if (stopped) return;
     await Promise.all(roles.map(async (source) => {
       let resolved: string | null = null;
       try { resolved = source.file(); } catch { /* keep the current file */ }
-      if (resolved && resolved !== source.path) {
+      const replaced = !!resolved && resolved !== source.path;
+      if (resolved && replaced) {
+        // Retired work and the replacement's preparation are evidence, never live backlog.
+        record(source.queue.splice(0));
         source.path = resolved;
         source.tail = new RolloutTail(resolved, { fromStart: true });
       }
@@ -243,30 +257,34 @@ export function createThoughtFeed(options: ThoughtFeedOptions): ThoughtFeed {
         }
       }
       // A hidden role is only saved, all of it: the cap paces what the game shows.
-      if (options.shown && !options.shown(source.role)) {
-        const rows = source.queue.splice(0).map(thought => `${JSON.stringify({ ...thought, said_at: null })}\n`);
-        try { if (rows.length) fs.appendFileSync(options.out, rows.join(""), { encoding: "utf8", mode: 0o600 }); } catch { /* evidence only */ }
+      if (replaced || (options.shown && !options.shown(source.role))) {
+        record(source.queue.splice(0));
         return;
       }
-      if (source.queue.length > QUEUE_MAX) source.queue.splice(0, source.queue.length - QUEUE_MAX);
-      if (source.busy) return;
+      if (source.queue.length > QUEUE_MAX) record(source.queue.splice(0, source.queue.length - QUEUE_MAX));
       const next = source.queue.shift();
       if (!next) return;
-      // said_at is when the game accepted the line (null: the say failed and the line was dropped).
+      // An unsuccessful send remains evidence with no acceptance timestamp.
       let saidAt: string | null = null;
-      source.busy = true;
       try { await options.say(next.role, next.text); saidAt = new Date().toISOString(); }
-      catch { /* game unavailable: drop the line */ } finally { source.busy = false; }
-      const record: ThoughtRecord = { ...next, said_at: saidAt };
-      try { fs.appendFileSync(options.out, `${JSON.stringify(record)}\n`, { encoding: "utf8", mode: 0o600 }); } catch { /* keep feeding the game */ }
+      catch { /* retain evidence without claiming acknowledgement */ }
+      record([next], saidAt);
     }));
   };
-  let running = false;
-  const timer = setInterval(() => {
-    if (running) return;
-    running = true;
-    tick().catch(() => undefined).finally(() => { running = false; });
-  }, options.intervalMs ?? 1000);
+  let running: Promise<void> | undefined;
+  const tick = (): Promise<void> => {
+    if (stopped) return Promise.resolve();
+    return running ??= runTick().finally(() => { running = undefined; });
+  };
+  const timer = setInterval(() => { void tick().catch(() => undefined); }, options.intervalMs ?? 1000);
   timer.unref();
-  return { tick, stop: () => clearInterval(timer) };
+  let stopping: Promise<void> | undefined;
+  return { tick, stop: () => {
+    stopped = true;
+    clearInterval(timer);
+    return stopping ??= (async () => {
+      try { await running; }
+      finally { for (const source of roles) record(source.queue.splice(0)); }
+    })();
+  } };
 }

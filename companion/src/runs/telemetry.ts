@@ -578,7 +578,7 @@ export async function recordRun(options: RecordRunOptions): Promise<void> {
     await stopped;
     if (control) await freeze();
     if (cutoffTimer) clearTimeout(cutoffTimer);
-    feed.stop(); feed = undefined;
+    await feed.stop(); feed = undefined;
     await chain;
     const final = await capture("final", control ? duration * 1000 : performance.now() - startedMono);
     appendJson(files.samples, final);
@@ -598,7 +598,7 @@ export async function recordRun(options: RecordRunOptions): Promise<void> {
   } finally {
     if (timer) clearTimeout(timer); if (cutoffTimer) clearTimeout(cutoffTimer);
     process.removeListener("SIGINT", signalFinish); process.removeListener("SIGTERM", signalFinish);
-    feed?.stop(); rcon.close(); controlRcon?.close();
+    await feed?.stop(); rcon.close(); controlRcon?.close();
   }
 }
 

@@ -330,7 +330,18 @@ last 8 lines in an always-visible left-side panel under the strategist's NOW lin
 which the recorder sends through `say_now` whenever the ledger's NOW objective
 changes. The text is also saved to the recorder's
 `~/.local/share/factorio-codex/runs/run-<id>/thoughts.jsonl`, each line with
-`said_at` (when the game showed it). The feed is
+`ts` (the source rollout timestamp) and `said_at` (the timestamp when a successful
+`say` acknowledgement arrived, or null if no successful acknowledgement was
+recorded). A lost reply can leave game acceptance unknown. When a rollout
+pointer changes, complete thoughts already in the replacement file and pending
+thoughts from the retired session are saved with `said_at: null`; preparation
+history never enters the live display backlog. Newly appended thoughts then
+use the next available feed tick, subject to live ordering and the one-line
+limit. Hidden roles, displaced overflow beyond the 200-chunk live queue, failed
+`say` calls, and pending chunks at orderly shutdown are also saved with null.
+Shutdown waits for in-flight acknowledgements before closing the connection.
+Supervisor dispatch time is separate: dispatch-to-rollout delay occurs before
+this feed receives a thought and must not be attributed to its queue. The feed is
 output only: game chat never controls the bot, and the panel never triggers a
 takeover hold.
 

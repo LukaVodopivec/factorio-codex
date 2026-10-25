@@ -4,13 +4,16 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Bridge, ModError } from "../src/bridge.js";
 import { registerMcpTools } from "../src/mcp/server.js";
-import type { RconClient } from "../src/rcon.js";
+import { RconClient } from "../src/rcon.js";
+import * as config from "../src/config.js";
+import { PROTOCOL_VERSION } from "../src/protocol/contract.js";
+import { initialProfiles } from "../src/runs/profiles.js";
 import { attestationIssues, bodySummary, checkpointDelay, compareRuns, createAttestor, createRunStore, createToolOutcomeLog, markRunAssisted, readManifest, resourceVerdict,
-  parseRunSnapshot, rolloutResolver, runEvents, sampleSchema, snapshotDelta, TOOL_OUTCOMES_MAX_BYTES, toolOutcome,
+  parseRunSnapshot, recordRun, rolloutResolver, runEvents, sampleSchema, snapshotDelta, TOOL_OUTCOMES_MAX_BYTES, toolOutcome,
   type RunAttestation, type RunManifest, type RunSample, type RunSnapshot } from "../src/runs/telemetry.js";
 
 const roots: string[] = [];
-afterEach(() => roots.splice(0).forEach((root) => fs.rmSync(root, { recursive: true, force: true })));
+afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); roots.splice(0).forEach((root) => fs.rmSync(root, { recursive: true, force: true })); });
 const root = () => { const value = fs.mkdtempSync(path.join(os.tmpdir(), "factorio-runs-")); roots.push(value); return value; };
 
 function snapshot(tick: number, iron: number, copper = 0): RunSnapshot {
@@ -41,6 +44,53 @@ function storedRun(store: string, meta: RunManifest, sample: RunSample) {
 }
 
 describe("five-minute run telemetry", () => {
+  it.each([1, 2])("settles thought evidence before closing RCON and displays only the ledger writer (%s roles)", async (count) => {
+    vi.useFakeTimers();
+    const dir = root(), store = path.join(dir, "runs"), ledger = path.join(dir, "operations.json");
+    const pilot = path.join(dir, "pilot.jsonl"), strategist = path.join(dir, "strategist.jsonl");
+    fs.writeFileSync(pilot, ""); fs.writeFileSync(strategist, "");
+    const run = { ...manifest("shutdown", "test").run, roles: initialProfiles(count) };
+    const priority = { objective: "test objective", strategic_reason: "test reason", completion_condition: "test proof", essential_prerequisite: null };
+    fs.writeFileSync(ledger, JSON.stringify({ schema_version: 2, run, revision: 0, source_tick: null,
+      phase: "test", bottleneck: "test", latest_measured_capacity: [], assumptions: [], build_packages: [],
+      task_list: { NOW: priority, NEXT: priority, LATER: priority } }));
+    vi.spyOn(config, "loadConfig").mockReturnValue({ factorioUserDir: dir, rcon: { host: "127.0.0.1", port: 19015, password: "test" } });
+    vi.spyOn(RconClient.prototype, "connect").mockResolvedValue();
+    const close = vi.spyOn(RconClient.prototype, "close").mockImplementation(() => {});
+    let acknowledge!: () => void, ready!: () => void, sending!: () => void;
+    const started = new Promise<void>(resolve => { ready = resolve; });
+    const inFlight = new Promise<void>(resolve => { sending = resolve; });
+    const accepted = new Promise<void>(resolve => { acknowledge = resolve; });
+    vi.spyOn(console, "log").mockImplementation((message) => { if (String(message).startsWith("GO ")) ready(); });
+    const said: unknown[] = [];
+    vi.spyOn(Bridge.prototype, "call").mockImplementation(async (method, args) => {
+      if (method === "ping") return { protocol_version: PROTOCOL_VERSION, mod_version: config.companionVersion(), factorio_version: "2.0.77", companion_exists: true };
+      if (method === "run_snapshot") return snapshot(100, 5);
+      if (method === "say_now") return {};
+      if (method === "say") { said.push(args); sending(); await accepted; return {}; }
+      throw new Error(`unexpected call: ${method}`);
+    });
+    const recording = recordRun({ ledger, variant: "test", change: "test", kind: "debug", root: store, pilotRollout: pilot, strategistRollout: strategist });
+    await started;
+    const message = (text: string) => JSON.stringify({ timestamp: "2026-10-04T18:24:35.117Z", type: "response_item",
+      payload: { type: "message", role: "assistant", content: [{ type: "output_text", text }] } });
+    fs.appendFileSync(pilot, [message("pilot live"), message("pilot pending")].join("\n") + "\n");
+    fs.appendFileSync(strategist, [message("strategist live"), message("strategist pending")].join("\n") + "\n");
+    await vi.advanceTimersByTimeAsync(1000); await inFlight;
+    process.emit("SIGINT");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(close).not.toHaveBeenCalled();
+    acknowledge(); await recording;
+    expect(close).toHaveBeenCalledTimes(1);
+    const writer = count === 1 ? "pilot" : "strategist";
+    expect(said).toEqual([{ role: writer, text: `${writer} live` }]);
+    const rows = fs.readFileSync(path.join(store, "run-shutdown", "thoughts.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
+    expect(rows).toHaveLength(count * 2);
+    expect(rows.filter(row => row.said_at !== null).map(row => row.text)).toEqual([`${writer} live`]);
+    expect(rows.filter(row => row.text.endsWith("pending")).every(row => row.said_at === null)).toBe(true);
+    expect(readManifest(store, "shutdown").status).toBe("finished");
+  });
+
   const fifo = { active_plan_id: 1907, queue_depth: 1, idle_seconds: 0, human_control: false, human_idle_ticks: 500,
     body: { state: "on_surface", surface_ref: "nauvis", bound_for: "vulcanus",
       rebind_refused: { tick: 100, characters: 2 } } };

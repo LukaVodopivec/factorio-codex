@@ -775,6 +775,16 @@ turning them into a fixed opening or map-specific sequence:
   summaries and messages appear in the panel within about 10 s, never in chat;
   every role's lines are in `thoughts.jsonl`; the panel does not start a
   takeover hold.
+  After a rollout pointer handoff, complete replacement history and retired
+  pending thoughts are evidence only (`said_at: null`), so a newly appended
+  live thought is offered on the next available tick without preparation ahead
+  of it. Check that hidden-role history, overflow beyond 200 live chunks,
+  failed sends and pending chunks at orderly shutdown each remain in the
+  evidence exactly once. Shutdown settles any in-flight send before closing RCON.
+  Compare source `ts` to successful acknowledgement `said_at` for feed latency;
+  null means no successful acknowledgement was recorded; a lost reply can
+  leave game acceptance unknown. Record supervisor
+  dispatch time separately: dispatch-to-rollout delay is outside this queue.
 - `map_summary` `include` sections (`stockpiles`, `sites`, `patches`, `power`,
   `problems`, `flows_all`) name a site and its stock beyond 30 tiles from the
   body and nothing in an uncharted chunk; `inspect_entity` there returns
@@ -1461,7 +1471,7 @@ None of them is gameplay or benchmark evidence.
 
 ### Underground direction, automatic pairing and completion readback (2026-10-25)
 
-VK-4919 was investigated against source
+Underground direction and pairing were investigated against source
 `c7539a47ebe7729ba7fac1d2b8b06ee747814906`, mod **0.38.1**, protocol **29**,
 using official Factorio **2.0.77, build 84539, linux64 headless**. The downloaded
 archive SHA-256 was

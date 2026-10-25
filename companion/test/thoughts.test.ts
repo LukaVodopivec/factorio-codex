@@ -1,13 +1,14 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import { createThoughtFeed, createTimeSplit, extractThoughts, RolloutTail, splitThought, type ThoughtFeed } from "../src/runs/thoughts.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createThoughtFeed, createTimeSplit, extractThoughts, RolloutTail, splitThought, type ThoughtFeed, type ThoughtRecord } from "../src/runs/thoughts.js";
 
 const dirs: string[] = [];
 const feeds: ThoughtFeed[] = [];
-afterEach(() => { feeds.splice(0).forEach((feed) => feed.stop()); dirs.splice(0).forEach((dir) => fs.rmSync(dir, { recursive: true, force: true })); });
+afterEach(async () => { await Promise.all(feeds.splice(0).map((feed) => feed.stop())); vi.useRealTimers(); dirs.splice(0).forEach((dir) => fs.rmSync(dir, { recursive: true, force: true })); });
 const tmp = () => { const dir = fs.mkdtempSync(path.join(os.tmpdir(), "factorio-thoughts-")); dirs.push(dir); return dir; };
+const records = (file: string): ThoughtRecord[] => fs.readFileSync(file, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line));
 
 const reasoning = (text: string, ts = "2026-10-04T18:25:54.454Z") => JSON.stringify({ timestamp: ts, type: "response_item",
   payload: { type: "reasoning", summary: [{ type: "summary_text", text }], encrypted_content: "gAAAA-secret" } });
@@ -110,24 +111,86 @@ describe("thought feed", () => {
     expect(recorded.find(row => row.role === "strategist")?.said_at).toEqual(expect.any(String));
   });
 
-  it("follows a replacement session's new rollout file from its start once the resolved path changes", async () => {
+  it.each([true, false])("archives replacement preparation and retired pending chunks, then immediately offers live text (shown=%s)", async (shown) => {
     const dir = tmp(), old = path.join(dir, "old.jsonl"), fresh = path.join(dir, "new.jsonl"), out = path.join(dir, "thoughts.jsonl");
     fs.writeFileSync(old, "");
     let current: string | null = old;
-    const said: string[] = [];
+    const said: string[] = [], consumed: string[] = [];
     const feed = createThoughtFeed({ sources: [{ role: "pilot", file: () => current }], out, intervalMs: 3_600_000,
-      say: async (_role, text) => { said.push(text); } });
+      shown: () => shown, onLine: (_role, line) => { consumed.push(line); }, say: async (_role, text) => { said.push(text); } });
     feeds.push(feed);
-    fs.appendFileSync(old, `${reasoning("old pilot thinking")}\n`);
+    const retired = [reasoning("old pilot thinking"), assistant("retired pending")];
+    fs.appendFileSync(old, retired.join("\n") + "\n");
     await feed.tick();
-    // The supervisor replaced the pilot: its file already holds the first lines.
-    fs.writeFileSync(fresh, `${reasoning("replacement starts")}\n`);
+    const preparation = Array.from({ length: 44 }, (_, i) => reasoning(`prep-${i}`, `2026-10-04T18:26:${String(i).padStart(2, "0")}.000Z`));
+    // Every complete line reaches time-split accounting, including excluded items.
+    fs.writeFileSync(fresh, [...preparation, toolCall, userMessage].join("\n") + "\n" + assistant("LIVE-GO"));
     current = fresh;
     fs.appendFileSync(old, `${reasoning("retired pilot never speaks again")}\n`);
     await feed.tick();
-    fs.appendFileSync(fresh, `${assistant("Queued the smelting block.")}\n`);
+    expect(said).toEqual(shown ? ["old pilot thinking"] : []);
+    expect(records(out).filter(row => row.text.startsWith("prep-"))).toEqual(preparation.map(line => ({
+      ...extractThoughts(line)[0], role: "pilot", said_at: null,
+    })));
+    fs.appendFileSync(fresh, "\n");
     await feed.tick();
-    expect(said).toEqual(["old pilot thinking", "replacement starts", "Queued the smelting block."]);
+    expect(said).toEqual(shown ? ["old pilot thinking", "LIVE-GO"] : []);
+    await feed.stop();
+    const rows = records(out);
+    expect(rows).toHaveLength(47);
+    expect(rows.filter(row => row.text === "retired pending")).toEqual([
+      { ...extractThoughts(retired[1]!)[0], role: "pilot", said_at: null },
+    ]);
+    expect(rows.find(row => row.text === "LIVE-GO")?.said_at).toEqual(shown ? expect.any(String) : null);
+    expect(consumed).toEqual([...retired, ...preparation, toolCall, userMessage, assistant("LIVE-GO")]);
+  });
+
+  it("archives overflow instead of losing it while keeping the newest 200 chunks in live order", async () => {
+    const dir = tmp(), file = path.join(dir, "rollout.jsonl"), out = path.join(dir, "thoughts.jsonl");
+    fs.writeFileSync(file, "");
+    const said: string[] = [];
+    const feed = createThoughtFeed({ sources: [{ role: "strategist", file: () => file }], out, intervalMs: 3_600_000,
+      say: async (_role, text) => { said.push(text); } });
+    feeds.push(feed);
+    const burst = Array.from({ length: 205 }, (_, i) => `burst-${i}`);
+    fs.appendFileSync(file, burst.map(text => reasoning(text)).join("\n") + "\n");
+    for (let i = 0; i < 201; i++) await feed.tick();
+    await feed.stop();
+    expect(said).toEqual(burst.slice(5));
+    const rows = records(out);
+    expect(rows.map(row => row.text)).toEqual(burst);
+    expect(rows.slice(0, 5).every(row => row.said_at === null)).toBe(true);
+    expect(rows.slice(5).every(row => typeof row.said_at === "string")).toBe(true);
+  });
+
+  it.each([true, false])("settles an in-flight acknowledgement and archives pending chunks exactly once at shutdown (success=%s)", async (success) => {
+    vi.useFakeTimers();
+    const dir = tmp(), file = path.join(dir, "rollout.jsonl"), out = path.join(dir, "thoughts.jsonl");
+    fs.writeFileSync(file, "");
+    let resolve!: () => void, reject!: (error: Error) => void;
+    const acknowledgement = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
+    const say = vi.fn(() => acknowledgement);
+    const feed = createThoughtFeed({ sources: [{ role: "strategist", file: () => file }], out, say });
+    feeds.push(feed);
+    fs.appendFileSync(file, [reasoning("in flight"), assistant("pending"), reasoning("x".repeat(601))].join("\n") + "\n");
+    const tick = feed.tick();
+    expect(say).toHaveBeenCalledTimes(1);
+    let stopped = false;
+    const stopping = Promise.resolve(feed.stop()).then(() => { stopped = true; });
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+    const acceptedAt = "2026-10-05T16:05:43.271Z";
+    vi.setSystemTime(new Date(acceptedAt));
+    if (success) resolve(); else reject(new Error("say failed"));
+    await tick; await stopping;
+    await feed.stop(); await feed.tick(); await vi.advanceTimersByTimeAsync(2000);
+    expect(say).toHaveBeenCalledTimes(1);
+    expect(records(out)).toEqual([
+      { ...extractThoughts(reasoning("in flight"))[0], role: "strategist", said_at: success ? acceptedAt : null },
+      { ...extractThoughts(assistant("pending"))[0], role: "strategist", said_at: null },
+      { ts: "2026-10-04T18:25:54.454Z", role: "strategist", kind: "reasoning", text: "x".repeat(600), said_at: null },
+      { ts: "2026-10-04T18:25:54.454Z", role: "strategist", kind: "reasoning", text: "x", said_at: null },
+    ]);
   });
 
   it("sends the strategist's NOW objective through say_now only when it changes, retrying a failed send", async () => {

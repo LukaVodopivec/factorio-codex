@@ -1058,6 +1058,14 @@ local function advance(task, c, frame)
     local inventory = c.get_main_inventory()
     local room = inventory and inventory.get_insertable_count(frame.name) or need
     if room <= 0 then
+      -- Taking needs result space now; native hand-crafting consumes its
+      -- ingredients first. Let the shared craft runner observe delivery when
+      -- this stock can already start a craft, including a partial batch.
+      local recipe = task.craft ~= false and frame.depth < MAX_DEPTH and hand_recipe(c, frame.name)
+      if recipe and #(recipe.ingredients or {}) > 0 and c.get_craftable_count(recipe.name) > 0 then
+        frame.phase = "craft"
+        return false
+      end
       -- No source is looked for: the end names the full inventory, not
       -- sources it never read.
       frame.phase, frame.full = "end", true
@@ -1451,6 +1459,7 @@ function M.tick(task)
     end
     task.last_action = { action = kind, target = target and { x = target.x, y = target.y } or nil,
       status = result.status, code = result.outcome and result.outcome.code,
+      crafting = kind == "craft" and result.outcome or nil,
       detail = type(result.detail) == "string" and result.detail:sub(1, 240) or nil }
     -- Taking from a chest or machine (or loading a furnace) is a character
     -- transfer like any other.

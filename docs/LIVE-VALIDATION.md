@@ -62,6 +62,57 @@ registry marked ready.
 The mod carries no test flag or path; chart checks the engine answers itself
 (planet layouts and routes) still need a client run below.
 
+### Hand-crafting result capacity
+
+The live suite uses the real character and native crafting queue to reproduce
+a full inventory in which an iron-chest craft consumes eight plates from a
+stack without freeing a slot. It checks explicit completion waits, a background
+craft followed by placement, and placement's nested auto-supply. A completed
+head that remains unchanged across distinct ticks ends the waiting step with
+`CRAFT_OUTPUT_BLOCKED`, releasing the same FIFO. No storage destination is
+selected, and no native recipe is cancelled by this failure.
+
+Craft results distinguish acceptance from carried product evidence:
+
+- `source_tick` identifies the readback;
+- `crafts_started` is the number accepted by `begin_crafting`, when the step
+  owns that acceptance snapshot;
+- `products` contains each item's expected fixed output, when known, and
+  `carried_delta` since acceptance. This is inventory evidence, not a claim
+  that products could not have been moved during a human hold;
+- `queue` reports native progress, size, retained entries and an explicit
+  omitted-entry count after the first 32 rows. Consumer failures report the
+  current queue; auto-supply also retains its last craft's acceptance facts
+  under its existing `last_action`, at that snapshot's own source tick.
+
+Individual cancellation, watchdog failure and plan-budget expiration retain
+native crafting and report its queue, preserving unrelated background recipes
+without refunds. Emergency `stop` still cancels the entire native queue using
+the engine's refund behavior. Surface changes continue to retain crafting.
+Dispatcher-ended capacity waits run the owner's cleanup hook, including the
+restoration or accounting of entities held by nested escapes.
+
+The native recovery scenarios transfer existing plates into an existing buffer
+through an `insert_items` plan, then require both the blocked chest and an
+unrelated queued gear to finish with exact item accounting and an empty queue.
+Other scenarios require successful delivery when ingredients free a slot or an
+existing result stack has room, and failure followed by FIFO recovery when a
+free slot is filled after acceptance. Offline regressions cover multi-output
+recipes, partially delivered batches, bounded queue reporting, exact terminal
+codes, predecessor failure propagation and owner cleanup.
+
+Observed on 2026-10-25 with the official Factorio **2.0.77, build 84539,
+linux64 headless** build:
+
+| Case | Observed accounting and queue state |
+| --- | --- |
+| Native full-inventory trigger | 9,000 plates became 8,992; no chest; one queued recipe at progress 1.0333333333333332. |
+| Explicit wait, asynchronous consumer, nested supply | Each ended `CRAFT_OUTPUT_BLOCKED` with two recipes retained. FIFO recovery left 8,790 plates carried and 200 buffered, one chest, one gear, and no queued recipes. |
+| Ingredients free a slot | Completed with one chest and no queued recipes. |
+| Existing result stack | 49 chests became 50, with 8,892 plates and no queued recipes. |
+| Slot filled after acceptance | Ended `CRAFT_OUTPUT_BLOCKED`; FIFO recovery delivered one chest with 8,892 plates carried, 100 buffered, and no queued recipes. |
+| Emergency stop after acceptance | 8,990 plates became 9,000 through native refunds; no products and no queued recipes. |
+
 ## Start a test server and connect a client
 
 1. On the Windows client machine, install the full standalone Factorio 2.0.x

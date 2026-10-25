@@ -526,7 +526,7 @@ describe("registered MCP handler parity with the current Lua protocol", () => {
     registerMcpTools({ registerTool(name, config: any, handler) { descriptions[name] = config.description; handlers[name] = handler; } },
       async () => ({ call } as unknown as Bridge), validConfig, "full", () => null, "pilot");
     // tasks.finish hands a cancelled plan's status to its after_plan_id dependents, which dispatch cancels.
-    expect(descriptions.cancel_plan).toMatch(/its running step stops now, with the hand-crafts it queued; plans chained to it with after_plan_id are cancelled too, and the others behind it move up/);
+    expect(descriptions.cancel_plan).toMatch(/its running step stops now; plans chained to it with after_plan_id are cancelled too, and the others behind it move up/);
     const done = await handlers.cancel_plan!({ plan_id: 7 });
     expect(call).toHaveBeenLastCalledWith("cancel", { plan_id: 7, only_source: "pilot", origin: "cancel_plan/pilot" });
     expect(done.structuredContent).toMatchObject({ cancelled: 1, plan_id: 7, status: "completed", summary: "plan 7 cancelled" });

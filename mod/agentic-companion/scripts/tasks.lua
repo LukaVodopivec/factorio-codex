@@ -192,14 +192,6 @@ local function cancel_crafting()
   local queue = c.crafting_queue or {}
   for i = #queue, 1, -1 do c.cancel_crafting({ index = i, count = queue[i].count }) end
 end
-local function task_crafts(task)
-  local current = task.type == "plan" and task.current_task or task
-  -- get_items and auto-supply may hand-craft inside any step.
-  return current and (current.type == "craft" or current.type == "build_plan" or current.type == "get_items"
-    or current.type == "build_layout" or current.type == "blueprint_place"
-    or current.type == "build_ghosts" or current.type == "upgrade_area" or current.type == "place_tiles"
-    or current.type == "equip" or current.type == "launch_rocket" or current._supply ~= nil)
-end
 local function set_plan_status(plan, status)
   plan.status = status
   plan.transitions = plan.transitions or {}
@@ -497,8 +489,7 @@ local function log_plan(plan, detail)
       code = code }
   end
 end
--- keep_crafting: a surface change cancels plans but never hand-crafting.
-local function finish(task, status, detail, preserve_body, outcome, keep_crafting)
+local function finish(task, status, detail, preserve_body, outcome)
   if type(detail) == "string" then detail = errors.plain(detail) end
   errors.scrub(outcome)
   -- A direct task that failed names a code, as a plan step does.
@@ -507,7 +498,15 @@ local function finish(task, status, detail, preserve_body, outcome, keep_craftin
     outcome = type(outcome) == "table" and outcome or { action = task.type }
     outcome.code = result_code({ detail = detail, outcome = outcome }) or errors.code(status)
   end
-  if status == "cancelled" and not keep_crafting and task_crafts(task) then cancel_crafting() end
+  -- Only emergency stop cancels native crafting. A single plan's end must
+  -- not refund or discard unrelated background work (nor crafting on travel).
+  if task.type ~= "plan" and status ~= "done" and not (outcome and outcome.queue) then
+    local ok, crafting = pcall(craft.reconcile, task)
+    if ok and crafting and crafting.queue.size > 0 then
+      outcome = outcome or {}
+      outcome.crafting = crafting
+    end
+  end
   if storage.tasks.active and storage.tasks.active.id == task.id then storage.tasks.active = nil end
   storage.tasks.last_finished_tick = game.tick
   -- next_event's idle_since_tick: when pilot work (any task but the mod's
@@ -1055,11 +1054,31 @@ local function task_cancelled(task, body_only)
     if runner and runner.cancelled then return runner.cancelled(task, body_only) end
     return task and supply.cancel_nested(task, body_only) or nil
   end)
-  return noted and note or nil
+  if not noted then note = nil end
+  if type(note) == "table" and (note.queue or note.crafting) then return note end
+  local ok, crafting = pcall(craft.reconcile, task)
+  if ok and crafting and crafting.queue.size > 0 then
+    note = type(note) == "table" and note or {}
+    note.crafting = crafting
+  end
+  return note
 end
 local function step_cancelled(plan) return task_cancelled(plan.current_task) end
 -- The running direct task's note, as its cancelled outcome.
 local function direct_cancelled(task) if task.type ~= "plan" then return task_cancelled(task) end end
+
+-- A dispatcher-ended crafting wait must release physical holds just as a
+-- watchdog does (a nested escape may already hold a mined entity).
+local function crafting_wait_failure(task)
+  if storage.craft_wait_tick ~= game.tick then return nil end
+  local c = companion.get()
+  local result = c and craft.blocked(c, task)
+  if result then
+    result.outcome.supply = supply_state(task)
+    result.outcome.cancelled = task_cancelled(task, true)
+  end
+  return result
+end
 
 function M.cancel(params)
   local origin = params.origin
@@ -1081,6 +1100,7 @@ function M.cancel(params)
     end
   end
   if params.all then
+    cancel_crafting()
     local queued_tasks = tasks.queue
     tasks.queue = {}
     for _, queued in ipairs(queued_tasks) do
@@ -1092,7 +1112,6 @@ function M.cancel(params)
       record_cancelled_step(tasks.active)
       finish(tasks.active, "cancelled", detail, nil, direct_cancelled(tasks.active)); n = n + 1
     end
-    cancel_crafting()
     -- Emergency cancellation is not the next plan's idle time, and upkeep
     -- stays off until a plan finishes. keep_upkeep (the supervisor's
     -- retained-work reconciliation) leaves upkeep on, idle from now.
@@ -1266,6 +1285,14 @@ local function finish_step(plan, result)
   local code = (status == "failed" or status == "partial") and (result_code(result) or errors.code(status)) or nil
   local repeated = status ~= "cancelled" and count_repeat(step, code) or nil
   local outcome = type(result.outcome) == "table" and result.outcome or nil
+  if (status == "failed" or status == "partial" or status == "cancelled") and not (outcome and outcome.queue) then
+    local ok, crafting = pcall(craft.reconcile, plan.current_task)
+    if ok and crafting and crafting.queue.size > 0 then
+      outcome = outcome or { code = code }
+      outcome.crafting = crafting
+      result.outcome = outcome
+    end
+  end
   if outcome and outcome.code == "SUPPLY_SHORTFALL" and type(outcome.missing) == "table" then
     local names = {}
     for _, row in ipairs(outcome.missing) do if type(row.item) == "string" then names[#names + 1] = row.item end end
@@ -1779,8 +1806,8 @@ local function tick_plan(plan)
   local budget = math.max(PLAN_BUDGET_TICKS, (plan.budget_steps or #plan.steps) * STEP_BUDGET_TICKS)
   if game.tick - plan.started_tick >= budget then
     local detail = string.format("PLAN_BUDGET_EXCEEDED: plan exceeded its %d-second active budget", budget / 60)
-    -- Queued hand-crafts are not cancelled (finish cancels them only for a
-    -- cancelled plan): they keep running.
+    -- Native hand-crafts survive a plan's end. The step outcome below names
+    -- the retained queue, including a head blocked on product capacity.
     local crafting = crafting_summary()
     if crafting then
       detail = detail .. string.format("; hand-crafting continues: %g s queued", crafting.queue_s)
@@ -1870,6 +1897,9 @@ local function tick_plan(plan)
       }
     end)
   else ok, result = pcall(runners[plan.current_task.type].tick, plan.current_task) end
+  -- Every consumer uses craft.awaits/mark_wait, including nested supply.
+  -- End only an actual crafting wait; unrelated work can free inventory.
+  if ok and result == nil then result = crafting_wait_failure(plan.current_task) end
   if ok and PARKED_ACTIONS[step.action] and result == nil then
     -- A read-only condition must not occupy the physical body while an
     -- independent action is ready. Park this plan at the tail of the same FIFO;
@@ -2003,6 +2033,7 @@ local function dispatch(tasks)
   end
   if task.type == "plan" then tick_plan(task); return end
   local ok, result = pcall(runners[task.type].tick, task)
+  if ok and result == nil then result = crafting_wait_failure(task) end
   if not ok then finish(task, "failed", caught("task:" .. task.type .. ":tick", result)) elseif result then
     factory_activity.record(task.type, result.outcome)
     if TOPOLOGY_TASKS[task.type] then autonomy.mark_dirty() end
@@ -2254,7 +2285,7 @@ local function cancel_off_surface(plan, tag, here, queued)
     result = { code = "SURFACE_LEFT", expected = tag, actual = here, relocation = note } }
   plan.current_task, plan._recovery = nil, nil
   if not queued then storage.path_request, plan._path_result = nil, nil end
-  finish(plan, "cancelled", detail, queued, nil, true)
+  finish(plan, "cancelled", detail, queued)
 end
 local function surface_left(tasks)
   tasks.surface_changed = nil

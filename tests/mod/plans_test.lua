@@ -1243,4 +1243,85 @@ end)()
   plan.current_task = nil
   storage.tasks.queue, storage.jobs = {}, nil
 end)()
+-- Use the real shared craft readback with a native queue which cannot deliver.
+-- A consumer's mark_wait goes through the same dispatcher as nested supply.
+;(function()
+  local real = assert(loadfile(here .. "/../../mod/agentic-companion/scripts/actions/craft.lua"))()
+  craft.blocked, craft.reconcile = real.blocked, real.reconcile
+  local old_tick = craft.tick
+  body.get_item_count = function(name) return name == "gear" and 1 or inventory_count end
+  craft.tick = function(task)
+    task._craft = task._craft or { started = 2, product_names = { "gear" }, products_per_craft = { gear = 1 }, products_before = { gear = 0 } }
+    real.mark_wait(); return nil
+  end
+  body.force = { recipes = { gear = { products = { { type = "item", name = "gear", amount = 1 } } },
+    unrelated = { products = { { type = "item", name = "unrelated", amount = 1 } } } } }
+  local function reset(progress)
+    storage = { tasks = { next_id = 1, records = {}, queue = {} } }
+    body.crafting_queue = { { recipe = "gear", count = 1 }, { recipe = "unrelated", count = 4 } }
+    body.crafting_queue_size, body.crafting_queue_progress = 2, progress
+    game.tick = game.tick + 1
+  end
+  reset(1.0333333333)
+  local blocked = tasks.queue_plan({ steps = { { action = "craft_items", recipe = "gear", crafts = 2, wait_for_completion = true } } })
+  local chained = tasks.queue_plan({ steps = { { action = "walk_to", x = 2, y = 0 } }, after_plan_id = blocked.plan_id })
+  local recovery = tasks.queue_plan({ steps = { { action = "walk_to", x = 3, y = 0 } } })
+  for _ = 1, 4 do game.tick = game.tick + 1; tasks.on_tick() end
+  local failed = tasks.plan_status({ plan_id = blocked.plan_id })
+  check(failed.status == "failed" and failed.outcomes[1].code == "CRAFT_OUTPUT_BLOCKED"
+    and failed.outcomes[1].result.queue.entries[2].recipe == "unrelated"
+    and tasks.plan_status({ plan_id = chained.plan_id }).status == "cancelled"
+    and tasks.plan_status({ plan_id = recovery.plan_id }).status == "completed" and body.crafting_queue_size == 2,
+    "a blocked crafting wait fails its predecessor chain, reports unrelated retained crafting and releases the FIFO")
+
+  for _, ending in ipairs({ "cancel", "budget", "watchdog" }) do
+    reset(0.5)
+    local queued = tasks.queue_plan({ steps = { { action = "craft_items", recipe = "gear", crafts = 2, wait_for_completion = true } } })
+    tasks.on_tick()
+    if ending == "cancel" then tasks.cancel({ plan_id = queued.plan_id, origin = "cancel_plan/pilot" })
+    elseif ending == "budget" then
+      storage.tasks.active.started_tick = game.tick - 570 * 60
+      game.tick = game.tick + 1; tasks.on_tick()
+    else
+      for _ = 1, 3720 do game.tick = game.tick + 1; tasks.on_tick() end
+    end
+    local terminal = tasks.plan_status({ plan_id = queued.plan_id })
+    local row = terminal.outcomes[1]
+    local result = row and row.result
+    local code = ending == "budget" and "PLAN_BUDGET_EXCEEDED" or "STEP_STALLED"
+    local expected_status = ending == "cancel" and "cancelled" or "failed"
+    check(terminal.status == expected_status and (ending == "cancel" or row.code == code)
+      and result and result.crafting and result.crafting.crafts_started == 2
+      and result.crafting.products[1].carried_delta == 1 and body.get_item_count("gear") == 1
+      and result.crafting.queue.retained and result.crafting.queue.entries[2].count == 4
+      and body.crafting_queue_size == 2,
+      ending .. " terminal reconciliation explicitly retains unrelated native crafting without refunds")
+  end
+
+  -- A capacity-ended nested wait must run its owning action's cleanup, just
+  -- like the watchdog: an escape may have a picked-up outer entity to restore.
+  local released = 0
+  tasks.register_action("test_capacity_hold", { runner = {
+    start = function() end,
+    tick = function() real.mark_wait(); return nil end,
+    cancelled = function(_, body_only)
+      if body_only then released = released + 1 end
+      return { restored = true }
+    end,
+  }, make_task = function() return {} end })
+  for _, direct in ipairs({ false, true }) do
+    reset(1.0333333333)
+    local queued = direct and tasks.enqueue({ task = { type = "test_capacity_hold" } })
+      or tasks.queue_plan({ steps = { { action = "test_capacity_hold" } } })
+    tasks.on_tick()
+    game.tick = game.tick + 1; tasks.on_tick()
+    local outcome = direct and tasks.get({ task_id = queued.task_id }).outcome
+      or tasks.plan_status({ plan_id = queued.plan_id }).outcomes[1].result
+    check(outcome.code == "CRAFT_OUTPUT_BLOCKED" and outcome.cancelled.restored and body.crafting_queue_size == 2,
+      "a capacity-ended " .. (direct and "direct task" or "plan step") .. " releases physical holds and reports restoration")
+  end
+  check(released == 2, "both dispatcher capacity paths invoke the owner cleanup exactly once")
+  body.crafting_queue, body.crafting_queue_size, body.crafting_queue_progress = {}, 0, 0
+  craft.tick = old_tick
+end)()
 os.exit(failures == 0 and 0 or 1)

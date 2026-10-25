@@ -13,6 +13,63 @@ local M = {}
 
 local POLL_TICKS = 30
 local MAX_COUNT = 100
+local QUEUE_ROWS = 32
+
+-- Native crafting is deliberately retained when a step ends. Cancelling an
+-- entry can refund into a full inventory, and another entry may belong to
+-- an earlier background craft or the human. The freed FIFO can move carried
+-- items before native crafting resumes. Never infer delivery from acceptance.
+function M.reconcile(task, c)
+  c = c or companion.get()
+  if not c then return nil end
+  local queue = c.crafting_queue or {}
+  local rows = {}
+  for i = 1, math.min(#queue, QUEUE_ROWS) do
+    local entry = queue[i]
+    rows[i] = { recipe = entry.recipe, count = entry.count, prerequisite = entry.prerequisite }
+  end
+  local result = { source_tick = game.tick, queue = { size = #queue, progress = c.crafting_queue_progress,
+    entries = rows, omitted_entries = math.max(0, #queue - #rows), retained = #queue > 0 } }
+  local s = task and task._craft
+  if s then
+    result.recipe, result.crafts_started, result.products = task.recipe, s.started, {}
+    for _, name in ipairs(s.product_names) do
+      result.products[#result.products + 1] = { item = name,
+        expected = s.products_per_craft[name] and s.products_per_craft[name] * s.started or nil,
+        carried_delta = c.get_item_count(name) - s.products_before[name] }
+    end
+  end
+  return result
+end
+
+-- A successful native craft removes its head entry in the completion tick.
+-- An unchanged completed head across ticks could not deliver its products.
+-- Check the native result after ingredient consumption, rather than refusing
+-- a full inventory which the consumed ingredients might make room in.
+function M.blocked(c, task)
+  if (tonumber(c.crafting_queue_progress) or 0) < 1 or (c.crafting_queue_size or 0) == 0 then
+    task._craft_blocked = nil
+    return nil
+  end
+  local outcome = M.reconcile(task, c)
+  if outcome.queue.size == 0 then return nil end
+  local head, prior = outcome.queue.entries[1], task._craft_blocked
+  -- Give the engine a tick to deliver after inventory changed within the
+  -- current tick (including ingredient consumption). Two polls in one tick
+  -- never establish a blockage.
+  if not prior or prior.tick == game.tick or prior.recipe ~= head.recipe or prior.count ~= head.count
+    or prior.progress ~= outcome.queue.progress then
+    task._craft_blocked = { tick = game.tick, recipe = head.recipe, count = head.count, progress = outcome.queue.progress }
+    return nil
+  end
+  outcome.code = "CRAFT_OUTPUT_BLOCKED"
+  return { status = "failed", detail = "CRAFT_OUTPUT_BLOCKED: native hand-crafting reached completion progress"
+    .. " but its products could not enter inventory; the native queue is retained", outcome = outcome }
+end
+
+function M.cancelled(task)
+  return M.reconcile(task)
+end
 
 -- Items of `item` one craft of `recipe` yields; an uncertain amount counts 1.
 local function per_craft(recipe, item)
@@ -223,11 +280,12 @@ function M.tick(task)
       status = "done",
       detail = string.format("accepted %d recipe crafts of %s into Factorio's hand-crafting queue; expected outputs: %s%s",
         s.started, task.recipe, table.concat(expected, ", "), s.note),
+      outcome = M.reconcile(task, c),
     }
   end
   if game.tick < s.next_poll then return nil end
   s.next_poll = game.tick + POLL_TICKS
-  if c.crafting_queue_size > 0 then mark_wait(); return nil end
+  if c.crafting_queue_size > 0 then mark_wait(); return M.blocked(c, task) end
 
   -- An empty queue is not completion: the queue can be cancelled, or the
   -- products taken, while the player holds the body. Count the crafts whose
@@ -246,17 +304,20 @@ function M.tick(task)
   end
   local gains = #parts > 0 and (" (" .. table.concat(parts, ", ") .. ")") or ""
   if produced and produced < s.started then
+    local outcome = M.reconcile(task, c)
+    outcome.code, outcome.crafts_evidenced = "CRAFT_PRODUCTS_MISSING", produced
     return {
       status = produced > 0 and "partial" or "failed",
       detail = string.format("hand-crafting queue emptied with the products of %d of %d recipe crafts of %s carried%s"
         .. " - the queue was cancelled or the products were removed%s",
         produced, s.started, task.recipe, gains, s.note),
-      outcome = { code = "CRAFT_PRODUCTS_MISSING", recipe = task.recipe, crafts_started = s.started, crafts_evidenced = produced },
+      outcome = outcome,
     }
   end
   return {
     status = "done",
     detail = string.format("completed %d recipe crafts of %s%s%s", s.started, task.recipe, gains, s.note),
+    outcome = M.reconcile(task, c),
   }
 end
 

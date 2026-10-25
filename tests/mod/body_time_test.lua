@@ -38,7 +38,7 @@ local player = { index = 1, valid = true, connected = true, name = "Codex", char
 _G.game = { tick = 0, get_player = function(index) return index == 1 and player or nil end, connected_players = { player } }
 
 local inert = { start = function() end, tick = function() return { status = "done", detail = "done" } end }
-package.loaded["scripts.actions.craft"] = inert
+package.loaded["scripts.actions.craft"] = setmetatable({ blocked = function() return nil end }, { __index = inert })
 package.loaded["scripts.actions.build"] = { place = inert, rotate = inert,
   set_recipe_action = { runner = inert, make_task = function() return {} end } }
 package.loaded["scripts.actions.transfer"] = { insert = inert, extract = inert,

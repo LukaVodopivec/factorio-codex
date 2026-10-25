@@ -107,7 +107,7 @@ async function startServer(): Promise<Bridge> {
   const log = fs.openSync(paths.log, "w");
   server = spawn(bin!, ["-c", configIni, "--start-server", paths.save, "--server-settings", paths.serverSettings,
     "--mod-directory", paths.mods, "--bind", "127.0.0.1", "--port", String(gamePort),
-    "--rcon-bind", `127.0.0.1:${rconPort}`, "--rcon-password", password, "--disable-audio"], { cwd: dir, stdio: ["ignore", log, log] });
+    "--rcon-bind", `127.0.0.1:${rconPort}`, "--rcon-password", password], { cwd: dir, stdio: ["ignore", log, log] });
   fs.closeSync(log);
   for (const deadline = Date.now() + 180_000; ; await sleep(1000)) {
     if (server.exitCode !== null) throw new Error(`server exited with ${server.exitCode}: ${logTail()}`);
@@ -883,6 +883,158 @@ const scenarios: Scenario[] = [
       expect(after.queue === 0 && after.chests === 0 && after.plates === 200, "the crafting queue stays empty and the plates stay", after);
       return `hand_craft ${queued.hand_craft.total_s} s; observed queue_s ${crafting.queue_s} (${list(crafting.queue)[0].recipe});`
         + ` crafted_s ${step.result.crafted_s}; craft: false ${short.code}, bill ${short.hand_craft.total_s} s, crafting queue ${after.queue}`;
+    },
+  },
+  {
+    name: "full-inventory hand-crafts report retained work and release the FIFO for physical recovery",
+    async run(bridge) {
+      await characterStandIn();
+      const reset = `local c = mod("companion").get()
+        mod("tasks").cancel({ all = true, origin = "stop/live-capacity-fixture" })
+        local inv = c.get_main_inventory()
+        inv.clear()
+        for i = 1, #inv do inv[i].set_stack({ name = "iron-plate", count = 100 }) end
+        storage.live_capacity_plates = c.get_item_count("iron-plate")`;
+      const read = `local c = mod("companion").get()
+        return { plates = c.get_item_count("iron-plate"), chests = c.get_item_count("iron-chest"),
+          gears = c.get_item_count("iron-gear-wheel"), progress = c.crafting_queue_progress,
+          queue = c.crafting_queue or {}, size = c.crafting_queue_size }`;
+      const evidence: string[] = [];
+      try {
+        // Establish the engine behavior separately from the runner: consuming
+        // eight plates in a full stack frees no slot, and native progress
+        // remains above one with no delivered chest.
+        const initial = await lua<number>(`${reset}
+          assert(c.begin_crafting({ recipe = "iron-chest", count = 1 }) == 1)
+          return storage.live_capacity_plates`);
+        const native = await until("native crafting blocked at completed progress", async () => {
+          const state = await lua<any>(read);
+          return state.progress >= 1 ? state : undefined;
+        });
+        expect(native.plates === initial - 8 && native.chests === 0 && native.size === 1,
+          "native crafting consumes eight plates but cannot deliver its result", native);
+        evidence.push(`native: plates ${initial}->${native.plates}, chests 0, progress ${native.progress}, queue 1`);
+
+        for (const wait of [true, false, "supply"] as const) {
+          await lua(`${reset}
+            local old = c.surface.find_entity("steel-chest", { 163.5, 30.5 })
+            if old then old.destroy() end
+            storage.live_capacity_buffer = assert(c.surface.create_entity({ name = "steel-chest", position = { 163.5, 30.5 }, force = c.force }))`);
+          const queued = await bridge.call<any>("queue_plan", { steps: [
+            ...(wait !== "supply" ? [{ action: "craft_items", recipe: "iron-chest", crafts: 1, wait_for_completion: wait }] : []),
+            ...(wait !== true ? [{ action: "place_entity", name: "iron-chest", x: 161.5, y: 32.5 }] : []),
+          ] });
+          // A separately accepted recipe behind the blocked chest must survive
+          // the first plan's failure and subsequent recovery unchanged.
+          await lua(`local c = mod("companion").get()
+            assert(c.begin_crafting({ recipe = "iron-gear-wheel", count = 1 }) == 1)`);
+          const failed = await planEnd(bridge, queued.plan_id, 10_000);
+          const outcome = list(failed.outcomes).at(-1)?.result;
+          expect(failed.status === "failed" && outcome?.code === "CRAFT_OUTPUT_BLOCKED"
+            && outcome.queue?.retained === true && list(outcome.queue.entries).length > 0,
+            "the waiting step reports retained native crafting and releases the FIFO", failed.outcomes);
+          if (wait === false) {
+            const accepted = list(failed.outcomes)[0]?.result;
+            expect(accepted?.crafts_started === 1 && accepted.products?.[0]?.carried_delta === 0,
+              "background acceptance records accepted crafts separately from delivered products", accepted);
+          }
+          if (wait === "supply") {
+            const accepted = outcome.supply?.supply_result?.last_action?.crafting;
+            expect(accepted?.crafts_started === 1 && accepted.products?.[0]?.carried_delta === 0,
+              "nested supply retains its last craft's acceptance facts at their source tick", outcome.supply);
+          }
+          const stalled = await lua<any>(read);
+          expect(stalled.plates === initial - 10 && stalled.chests === 0 && stalled.gears === 0
+            && list(stalled.queue).some((entry) => entry.recipe === "iron-gear-wheel"),
+            "terminal reconciliation retains the unrelated native recipe without refunding ingredients", stalled);
+          const recovery = await runPlan(bridge, [{ action: "insert_items", x: 163.5, y: 30.5,
+            items: { "iron-plate": 200 }, inventory: "main" }]);
+          expect(recovery.status === "completed", "the same FIFO can move existing plates into an existing buffer", recovery);
+          const recovered = await until("both retained recipes to deliver", async () => {
+            const state = await lua<any>(read);
+            return state.size === 0 ? state : undefined;
+          });
+          const buffered = await lua<number>('return storage.live_capacity_buffer.get_item_count("iron-plate")');
+          expect(recovered.plates === initial - 210 && recovered.chests === 1 && recovered.gears === 1 && buffered === 200,
+            "all consumed, carried and transferred items balance after native recovery", { recovered, buffered });
+          evidence.push(`wait=${wait}: ${outcome.code}, retained 2 recipes, recovery ${recovery.status},`
+            + ` plates ${recovered.plates}+${buffered} buffered, chest 1, gear 1, queue 0`);
+        }
+
+        // Full before consumption, but consuming the only ingredient stack
+        // frees one slot. No early capacity refusal is allowed.
+        await lua(`${reset} c.remove_item({ name = "iron-plate", count = 92 })`);
+        const freed = await runPlan(bridge, [{ action: "craft_items", recipe: "iron-chest", crafts: 1, wait_for_completion: true }]);
+        const after = await lua<any>(read);
+        expect(freed.status === "completed" && after.chests === 1 && after.size === 0,
+          "ingredient consumption can free the result slot in a previously full inventory", { freed, after });
+        const delivered = list(freed.outcomes)[0]?.result;
+        expect(delivered?.crafts_started === 1 && delivered.products?.[0]?.carried_delta === 1
+          && delivered.queue?.size === 0 && delivered.queue.retained === false,
+          "successful completion distinguishes accepted, delivered evidence and empty native queue", delivered);
+        evidence.push(`ingredient-freed slot: ${freed.status}, chest 1, queue 0`);
+
+        await lua(`${reset}
+          inv[#inv].set_stack({ name = "iron-chest", count = 49 })`);
+        const stack = await runPlan(bridge, [{ action: "craft_items", recipe: "iron-chest", crafts: 1, wait_for_completion: true }]);
+        const stacked = await lua<any>(read);
+        expect(stack.status === "completed" && stacked.chests === 50 && stacked.plates === initial - 108 && stacked.size === 0,
+          "a full inventory with result-stack room delivers without freeing an ingredient slot", { stack, stacked });
+        evidence.push(`existing result stack: 49->50 chests, plates ${stacked.plates}, queue 0`);
+
+        // Inventory may change after acceptance. Move existing buffered plates
+        // into the initially free slot while a deliberately slowed craft runs.
+        await lua(`${reset}
+          inv[#inv].clear()
+          local buffer = storage.live_capacity_buffer
+          buffer.get_inventory(defines.inventory.chest).clear()
+          buffer.insert({ name = "iron-plate", count = 100 })
+          storage.live_capacity_speed = c.character_crafting_speed_modifier
+          c.character_crafting_speed_modifier = -0.9`);
+        const changing = await bridge.call<any>("queue_plan", { steps: [
+          { action: "craft_items", recipe: "iron-chest", crafts: 1, wait_for_completion: true },
+        ] });
+        await until("the craft accepted with a free result slot", async () => {
+          const state = await lua<any>(read);
+          return state.size > 0 && state.progress < 1 ? state : undefined;
+        });
+        await lua(`local c = mod("companion").get()
+          assert(mod("items").move(storage.live_capacity_buffer.get_inventory(defines.inventory.chest),
+            c.get_main_inventory(), "iron-plate", "normal", 100) == 100)
+          c.character_crafting_speed_modifier = storage.live_capacity_speed`);
+        const changed = await planEnd(bridge, changing.plan_id, 10_000);
+        expect(changed.status === "failed" && list(changed.outcomes)[0]?.result?.code === "CRAFT_OUTPUT_BLOCKED",
+          "a slot filled after acceptance is evaluated at native delivery time", changed.outcomes);
+        const recoveredPlan = await runPlan(bridge, [{ action: "insert_items", x: 163.5, y: 30.5,
+          items: { "iron-plate": 100 }, inventory: "main" }]);
+        const recoveredChange = await until("the changed-inventory craft to recover", async () => {
+          const state = await lua<any>(read);
+          return state.size === 0 ? state : undefined;
+        });
+        const recoveredBuffer = await lua<number>('return storage.live_capacity_buffer.get_item_count("iron-plate")');
+        expect(recoveredPlan.status === "completed" && recoveredChange.chests === 1
+          && recoveredChange.plates === initial - 108 && recoveredBuffer === 100,
+          "inventory changes and FIFO recovery conserve all plates and the delivered chest", { recoveredChange, recoveredBuffer });
+        evidence.push(`slot filled after acceptance: CRAFT_OUTPUT_BLOCKED; FIFO recovery completed, chest 1, queue 0`);
+
+        const refunded = await lua<any>(`${reset}
+          assert(c.begin_crafting({ recipe = "iron-chest", count = 1 }) == 1)
+          assert(c.begin_crafting({ recipe = "iron-gear-wheel", count = 1 }) == 1)
+          local consumed = c.get_item_count("iron-plate")
+          mod("tasks").cancel({ all = true, origin = "stop/live-capacity-refunds" })
+          return { consumed = consumed, plates = c.get_item_count("iron-plate"),
+            queue = c.crafting_queue_size, chests = c.get_item_count("iron-chest"), gears = c.get_item_count("iron-gear-wheel") }`);
+        expect(refunded.consumed === initial - 10 && refunded.plates === initial && refunded.queue === 0
+          && refunded.chests === 0 && refunded.gears === 0,
+          "emergency stop natively refunds both accepted recipes without loss or duplication", refunded);
+        evidence.push(`emergency stop: ${initial - 10}->${refunded.plates} plates refunded, products 0, queue 0`);
+        return evidence.join("; ");
+      } finally {
+        await lua(`mod("tasks").cancel({ all = true, origin = "stop/live-capacity-cleanup" })
+          local c = mod("companion").get() c.get_main_inventory().clear()
+          if storage.live_capacity_speed then c.character_crafting_speed_modifier = storage.live_capacity_speed end
+          if storage.live_capacity_buffer and storage.live_capacity_buffer.valid then storage.live_capacity_buffer.destroy() end`);
+      }
     },
   },
   {

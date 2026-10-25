@@ -601,6 +601,22 @@ do
 end
 body.get_main_inventory = function() return stacks.view(inventory, function() return 1000 end) end
 
+-- A full inventory can still hand-craft from carried ingredients: native
+-- consumption may free the result slot. Taking from a holder still cannot.
+do
+  reset()
+  inventory["iron-plate"] = 2
+  body.get_main_inventory = function() return { get_insertable_count = function() return 0 end } end
+  body.get_craftable_count = function(name)
+    return name == "iron-gear-wheel" and math.floor((inventory["iron-plate"] or 0) / 2) or 0
+  end
+  local full_craft = run({ items = { { name = "iron-gear-wheel", count = 1 } } })
+  check(full_craft.status == "done" and inventory["iron-plate"] == 0 and inventory["iron-gear-wheel"] == 1,
+    "a full-inventory supply uses the shared craft action when carried ingredients can be consumed")
+  body.get_craftable_count = nil
+  body.get_main_inventory = function() return stacks.view(inventory, function() return 1000 end) end
+end
+
 -- Smelted items are not hand-craftable: the shortfall names why.
 reset()
 chest({ x = 2.5, y = 0.5 }, { ["iron-plate"] = 2 })

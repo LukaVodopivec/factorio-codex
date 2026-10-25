@@ -1233,7 +1233,12 @@ work. A missing character or required field, malformed response, stale sample,
 or failed call is uncertain, not idle. Inspect a known plan only with its
 exact `plan_id`; `plan_status {}` is invalid.
 
-Time an idle interval from observation receipt timestamps. Compare each
+Time an idle interval from observation receipt timestamps for the current
+pilot session and ownership generation, applying the ownership reset in
+`AGENTS.md` before evaluating eligibility. Associate observations and intervention
+receipts with that owner in the existing run evidence; an observation whose
+ownership is uncertain cannot establish the replacement's idle baseline.
+Compare each
 sample's physical signature (position, carried inventory, `active_task`,
 `queue_depth`, crafting state) with the last one, and keep the start of the
 interval across unchanged samples. Discount position, inventory and task
@@ -1254,6 +1259,11 @@ Nudge and replacement thresholds and steps are in `AGENTS.md`.
 | Unknown transition, first idle observation at 02:03 and unchanged sample at 03:12 | Report at least 69 s observed idle, not an exact start before 02:03. |
 | Missing, malformed, failed, stale observation, or run change | Invalidate timing; no intervention based on the uncertain interval. |
 | `human_control: true` (the human player playing the body) | No idle claim, nudge, or replacement. Record the hold as the human player's input, invalidate timing, and require fresh idle evidence after it. |
+| A has exceeded five minutes idle and consumed its nudge; B takes ownership between otherwise unchanged idle samples | Reset timing, physical baseline, single-nudge state, consumption eligibility, and interrupt waiting before evaluating B. B's first fresh valid idle sample starts a conservative lower bound of 0 s; at 69 s later, report at least 69 s, with no eligibility inherited from A. Keep A's observations and intervention/delivery history. |
+| Pilot session changes with the same generation, or generation changes within the same session | Either change independently resets the evidence used for eligibility. A predecessor's consumed token or elapsed stale-turn interrupt wait cannot authorize replacement of the current owner. |
+| Ownership changes, but B's observation is missing, invalid, stale, failed, or not attributable to B | No idle lower bound or intervention eligibility for B; await fresh valid evidence belonging to B. A's last sample and quiescence proof cannot substitute for it. |
+| Ownership changes during a human hold | Retain the hold and its history, reset predecessor eligibility, and make no idle claim or intervention. Start B's lower bound only from fresh valid idle evidence after release. |
+| A's idle interval is interrupted by a human hold; B takes ownership after release | Preserve the human-control transitions as history. Neither A's pre-hold interval nor an A sample after release starts B's interval; require B's own fresh valid idle sample and evaluate only B's subsequent evidence and receipts. |
 
 Offline tests prove neither message delivery nor live retirement or
 replacement; claim live behaviour only from a supervised run with delivery

@@ -194,6 +194,18 @@ it as such, and retain it. Renewed pilot activity resets the interval and its
 single-nudge state; a run change or uncertain observation invalidates timing,
 requiring fresh idle evidence.
 
+Scope this evidence to the current pilot session and ownership generation.
+Before evaluating intervention eligibility, a change to either invalidates
+the predecessor's idle timing, physical comparison baseline, single-nudge
+state, nudge-consumption eligibility, and stale-turn interrupt waiting period.
+Start the replacement's conservative observed idle lower bound only at receipt
+of a fresh valid idle observation attributable to that pilot after the change;
+an unchanged body does not carry the predecessor's interval forward. Preserve
+observations, interventions, delivery receipts, and human-control transitions
+as history, but predecessor receipts and consumed tokens cannot authorize a
+nudge or replacement against the new pilot. An ownership change never releases
+a human hold; fresh idle evidence must also follow its release.
+
 Before `GO`, verify that this supervisor can deliver a message to the exact
 pilot session with a delivery receipt and can interrupt and retire that session
 with observable confirmation that it cannot resume gameplay writes. Verify the

@@ -13,8 +13,13 @@ export class JobBusyError extends Error {}
 export const JOBS_BUSY = "JOBS_BUSY:";
 /** A write whose answer was lost to a transport fault (a timeout, or the
  *  connection closing mid-call): the game may or may not have run it. Not a
- *  ModError, and never retried here. */
-export class OutcomeUnknownError extends Error {}
+ *  ModError, and never retried here. Also used when accepted work loses its
+ *  monitor, retaining its identity and historical sample when known. */
+export class OutcomeUnknownError extends Error {
+  constructor(message: string, readonly accepted?: { plan_id: number } | { task_id: number }, readonly lastKnown?: unknown) {
+    super(message);
+  }
+}
 /** The mod refused a write because a newer writer generation was claimed
  *  (rpc.lua's fence): this process no longer writes. Not a ModError: it is
  *  no refusal of the call's content. */
@@ -65,6 +70,12 @@ const writeMethods = new Set<string>(WRITE_METHODS);
 export function outcomeUnknown(what: string, error: unknown): OutcomeUnknownError {
   const reason = error instanceof Error ? error.message : String(error);
   return new OutcomeUnknownError(`the connection to the game failed during ${what} (${reason}); it may or may not have run in the game; read observe_local (or plan_status for a plan_id you hold) to see whether it did before repeating it`);
+}
+/** Work was accepted; losing its monitor is never authority to cancel or repeat it. */
+export function monitoringUnknown(what: string, accepted: { plan_id: number } | { task_id: number },
+  error: unknown, lastKnown?: unknown): OutcomeUnknownError {
+  const reason = error instanceof Error ? error.message : String(error);
+  return new OutcomeUnknownError(`monitoring failed during ${what} (${reason}); physical state is unknown; nothing was cancelled or re-enqueued; read observe_local or plan_status before deciding what to do next`, accepted, lastKnown);
 }
 function pendingJob(value: unknown): value is JobStatus {
   const job = value as JobStatus | undefined;
@@ -220,6 +231,8 @@ export class Bridge {
     const started = clock.now();
     const budget = holdAwareDeadline(clock, opts.deadlineMs ?? started + timeoutMs, opts.returnByMs);
     let poll = 0;
+    let deadlineReached = false;
+    let lastKnown: GetTaskResult | undefined;
 
     try {
       for (;;) {
@@ -230,12 +243,17 @@ export class Bridge {
         if (opts.signal?.aborted) throw new TaskCancelledError("the task was cancelled");
         const st = await this.call<GetTaskResult>("get_task", { task_id });
         if (opts.signal?.aborted) throw new TaskCancelledError("the task was cancelled");
+        if (!st || !["queued", "running", "done", "partial", "failed", "cancelled"].includes(st.status)) {
+          throw new ModError("malformed get_task status");
+        }
+        lastKnown = st;
         budget.sample(st.fifo?.human_control === true);
         const { fifo: _fifo, ...status } = st;
         if (status.status !== "queued" && status.status !== "running") {
           return budget.held ? { ...status, human_control: true } : status;
         }
         if (budget.remaining() > 0) continue;
+        deadlineReached = true;
         const waited = Math.round((clock.now() - started) / 1000);
         if (budget.holding) {
           throw new ModError(`a human holds the body: task ${task_id} was still ${status.status} after ${waited}s and was cancelled`
@@ -245,12 +263,11 @@ export class Bridge {
           + (budget.held ? ` (${waited}s wall time including a human hold)` : ""));
       }
     } catch (error) {
-      // An interrupted turn cancels its own task, named by this process's
-      // session role; anything else is the bridge giving up at its deadline.
-      const role = opts.signal?.aborted ? opts.role ?? "unknown" : "direct-task-timeout";
-      await this.call("cancel", { task_id, origin: `${opts.tool ?? task.type}/${role}` }).catch(() => {});
-      // The task was queued and its status could not be read: it may still run.
-      if (error instanceof RconError) throw outcomeUnknown(`${opts.tool ?? task.type} (task ${task_id})`, error);
+      if (!opts.signal?.aborted && !deadlineReached) {
+        throw monitoringUnknown(`${opts.tool ?? task.type} (task ${task_id})`, { task_id }, error, lastKnown);
+      }
+      const cause = opts.signal?.aborted ? "abort" : "direct-task-timeout";
+      await this.call("cancel", { task_id, origin: `${opts.tool ?? task.type}/${opts.role ?? "unknown"}/${cause}` }).catch(() => {});
       throw error;
     }
   }

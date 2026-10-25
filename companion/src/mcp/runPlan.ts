@@ -1,6 +1,5 @@
 import { z } from "zod";
-import { DEFAULT_TASK_TIMEOUT_MS, holdAwareDeadline, outcomeUnknown, TaskCancelledError, type TaskClock } from "../bridge.js";
-import { RconError } from "../rcon.js";
+import { DEFAULT_TASK_TIMEOUT_MS, holdAwareDeadline, monitoringUnknown, TaskCancelledError, type TaskClock } from "../bridge.js";
 import type { Bridge } from "../bridge.js";
 import { normalizeObservation } from "./observation.js";
 import { NEXT_EVENT_MAX_SECONDS } from "./events.js";
@@ -408,9 +407,9 @@ export async function waitForPlanStatus(
   return { ...status, wait: { condition, timed_out: true, waited_ms: Math.max(0, clock.now() - started) } };
 }
 
-/** tool names the MCP tool for a cancel's origin. */
+/** Cancellation names the owning MCP tool, configured session role and cause. */
 export async function executeRunPlan(bridge: Bridge, input: RunPlanInput, signal?: AbortSignal, clock: TaskClock = realClock,
-  tool = "run_plan"): Promise<RunPlanResult> {
+  tool = "run_plan", role = "unknown"): Promise<RunPlanResult> {
   if (signal?.aborted) return { status: "cancelled", completed_steps: 0, outcomes: [],
     execution: { mode: "sequential_nontransactional", rollback: "none", committed_steps: [] } };
   const { plan_id } = await bridge.call<{ plan_id: number }>("queue_plan", input);
@@ -418,10 +417,20 @@ export async function executeRunPlan(bridge: Bridge, input: RunPlanInput, signal
   // the return guard the plan stays queued and the caller waits on plan_status.
   const started = clock.now();
   const budget = holdAwareDeadline(clock, started + DEFAULT_TASK_TIMEOUT_MS);
+  let lastKnown: RunPlanResult | undefined;
   try {
     for (;;) {
       if (signal?.aborted) throw new TaskCancelledError("run_plan was cancelled");
       const status = await bridge.call<RunPlanResult>("plan_status", { plan_id });
+      if (!isFields(status) || status.plan_id !== plan_id
+        || !["queued", "running", "waiting", ...terminalStatuses].includes(status.status)
+        || !(Array.isArray(status.outcomes) ? status.outcomes.every((outcome) => isFields(outcome)
+          && Number.isInteger(outcome.step) && outcome.step > 0 && typeof outcome.action === "string"
+          && terminalStatuses.has(outcome.status))
+          : isFields(status.outcomes) && Object.keys(status.outcomes).length === 0)) {
+        throw new Error("malformed plan_status reply or mismatched plan_id");
+      }
+      lastKnown = status;
       budget.sample(status.fifo?.human_control === true);
       if (isTerminal(status)) {
         if (status.observation) status.observation = normalizeObservation(status.observation);
@@ -444,7 +453,8 @@ export async function executeRunPlan(bridge: Bridge, input: RunPlanInput, signal
       await clock.sleep(Math.min(1_000, budget.remaining()));
     }
   } catch (error) {
-    await bridge.call("cancel", { plan_id, origin: `${tool}/run_plan-abort` }).catch(() => {});
+    if (!signal?.aborted) throw monitoringUnknown(`${tool} (plan ${plan_id})`, { plan_id }, error, lastKnown);
+    await bridge.call("cancel", { plan_id, origin: `${tool}/${role}/abort` }).catch(() => {});
     try {
       const cancelled = await bridge.call<RunPlanResult>("plan_status", { plan_id });
       if (isTerminal(cancelled)) {
@@ -465,8 +475,6 @@ export async function executeRunPlan(bridge: Bridge, input: RunPlanInput, signal
         execution: { mode: "sequential_nontransactional", rollback: "none", effects_state: "unknown",
           incomplete_step: { step: 1, status: "cancelled", effects: "unknown" } } };
     }
-    // The plan was queued and its status could not be read: it may still run.
-    if (error instanceof RconError) throw outcomeUnknown(`${tool} (plan ${plan_id})`, error);
     throw error;
   }
 }

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { Bridge, DEFAULT_TASK_TIMEOUT_MS, type TaskClock } from "../src/bridge.js";
+import { Bridge, DEFAULT_TASK_TIMEOUT_MS, ModError, OutcomeUnknownError, type TaskClock } from "../src/bridge.js";
+import { RconError } from "../src/rcon.js";
 import type { RconClient } from "../src/rcon.js";
 import { executeRunPlan, packageStepSchema, planStatusSchema, queuePlanSchema, runPlanSchema, waitForPlanStatus } from "../src/mcp/runPlan.js";
 import { registerMcpTools } from "../src/mcp/server.js";
@@ -150,12 +151,79 @@ describe("current queued-plan protocol", () => {
           incomplete_step: { step: 2, status: "cancelled", effects: "unknown" } } });
     const result = await executeRunPlan({ call } as unknown as Bridge, runPlanSchema.parse({ steps: [
       { action: "mine", x: 1, y: 2 }, { action: "walk_to", x: 3, y: 4 },
-    ] }), controller.signal, clock);
+    ] }), controller.signal, clock, "build_plan", "pilot");
     expect(result).toMatchObject({ plan_id: 10, status: "cancelled", completed_steps: 1,
       execution: { rollback: "none", incomplete_step: { effects: "unknown" } } });
     expect(call.mock.calls.map(([method]) => method)).toEqual(["queue_plan", "plan_status", "cancel", "plan_status"]);
     // The cancel names the tool and that the bridge aborted its own plan.
-    expect(call).toHaveBeenCalledWith("cancel", { plan_id: 10, origin: "run_plan/run_plan-abort" });
+    expect(call).toHaveBeenCalledWith("cancel", { plan_id: 10, origin: "build_plan/pilot/abort" });
+  });
+
+  it.each([
+    ["transport", () => { throw new RconError("connection closed"); }],
+    ["mod refusal", () => { throw new ModError("status unavailable"); }],
+    ["unexpected error", () => { throw new Error("monitor failed"); }],
+    ["null reply", () => null],
+    ["invalid status", () => ({ status: "nonsense" })],
+    ["missing identity", () => ({ status: "completed", outcomes: [] })],
+    ["wrong identity", () => ({ plan_id: 99, status: "completed", outcomes: [] })],
+    ["invalid outcomes", () => ({ plan_id: 41, status: "completed", outcomes: 7 })],
+    ["invalid outcome row", () => ({ plan_id: 41, status: "completed", outcomes: [7] })],
+  ])("keeps accepted work after a %s monitoring failure, including committed steps", async (_name, fail) => {
+    for (const committed of [false, true]) {
+      let reads = 0;
+      let now = 0;
+      const clock: TaskClock = { now: () => now, sleep: async (ms) => { now += ms; } };
+      const latest = { plan_id: 41, status: "running", current_step: 8, completed_steps: 7,
+        outcomes: [{ step: 7, action: "build_plan", status: "completed" }],
+        execution: { mode: "sequential_nontransactional", rollback: "none", committed_steps: [1, 2, 3, 4, 5, 6, 7] } };
+      const call = vi.fn(async (method: string) => {
+        if (method === "queue_plan") return { plan_id: 41 };
+        if (committed && ++reads === 1) return latest;
+        return fail();
+      });
+      const error = await executeRunPlan({ call } as unknown as Bridge,
+        runPlanSchema.parse({ steps: [{ action: "walk_to", x: 1, y: 2 }] }), undefined, clock)
+        .catch((error: unknown) => error);
+      expect(error).toBeInstanceOf(OutcomeUnknownError);
+      expect(error).toMatchObject({ accepted: { plan_id: 41 }, message: expect.stringContaining("physical state is unknown") });
+      expect((error as OutcomeUnknownError).lastKnown).toEqual(committed ? latest : undefined);
+      expect(call.mock.calls.map(([method]) => method)).toEqual(committed
+        ? ["queue_plan", "plan_status", "plan_status"] : ["queue_plan", "plan_status"]);
+    }
+  });
+
+  it("accepts Lua's empty outcomes table without mistaking it for a monitoring failure", async () => {
+    const terminal = { plan_id: 44, status: "completed", outcomes: {} };
+    const call = vi.fn(async (method: string) => method === "queue_plan" ? { plan_id: 44 } : terminal);
+    const output = await executeRunPlan({ call } as unknown as Bridge,
+      runPlanSchema.parse({ steps: [{ action: "walk_to", x: 1, y: 2 }] }));
+    expect(output).toEqual(terminal);
+    expect(call.mock.calls.map(([method]) => method)).toEqual(["queue_plan", "plan_status"]);
+  });
+
+  it("exposes accepted identity and uncertainty through the MCP result", async () => {
+    const handlers: Record<string, (args: unknown, extra?: { signal?: AbortSignal }) => Promise<any>> = {};
+    const call = vi.fn(async (method: string) => {
+      if (method === "queue_plan") return { plan_id: 42 };
+      throw new Error("status unavailable");
+    });
+    registerMcpTools({ registerTool(name, _config, handler) { handlers[name] = handler; } },
+      async () => ({ call } as unknown as Bridge), validConfig, "full", () => null, "pilot");
+    const output = await handlers.run_plan!({ steps: [{ action: "walk_to", x: 1, y: 2 }] });
+    expect(output.isError).toBe(true);
+    expect(output.structuredContent).toMatchObject({ status: "outcome_unknown", code: "OUTCOME_UNKNOWN",
+      plan_id: 42, physical_state: "unknown" });
+    expect(call.mock.calls.map(([method]) => method)).toEqual(["queue_plan", "plan_status"]);
+
+    const controller = new AbortController();
+    call.mockImplementation(async (method: string) => {
+      if (method === "queue_plan") { controller.abort(); return { plan_id: 43 }; }
+      if (method === "cancel") return { cancelled: 1 };
+      return { plan_id: 43, status: "cancelled", outcomes: [] };
+    });
+    await handlers.run_plan!({ steps: [{ action: "walk_to", x: 1, y: 2 }] }, { signal: controller.signal });
+    expect(call).toHaveBeenCalledWith("cancel", { plan_id: 43, origin: "run_plan/pilot/abort" });
   });
 
   it("preserves a structured failure result in a failed terminal bridge response", async () => {

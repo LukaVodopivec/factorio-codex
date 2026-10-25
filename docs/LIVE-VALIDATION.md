@@ -714,8 +714,8 @@ turning them into a fixed opening or map-specific sequence:
   step that needs the item waits for it. `start_research` with a list queues
   it in order, and `next_event` reports `research_finished`.
 - Every cancel appears in `activity_log` and the server log with its
-  `origin` (`stop/<role>`, `<tool>/run_plan-abort`,
-  `<tool>/direct-task-timeout` or `<tool>/<role>`), where the role is the one
+  `origin` (`stop/<role>`, `cancel_plan/<role>`, `<tool>/<role>/abort`
+  or `<tool>/<role>/direct-task-timeout`), where the role is the one
   its MCP process was started with (`--role`); `unknown` means a session was
   started without it.
 - Loading a copy of a 0.21.1 save that still has queued plans and running
@@ -1808,3 +1808,30 @@ receipts, independently reran both Lua suites, and reported no code finding.
 It found an incorrect topology signature in this appendix; the identifier was
 corrected to the final receipts' `6cd5ddcf14d50687`. Review did not perform live
 gameplay or publication, and no active-run installation was requested.
+
+### Accepted-work monitoring failures and cancellation provenance
+
+A failed status read, transport fault, malformed reply, or other monitoring
+failure after acceptance ends the bridge wait with `OUTCOME_UNKNOWN`. The
+result retains `plan_id` or `task_id`, reports `physical_state: "unknown"`, and
+includes `last_known` when a valid sample preceded the failure. That sample
+can include committed construction; it is not proof of the current state.
+The bridge sends no cancel, replacement enqueue, or automatic mutation retry.
+Read the physical state before choosing a next action.
+
+An owning request abort intentionally cancels only its accepted plan or task;
+its origin is `<tool>/<role>/abort`. Direct-task deadlines intentionally
+cancel with `<tool>/<role>/direct-task-timeout`, including the return guard
+under a human hold. A `run_plan` monitoring deadline returns its latest
+nonterminal state without cancellation. Existing mod origin validation,
+activity and server logs, and terminal cancellation attribution remain the
+source of provenance; supervisor stop, pilot ownership restrictions, human
+holds, writer fencing and committed construction remain in force.
+
+In the release 0.20.0 incident on 2026-10-04, the belt-build plan was cancelled
+at tick 565200, in the 21:01:14–21:01:18 UTC window, after seven committed
+steps and before validation produced an outcome. Its exact cancel RPC origin
+remains unproven. The bridge's former catch-all cancellation handlers are a
+plausible mechanism demonstrated by source and offline regressions, not
+historical attribution. This correction requires offline readiness; it does
+not establish live deployment or live gameplay validation.

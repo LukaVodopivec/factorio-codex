@@ -68,12 +68,21 @@ is `factorio-codex`.
   result. Replies up to 256 KiB come in one piece. The pilot's process sends
   its writer generation with every write and the supervisor's labels its
   writes (the writer fence in `docs/LIVE-VALIDATION.md`); a write whose answer is lost is reported as
-  `OUTCOME_UNKNOWN`, never retried silently.
+  `OUTCOME_UNKNOWN`, never retried silently. Once a plan or direct task is
+  accepted, a monitoring failure also returns `OUTCOME_UNKNOWN`, with its
+  `plan_id` or `task_id`, `physical_state: "unknown"`, and `last_known` when
+  available. That sample is historical, not a current physical outcome.
+  Monitoring failures never cancel, re-enqueue, or retry the mutation. An
+  owning call's abort cancels only its exact work; direct-task deadlines also
+  cancel explicitly. A `run_plan` monitoring deadline returns the latest
+  nonterminal sample without cancellation.
 - **MCP server** (`mcp/server.ts`): a stdio MCP server started by Codex from the
   committed `.codex/config.toml` through `scripts/start-factorio-mcp`. The
   `full` surface has every tool; `read-only` has only reads and dry runs.
   `--role` names the session (`pilot`, `strategist`, `advisor`, `supervisor`)
-  in the origin of every cancel it makes.
+  in the origin of every cancel it makes. Owning-call cancellations use
+  `<tool>/<role>/abort` or `<tool>/<role>/direct-task-timeout`; explicit
+  `stop/<role>` and `cancel_plan/<role>` retain their existing meanings.
 - **Server lifecycle** (`server/server.ts`): `server create|start|stop` for a
   run directory with its own save, mod set, logs and ledger. `server start`
   records the run as current; the MCP processes read its ledger.

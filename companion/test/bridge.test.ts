@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { Bridge, DEFAULT_TASK_TIMEOUT_MS, escapeLuaString, JOB_TIMEOUT_MS, JobBusyError, ModError, TaskCancelledError,
+import { Bridge, DEFAULT_TASK_TIMEOUT_MS, escapeLuaString, JOB_TIMEOUT_MS, JobBusyError, ModError, OutcomeUnknownError, TaskCancelledError,
   type TaskClock } from "../src/bridge.js";
+import { RconError } from "../src/rcon.js";
 import type { RconClient } from "../src/rcon.js";
 
 function fakeRcon(execImpl: (cmd: string) => Promise<string>): {
@@ -134,6 +135,31 @@ describe("Bridge.enqueueAndWait", () => {
     expect(exec).toHaveBeenCalledTimes(2);
   });
 
+  it.each([
+    ["transport", () => { throw new RconError("connection closed"); }],
+    ["mod refusal", () => Promise.resolve(JSON.stringify({ ok: false, error: "status unavailable" }))],
+    ["unexpected error", () => { throw new Error("monitor failed"); }],
+    ["malformed envelope", () => Promise.resolve("not JSON")],
+    ["null reply", () => ok(null)],
+    ["invalid status", () => ok({ status: "nonsense" })],
+  ])("does not cancel or re-enqueue accepted tasks after %s", async (_name, fail) => {
+    let reads = 0;
+    const latest = { status: "running", detail: "walking" };
+    const { rcon, exec } = fakeRcon((cmd) => {
+      if (cmd.includes('"enqueue"')) return ok({ task_id: 45 });
+      if (++reads === 1) return ok(latest);
+      return fail();
+    });
+    const error = await new Bridge(rcon).enqueueAndWaitResult(
+      { type: "walk_to", target: { x: 1, y: 2 } }, { clock: fakeClock().clock })
+      .catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(OutcomeUnknownError);
+    expect(error).toMatchObject({ accepted: { task_id: 45 }, lastKnown: latest,
+      message: expect.stringContaining("physical state is unknown") });
+    expect(exec.mock.calls.map(([cmd]) => /rpc","([^"]+)"/.exec(cmd)?.[1]))
+      .toEqual(["enqueue", "get_task", "get_task"]);
+  });
+
   it("cancels and rejects on timeout", async () => {
     const cancelled: string[] = [];
     const { rcon } = fakeRcon((cmd) => {
@@ -148,11 +174,11 @@ describe("Bridge.enqueueAndWait", () => {
     await expect(
       new Bridge(rcon).enqueueAndWait(
         { type: "walk_to", target: { x: 1, y: 2 } },
-        { clock: time.clock, timeoutMs: 300 },
+        { clock: time.clock, timeoutMs: 300, role: "supervisor" },
       ),
     ).rejects.toThrow(/gave up/);
     expect(cancelled).toHaveLength(1);
-    expect(cancelled[0]).toContain(escapeLuaString(JSON.stringify({ task_id: 9, origin: "walk_to/direct-task-timeout" })));
+    expect(cancelled[0]).toContain(escapeLuaString(JSON.stringify({ task_id: 9, origin: "walk_to/supervisor/direct-task-timeout" })));
   });
 
   it("cancels its owned task on abort and never polls again", async () => {
@@ -170,7 +196,7 @@ describe("Bridge.enqueueAndWait", () => {
     )).rejects.toThrow(/cancelled/);
     expect(methods).toEqual(["enqueue", "cancel"]);
     // An interrupted turn's cancel names the session role of this process.
-    expect(cancels[0]).toContain(escapeLuaString(JSON.stringify({ task_id: 12, origin: "mine/pilot" })));
+    expect(cancels[0]).toContain(escapeLuaString(JSON.stringify({ task_id: 12, origin: "mine/pilot/abort" })));
   });
 
   it("does not enqueue when already aborted", async () => {

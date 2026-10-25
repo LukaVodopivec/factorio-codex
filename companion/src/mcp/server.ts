@@ -71,7 +71,9 @@ export function result(value: unknown, isError = false, role?: SessionRole) {
 function failure(error: unknown, prefix = "Error") {
   const message = error instanceof Error ? error.message : String(error);
   if (error instanceof OutcomeUnknownError) {
-    return result({ status: "outcome_unknown", terminal: true, code: "OUTCOME_UNKNOWN", summary: message, next_action: null }, true);
+    return result({ status: "outcome_unknown", terminal: true, code: "OUTCOME_UNKNOWN", summary: message,
+      ...(error.accepted ? { ...error.accepted, physical_state: "unknown", last_known: error.lastKnown } : {}),
+      next_action: null }, true);
   }
   const code = error instanceof WriterRetiredError ? "WRITER_RETIRED" : /^([A-Z][A-Z0-9_]*[A-Z0-9]):/.exec(message)?.[1] ?? "TOOL_ERROR";
   return result({ status: "failed", terminal: true, code, summary: `${prefix}: ${message}`, next_action: null }, true);
@@ -274,7 +276,7 @@ export function registerMcpTools(
   const runPlan = async (input: unknown, signal?: AbortSignal, tool = "run_plan") => {
     const parsed = runPlanSchema.parse(input);
     try {
-      const outcome = await executeRunPlan(await bridge(), parsed, signal, undefined, tool);
+      const outcome = await executeRunPlan(await bridge(), parsed, signal, undefined, tool, role);
       const terminal = ["completed", "partial", "failed", "cancelled"].includes(outcome.status);
       return result(normalizePlanDiagnostics({ ...outcome, terminal, next_action: terminal ? null
         : nextEventAfter(outcome.source_tick) }),

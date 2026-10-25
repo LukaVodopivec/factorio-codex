@@ -67,6 +67,39 @@ describe("rollout tail", () => {
 });
 
 describe("thought feed", () => {
+  it("recovers history once with original acknowledgements and multiplicity, then shows only new live thoughts", async () => {
+    const dir = tmp(), file = path.join(dir, "rollout.jsonl"), out = path.join(dir, "thoughts.jsonl");
+    const old: ThoughtRecord = { ts: "2026-10-04T18:25:54.454Z", role: "pilot", kind: "reasoning", text: "same thought", said_at: "2026-10-04T18:26:00Z" };
+    fs.writeFileSync(out, `${JSON.stringify(old)}\n`);
+    fs.writeFileSync(file, [reasoning("before run", "2026-10-04T17:00:00Z"), reasoning("same thought"), reasoning("same thought"),
+      reasoning("intervening")].join("\n") + "\n");
+    const say = vi.fn(async () => ({})), onLine = vi.fn();
+    const feed = createThoughtFeed({ sources: [{ role: "pilot", file: () => file }], out, say, onLine,
+      recovery: { startedAt: "2026-10-04T18:00:00Z", archived: [old] } });
+    feeds.push(feed);
+    expect(records(out)).toEqual([old, { ...old, said_at: null }, { ...old, text: "intervening", said_at: null }]);
+    await feed.tick();
+    expect(say).not.toHaveBeenCalled(); expect(onLine).not.toHaveBeenCalled();
+    fs.appendFileSync(file, `${reasoning("live", "2026-10-04T19:00:00Z")}\n`);
+    await feed.tick();
+    expect(say).toHaveBeenCalledWith("pilot", "live");
+    expect(onLine).toHaveBeenCalledTimes(1);
+    expect(records(out).at(-1)?.said_at).not.toBeNull();
+  });
+
+  it("archives a source that becomes available after continuation without replay", async () => {
+    const dir = tmp(), file = path.join(dir, "missing.jsonl"), out = path.join(dir, "thoughts.jsonl");
+    const say = vi.fn(async () => ({}));
+    const feed = createThoughtFeed({ sources: [{ role: "pilot", file: () => file }], out, say,
+      recovery: { startedAt: "2026-10-04T18:00:00Z", archived: [] } });
+    feeds.push(feed);
+    await feed.tick();
+    fs.writeFileSync(file, `${reasoning("recovered late")}\n`);
+    await feed.tick(); await feed.tick();
+    expect(say).not.toHaveBeenCalled();
+    expect(records(out)).toMatchObject([{ text: "recovered late", said_at: null }]);
+  });
+
   it("forwards one line per role per tick, records it, never replays, and survives say failures", async () => {
     const dir = tmp(), pilot = path.join(dir, "pilot.jsonl"), strategist = path.join(dir, "strategist.jsonl"), out = path.join(dir, "thoughts.jsonl");
     fs.writeFileSync(pilot, `${reasoning("history before start")}\n`);

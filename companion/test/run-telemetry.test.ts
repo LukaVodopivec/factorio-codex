@@ -1,6 +1,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fork } from "node:child_process";
+import { once } from "node:events";
+import { performance } from "node:perf_hooks";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Bridge, ModError } from "../src/bridge.js";
 import { registerMcpTools } from "../src/mcp/server.js";
@@ -9,7 +12,7 @@ import * as config from "../src/config.js";
 import { PROTOCOL_VERSION } from "../src/protocol/contract.js";
 import { initialProfiles } from "../src/runs/profiles.js";
 import { attestationIssues, bodySummary, checkpointDelay, compareRuns, createAttestor, createRunStore, createToolOutcomeLog, markRunAssisted, readManifest, resourceVerdict,
-  parseRunSnapshot, recordRun, rolloutResolver, runEvents, sampleSchema, snapshotDelta, TOOL_OUTCOMES_MAX_BYTES, toolOutcome,
+  parseRunSnapshot, recordRun, continueRun, lockRecording, readSamples, rolloutResolver, runEvents, sampleSchema, snapshotDelta, TOOL_OUTCOMES_MAX_BYTES, toolOutcome,
   type RunAttestation, type RunManifest, type RunSample, type RunSnapshot } from "../src/runs/telemetry.js";
 
 const roots: string[] = [];
@@ -42,6 +45,159 @@ function storedRun(store: string, meta: RunManifest, sample: RunSample) {
   fs.appendFileSync(files.samples, `${JSON.stringify(sample)}\n`);
   fs.writeFileSync(files.manifest, `${JSON.stringify(meta)}\n`, { mode: 0o600 });
 }
+
+function debugStore() {
+  const dir = root(), store = path.join(dir, "runs"), ledger = path.join(dir, "operations.json");
+  const meta: RunManifest = { ...manifest("continued", "test"), kind: "debug", status: "recording", ended_at: null, end_tick: null,
+    app_version: config.companionVersion(), mod_version: config.companionVersion() };
+  const priority = { objective: "test", strategic_reason: "test", completion_condition: "test", essential_prerequisite: null };
+  const writeLedger = (run = meta.run) => fs.writeFileSync(ledger, JSON.stringify({ schema_version: 2, run, revision: 0,
+    source_tick: null, phase: "test", bottleneck: "test", latest_measured_capacity: [], assumptions: [], build_packages: [],
+    task_list: { NOW: priority, NEXT: priority, LATER: priority } }));
+  writeLedger();
+  vi.spyOn(config, "loadConfig").mockReturnValue({ factorioUserDir: dir, rcon: { host: "127.0.0.1", port: 19015, password: "test" } });
+  return { dir, store, ledger, meta, writeLedger };
+}
+
+describe("debug recorder continuation", () => {
+  it("continues after SIGKILL with the original baseline, missing slots, thought history and normal closure", async () => {
+    const { dir, store, ledger, meta } = debugStore(), rollout = path.join(dir, "pilot.jsonl");
+    fs.writeFileSync(rollout, "");
+    const child = fork(new URL("./fixtures/recorder-loss.ts", import.meta.url), [ledger, store, rollout, String(Date.parse(meta.started_at))],
+      { execArgv: ["--import", "tsx"], stdio: ["ignore", "ignore", "pipe", "ipc"] });
+    let errors = "";
+    child.stderr?.on("data", chunk => { errors += String(chunk); });
+    try {
+      const received = await Promise.race([once(child, "message"), once(child, "exit").then(() => { throw new Error(errors); })]);
+      expect(received[0]).toEqual({ checkpoint: true });
+      const exited = once(child, "exit"); child.kill("SIGKILL"); await exited;
+      const original = readManifest(store, meta.run.id);
+      expect(original.status).toBe("recording");
+      const files = path.join(store, `run-${meta.run.id}`), oldSamples = fs.readFileSync(path.join(files, "samples.jsonl"), "utf8");
+      const oldThoughts = fs.readFileSync(path.join(files, "thoughts.jsonl"), "utf8");
+      expect(readSamples(store, meta.run.id).map(row => row.kind)).toEqual(["baseline", "checkpoint"]);
+      fs.appendFileSync(rollout, `${JSON.stringify({ timestamp: "2026-09-04T08:11:00Z", type: "response_item",
+        payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "during gap" }] } })}\n`);
+      // A lost append's incomplete bytes remain available in a repair artifact.
+      fs.appendFileSync(path.join(files, "samples.jsonl"), '{"status":');
+      vi.useFakeTimers(); vi.setSystemTime(new Date("2026-09-04T08:17:00Z"));
+      vi.spyOn(performance, "now").mockImplementation(() => Date.now() - Date.parse(meta.started_at));
+      vi.spyOn(RconClient.prototype, "connect").mockResolvedValue();
+      vi.spyOn(RconClient.prototype, "close").mockImplementation(() => {});
+      const call = vi.spyOn(Bridge.prototype, "call").mockImplementation(async method => {
+        if (method === "ping") return { protocol_version: PROTOCOL_VERSION, mod_version: config.companionVersion(), factorio_version: "2.0.77", companion_exists: true };
+        if (method === "run_snapshot") return snapshot(80_000, 700);
+        return {};
+      });
+      let resumed!: () => void;
+      const ready = new Promise<void>(resolve => { resumed = resolve; });
+      const log = vi.spyOn(console, "log").mockImplementation(message => { if (String(message).startsWith("CONTINUE ")) resumed(); });
+      const recording = continueRun({ ledger, root: store, runId: meta.run.id, pilotRollout: rollout });
+      await ready;
+      await expect(continueRun({ ledger, root: store, runId: meta.run.id })).rejects.toThrow("already active");
+      await vi.advanceTimersByTimeAsync(180_000); // next real checkpoint is +20m, never +10m or +15m
+      process.emit("SIGTERM"); await recording;
+      const samples = readSamples(store, meta.run.id), checkpoints = samples.filter(row => row.kind === "checkpoint");
+      expect(checkpoints.map(row => row.scheduled_elapsed_ms)).toEqual([300_000, 1_200_000]);
+      expect(samples.at(-1)?.actual_elapsed_ms).toBeCloseTo(1_200_000, -2);
+      expect(samples.at(-1)).toMatchObject({ tick_delta: 79_900, delta: { items: [{ name: "iron-ore", produced: 695, consumed: 0 }] } });
+      expect(fs.readFileSync(path.join(files, "samples.jsonl"), "utf8").startsWith(oldSamples)).toBe(true);
+      expect(fs.readFileSync(path.join(files, "thoughts.jsonl"), "utf8").startsWith(oldThoughts)).toBe(true);
+      const thoughts = fs.readFileSync(path.join(files, "thoughts.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
+      expect(thoughts.map(row => row.text)).toEqual(["persisted before loss", "during gap"]);
+      expect(thoughts[1].said_at).toBeNull();
+      expect(call.mock.calls.some(([method]) => method === "say")).toBe(false);
+      expect(call.mock.calls.some(([method, args]) => method === "run_snapshot" && args?.window)).toBe(false);
+      expect(log.mock.calls.some(([message]) => String(message).startsWith("GO "))).toBe(false);
+      const event = fs.readFileSync(path.join(files, "events.jsonl"), "utf8").trim().split("\n")
+        .map(line => JSON.parse(line)).find(row => row.type === "recorder_continued");
+      expect(event).toMatchObject({ type: "recorder_continued", last_observation: { tick: 30_100 }, resumed_elapsed_ms: 1_020_000,
+        missing_checkpoints: { first_elapsed_ms: 600_000, last_elapsed_ms: 900_000 } });
+      expect(fs.readFileSync(path.join(files, event.repairs[0].preserved_tail), "utf8")).toBe('{"status":');
+      expect(readManifest(store, meta.run.id)).toMatchObject({ status: "finished", started_at: original.started_at,
+        start_tick: 100, end_tick: 80_000, ended_at: "2026-09-04T08:20:00.000Z", telemetry: { role_coverage: { mode: "partial" } } });
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) { const exited = once(child, "exit"); child.kill("SIGKILL"); await exited; }
+    }
+  });
+
+  it.each(["finished", "interrupted", "end-time", "benchmark", "identity", "wrong-id", "corrupt", "invalid-tail", "missing-baseline", "new-record"])("rejects %s without changing stored evidence or calling RCON", async reason => {
+    const { store, ledger, meta, writeLedger } = debugStore();
+    vi.useFakeTimers(); vi.setSystemTime(new Date("2026-09-04T08:17:00Z"));
+    const files = createRunStore(store, { ...meta, ...(reason === "finished" || reason === "interrupted" ? { status: reason } : {}),
+      ...(reason === "end-time" ? { ended_at: "2026-09-04T08:15:00Z" } : {}),
+      ...(reason === "benchmark" ? { kind: "benchmark" as const } : {}) });
+    const baseline = { ...checkpoint(snapshot(100, 5), snapshot(100, 5), 0), kind: "baseline", actual_elapsed_ms: 0 };
+    fs.writeFileSync(files.samples, `${JSON.stringify(baseline)}\n`);
+    if (reason === "identity") writeLedger({ ...meta.run, save_identity: "other-save" });
+    if (reason === "corrupt") fs.appendFileSync(files.events, "broken\n");
+    if (reason === "invalid-tail") fs.appendFileSync(files.events, '{}');
+    if (reason === "missing-baseline") fs.writeFileSync(files.samples, "");
+    const before = fs.readdirSync(files.dir).map(name => [name, fs.readFileSync(path.join(files.dir, name), "utf8")]);
+    const connect = vi.spyOn(RconClient.prototype, "connect");
+    await expect(reason === "new-record" ? recordRun({ ledger, root: store, kind: "debug", variant: "test", change: "test" })
+      : continueRun({ ledger, root: store, runId: reason === "wrong-id" ? "wrong" : meta.run.id })).rejects.toThrow();
+    expect(connect).not.toHaveBeenCalled();
+    expect(fs.readdirSync(files.dir).map(name => [name, fs.readFileSync(path.join(files.dir, name), "utf8")])).toEqual(before);
+  });
+
+  it.each(["versions", "rollback", "window"])("rejects a changed live %s before append or game effects", async reason => {
+    const { store, ledger, meta } = debugStore();
+    vi.useFakeTimers(); vi.setSystemTime(new Date("2026-09-04T08:17:00Z"));
+    const files = createRunStore(store, meta), base = snapshot(100, 5);
+    base.body_time = { since_tick: 1, window_tick: 100, state: "idle", state_since: 1, ticks: {}, gaps: {} };
+    fs.writeFileSync(files.samples, `${JSON.stringify({ ...checkpoint(base, base, 0), kind: "baseline", actual_elapsed_ms: 0 })}\n`);
+    const before = fs.readdirSync(files.dir).map(name => fs.readFileSync(path.join(files.dir, name), "utf8"));
+    vi.spyOn(RconClient.prototype, "connect").mockResolvedValue();
+    vi.spyOn(RconClient.prototype, "close").mockImplementation(() => {});
+    const call = vi.spyOn(Bridge.prototype, "call").mockImplementation(async method => {
+      if (method === "ping") return { protocol_version: PROTOCOL_VERSION, mod_version: config.companionVersion(),
+        factorio_version: reason === "versions" ? "2.0.99" : "2.0.77", companion_exists: true };
+      if (method === "run_snapshot") return { ...base, tick: reason === "rollback" ? 99 : 200,
+        body_time: { ...base.body_time!, window_tick: reason === "window" ? 199 : 100 } };
+      throw new Error("unexpected effect");
+    });
+    await expect(continueRun({ ledger, root: store, runId: meta.run.id })).rejects.toThrow();
+    expect(call.mock.calls.every(([method, args]) => method === "ping" || (method === "run_snapshot" && !args))).toBe(true);
+    expect(fs.readdirSync(files.dir).map(name => fs.readFileSync(path.join(files.dir, name), "utf8"))).toEqual(before);
+  });
+
+  it("holds one kernel lock per run, including another invocation in the same process", () => {
+    const dir = root(), release = lockRecording(dir, "one");
+    try { expect(() => lockRecording(dir, "one")).toThrow("already active"); } finally { release(); }
+    lockRecording(dir, "one")();
+  });
+
+  it.each(["baseline", "checkpoint", "boundary"])("retains a transient assistance deviation in the %s observation after loss", async where => {
+    const { store, ledger, meta } = debugStore();
+    vi.useFakeTimers(); vi.setSystemTime(new Date("2026-09-04T08:17:00Z"));
+    const files = createRunStore(store, meta), base = snapshot(100, 5);
+    base.attestation = { game_speed: 1, cheat_mode: false, mods: { base: "2.0.77", "agentic-companion": config.companionVersion() }, bonuses: [] };
+    const clean = { ...base.attestation };
+    base.attestation.cheat_mode = where === "baseline";
+    fs.writeFileSync(files.samples, `${JSON.stringify({ ...checkpoint(base, base, 0), kind: "baseline", actual_elapsed_ms: 0 })}\n`);
+    if (where === "checkpoint") fs.appendFileSync(files.samples,
+      `${JSON.stringify(checkpoint({ ...base, tick: 150, attestation: { ...clean, cheat_mode: true } }, base))}\n`);
+    vi.spyOn(RconClient.prototype, "connect").mockResolvedValue();
+    vi.spyOn(RconClient.prototype, "close").mockImplementation(() => {});
+    let snapshots = 0;
+    vi.spyOn(Bridge.prototype, "call").mockImplementation(async method => {
+      if (method === "ping") return { protocol_version: PROTOCOL_VERSION, mod_version: config.companionVersion(), factorio_version: "2.0.77", companion_exists: true };
+      if (method === "run_snapshot") return { ...base, tick: 200 + snapshots++, attestation: { ...clean, cheat_mode: where === "boundary" && snapshots === 1 } };
+      return {};
+    });
+    let resumed!: () => void;
+    const ready = new Promise<void>(resolve => { resumed = resolve; });
+    vi.spyOn(console, "log").mockImplementation(message => { if (String(message).startsWith("CONTINUE ")) resumed(); });
+    const recording = continueRun({ ledger, root: store, runId: meta.run.id });
+    await ready;
+    process.emit("SIGINT"); await recording;
+    expect(readManifest(store, meta.run.id).assisted).toBe(true);
+    const events = fs.readFileSync(files.events, "utf8").trim().split("\n").map(line => JSON.parse(line));
+    expect(events.filter(row => row.type === "supervisor_intervention")).toEqual([
+      expect.objectContaining({ reason: "attestation: the Codex player's cheat_mode is true" })]);
+  });
+});
 
 describe("five-minute run telemetry", () => {
   it.each([1, 2])("settles thought evidence before closing RCON and displays only the ledger writer (%s roles)", async (count) => {

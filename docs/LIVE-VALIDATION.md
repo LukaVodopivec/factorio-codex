@@ -1284,6 +1284,53 @@ historical unless the owner starts a benchmark.
 
 ### Explicit stop
 
+### Recorder loss and debug continuation
+
+SIGINT and SIGTERM ask `runs record` or `runs continue` to settle its thought
+feed, capture a final sample and close the manifest. Wait for `FINISH`.
+Uncatchable process loss cannot do that; an open manifest and absent receipt
+do not identify the disappearance cause. Preserve the existing evidence and
+reconcile the actual recorder/role/game state before acting. Recorder loss
+does not itself stop either role or the physical FIFO.
+
+To resume observation of the same unfinished debug run, use
+`factorio-codex runs continue <run-id> --ledger <run-dir>/operations.json`,
+with the original rollout flags or the run's current `rollouts.json` pointer.
+The ledger's complete run identity must match the manifest, which must remain
+`recording` with null end fields and an intact original baseline. Use the same
+companion, mod and Factorio versions and live factory; do not reset the mod's
+body-time window. Linux util-linux `flock` is required. A live recorder holds
+the run lock until its fd closes, including on SIGKILL. Concurrent recorders,
+terminal recordings, mismatched ledgers and benchmark continuation are rejected.
+
+The receipt is `CONTINUE`, not a new gameplay `GO`. Check the persisted
+`recorder_continued` event and current `continuation` sample: the event names
+the prior record and last successful observation, the elapsed resumption
+boundary, the observation gap and missing checkpoint slots. Expect no samples
+backfilled at old checkpoint times. Original samples, baseline counters and
+start time stay intact; subsequent deltas and checkpoints retain that origin.
+Crash-truncated unterminated JSON tails are preserved verbatim in sibling
+`.truncated-*` artifacts and listed in the event. Complete corrupt records or
+schema-invalid records are rejected without repair. Do not remove or reinterpret
+earlier valid evidence to make continuation succeed.
+
+Available current rollout history is recovered as archive only, with persisted
+occurrences deduplicated and existing `said_at` values retained. Recovered lines
+have null acknowledgements and are never replayed. The event reports source
+availability; retired/unavailable sources and unusable timestamps may leave
+missing history, and a lost acknowledgement remains unknown. Final role timing
+coverage is explicitly partial from continuation onward; earlier timing, if
+present, remains in continuation events. Verify a new live thought separately.
+
+`runs interrupt <run-id> --reason <text>` closes an abandoned recording after
+supervisor reconciliation and makes continuation ineligible. It does not stop
+the FIFO or role sessions. For a mod upgrade or new recording, follow the
+explicit-stop and upgrade/new-run procedure below, use a new run identity and
+baseline, and redo pre-GO checks. Never use continuation to renew a benchmark
+deadline or obtain a scored verdict across an observation gap. Source/offline
+verification of continuation is separate from installed-companion and live-game
+validation, which require their own observed receipts.
+
 For an explicit stop by the owner, record each step: call factorio `stop`
 (cancels the active task and every queued plan within seconds); in each role
 session run `/goal pause` and read back the paused state; interrupt any active
@@ -2188,3 +2235,34 @@ advisories in five packages (two high, three moderate); these were captured
 in a separate production-dependency follow-up, while development-only advisories
 have their own follow-up. The audit is not claimed clean. Source publication and any
 subsequent existing-save deployment remain separate from this isolated proof.
+
+### Unfinished debug recorder continuation — offline evidence
+
+The recorder/thought regressions passed 80 cases on Node 22. They include a
+real child recorder killed with SIGKILL after its first checkpoint, using
+mocked RCON and fake time, followed by continuation across missing checkpoints
+and normal SIGTERM finalization. Filesystem evidence and kernel lock ownership
+are real. The tests check original baseline/elapsed/delta continuity, preserved
+valid prefixes and truncated-tail bytes, missing-slot receipts, recovered
+thought deduplication without replay, acknowledgement preservation, partial
+role timing coverage, invalid/terminal/benchmark rejection, and live
+version/window/rollback rejection before append or game effects.
+
+Independent read-only review covered correctness, security/data integrity,
+compatibility/wiring, tests, and scope/simplicity. Review found that the new
+boundary snapshot initially bypassed assistance attestation, and that an
+observation persisted immediately before recorder loss could also lack its
+assistance mark. Continuation now passes all successful archived observations
+and the fresh boundary through the existing attestor. Regressions isolate
+baseline-, checkpoint-, and boundary-only deviations with a clean final
+observation. Review also separated the rollback test's tick and body-window
+triggers so either missing guard fails its own case. Focused re-review found
+no remaining issues in those fixes.
+
+Full offline verification uses an isolated candidate clone with matching
+dependencies because the canonical checkout's dependency descriptors belong
+to an earlier revision. The repository-owned full profile supplies the same
+ten checks; its results and exact candidate are recorded in the completion
+receipt. This source work does not establish the cause of the earlier recorder
+disappearance, install a companion, change a live factory, or provide live-game
+validation. Those effects and their observed receipts remain separate.

@@ -252,7 +252,7 @@ protocol and version before returning; `server stop` saves over RCON before
 shutting down.
 
 The CLI supports `setup`, `doctor [--json]`, `mcp [--surface full|read-only]`,
-`ledger-apply`, `server`, and `runs` (record, mark-assisted, compare).
+`ledger-apply`, `server`, and `runs` (record, continue, interrupt, mark-assisted, compare).
 
 ## Roles
 
@@ -531,6 +531,11 @@ every five minutes of wall time, and runs the thought feed. Stop it with
 Ctrl-C at the run boundary; that captures one final sample and closes the
 manifest.
 
+SIGINT (Ctrl-C) and SIGTERM request orderly finalization: wait for the `FINISH`
+receipt before treating the manifest as closed. SIGKILL, a machine crash, or
+other uncatchable process loss cannot finalize it. A missing `FINISH` alone
+does not establish why a recorder disappeared.
+
 ```sh
 factorio-codex runs record --ledger <run-dir>/operations.json \
   --variant guidance-v3 --change "the mod does the chores" --kind debug \
@@ -538,6 +543,50 @@ factorio-codex runs record --ledger <run-dir>/operations.json \
 factorio-codex runs mark-assisted <run-id> --reason "supervisor teleport recovery"
 factorio-codex runs compare <baseline-run-id> <candidate-run-id>
 ```
+
+After recorder loss, an unfinished **debug** recording can continue in the
+same foreground recorder:
+
+```sh
+factorio-codex runs continue <run-id> --ledger <run-dir>/operations.json \
+  --pilot-rollout <pilot rollout.jsonl> --strategist-rollout <strategist rollout.jsonl>
+```
+
+The ledger must identify the original run exactly, the manifest must still
+say `recording` with no end time, and the companion, mod and Factorio versions
+must match the recorded versions. Keep the same live factory and original
+body-time window; a save rollback or a changed window is rejected when the
+snapshot can establish it. This command requires Linux `flock` (util-linux).
+It prevents simultaneous recorder writers, including after an uncatchable
+loss, without a recorder service. Ordinary `runs record` still refuses an
+existing store. Finished, explicitly interrupted, and benchmark runs cannot
+continue; a recording gap never becomes scored benchmark evidence.
+
+Continuation prints `CONTINUE`, never another `GO`, retains the original
+baseline and elapsed-time origin, and appends a current `continuation` sample.
+An event identifies the last record, last successful observation, resumption
+boundary, and missed five-minute checkpoint slots. Those slots remain missing;
+the next checkpoint uses the original schedule. Existing valid evidence stays
+intact. An invalid unterminated trailing JSON record is preserved verbatim in
+a sibling `.truncated-*` file before its incomplete tail is removed. Complete
+corrupt records and invalid schemas fail without changing stored evidence.
+
+The thought feed archives available current rollout history since the original
+start, subtracting already persisted occurrences, without replaying it into
+the game. Recovered thoughts have `said_at: null`; existing acknowledgements
+remain intact. Retired, unavailable or untimestamped rollout evidence may be
+missing, and a reply lost before archival cannot prove game acceptance. The
+continuation event records current source availability and these coverage
+limits. Final role timing summaries explicitly cover only lines observed live
+after continuation, with earlier summaries retained in continuation events if
+present. They are not whole-run timing totals.
+
+`runs interrupt <run-id> --reason <text>` instead closes an abandoned recording
+after supervisor reconciliation; it does not resume observation or stop the
+game. A mod upgrade or a new recording follows the supervised stop/upgrade and
+new-run procedure in [live validation](docs/LIVE-VALIDATION.md), with a new run
+identity and baseline. Continuation neither releases role goals nor authorizes
+gameplay, and must not substitute for that procedure.
 
 Records live under `~/.local/share/factorio-codex/runs/`. Samples count lines,
 running, self-sustaining and hand-fed lines from the mod. Debug and assisted

@@ -1,6 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
+import { spawnSync } from "node:child_process";
+import { isDeepStrictEqual } from "node:util";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { Bridge } from "../bridge.js";
 import { assertConnectionCompatibility, assertRuntimeCompatibility } from "../compatibility.js";
@@ -170,7 +173,8 @@ const runEventsSchema = z.object({
 /** The run summary's telemetry: each role's time split from its rollout, the
  *  body's time by state between the baseline and final samples, and the
  *  final sample's milestones, holds and handler faults (runEvents). */
-const runTelemetrySchema = z.object({ roles: z.record(z.string(), timeSplitSchema), body: bodySummarySchema.nullable() })
+const runTelemetrySchema = z.object({ roles: z.record(z.string(), timeSplitSchema), body: bodySummarySchema.nullable(),
+  role_coverage: z.object({ mode: z.literal("partial"), since: z.string(), reason: z.string() }).strict().optional() })
   .extend(runEventsSchema.shape).strict();
 /** Directed work: upkeep is the mod's chore (its own row in states), never
  *  busy, and so is traveling (a travel step waiting for its ride or carried). */
@@ -254,7 +258,7 @@ export type RunManifest = z.infer<typeof manifestSchema>;
 
 const deltaRows = z.array(z.object({ name: z.string(), produced: z.number(), consumed: z.number() }).strict());
 export const sampleSchema = z.discriminatedUnion("status", [
-  z.object({ status: z.literal("ok"), kind: z.enum(["baseline", "checkpoint", "final"]),
+  z.object({ status: z.literal("ok"), kind: z.enum(["baseline", "checkpoint", "continuation", "final"]),
     scheduled_elapsed_ms: z.number().nonnegative(), actual_elapsed_ms: z.number().nonnegative(),
     capture_started_at: z.string(), capture_completed_at: z.string(), capture_latency_ms: z.number().nonnegative(),
     tick: z.number().int().nonnegative(), tick_delta: z.number().int(), snapshot: runSnapshotSchema,
@@ -454,13 +458,99 @@ export function rolloutResolver(pointer: string, role: ThoughtRole, flag: string
 
 export interface RecordRunOptions { ledger: string; variant: string; change: string; kind: "debug" | "benchmark"; root?: string;
   pilotRollout?: string; strategistRollout?: string; durationSeconds?: number; incumbentSummary?: string }
+
+/** flock locks the inherited open file description; our fd keeps it locked
+ * after the utility exits, and the kernel releases it even after SIGKILL.
+ * Keep the inode: unlinking a lock could admit a second writer. */
+export function lockRecording(root: string, id: string): () => void {
+  fs.mkdirSync(root, { recursive: true });
+  const fd = fs.openSync(path.join(root, `.recording-${encodeURIComponent(id)}.lock`), "a", 0o600);
+  const result = spawnSync("flock", ["--exclusive", "--nonblock", "3"], { stdio: ["ignore", "pipe", "pipe", fd] });
+  if (result.status !== 0) {
+    fs.closeSync(fd);
+    throw new Error(result.error ? `recorder requires flock: ${result.error.message}` : "run recorder is already active (or flock failed)");
+  }
+  return () => fs.closeSync(fd);
+}
+
+/** Inspect every complete row before making any repair. Only an invalid,
+ * unterminated final row is recoverable; keep its exact bytes separately. */
+function inspectRecords<T>(file: string, parse: (value: unknown) => T, optional = false) {
+  let bytes: Buffer;
+  try { bytes = fs.readFileSync(file); }
+  catch (error) { if (optional && (error as NodeJS.ErrnoException).code === "ENOENT") bytes = Buffer.alloc(0); else throw error; }
+  const end = bytes.lastIndexOf(10) + 1;
+  const rows: T[] = [];
+  const complete = bytes.subarray(0, end).toString("utf8").split("\n");
+  complete.pop(); // the terminal newline, including an empty file
+  for (const [index, line] of complete.entries()) {
+    try { rows.push(parse(JSON.parse(line))); }
+    catch { throw new Error(`corrupt ${path.basename(file)} record ${index + 1}`); }
+  }
+  let truncated = false;
+  if (end < bytes.length) {
+    let value: unknown;
+    try { value = JSON.parse(bytes.subarray(end).toString("utf8")); }
+    catch { truncated = true; }
+    if (!truncated) {
+      try { rows.push(parse(value)); }
+      catch { throw new Error(`corrupt ${path.basename(file)} final record`); }
+    }
+  }
+  return { rows, repair: () => {
+    if (truncated) {
+      const backup = `${file}.truncated-${randomUUID()}`;
+      fs.writeFileSync(backup, bytes.subarray(end), { flag: "wx", mode: 0o600 });
+      fs.truncateSync(file, end);
+      return { file: path.basename(file), preserved_tail: path.basename(backup), bytes: bytes.length - end };
+    }
+    if (end < bytes.length) fs.appendFileSync(file, "\n");
+    return null;
+  } };
+}
+
+function inspectContinuation(root: string, ledger: z.infer<typeof operationsLedgerSchema>, id: string) {
+  if (id !== ledger.run.id) throw new Error("continuation run id does not match ledger");
+  const files = runPaths(root, id), manifest = readManifest(root, id);
+  if (manifest.kind !== "debug") throw new Error("benchmark continuation is unsupported");
+  if (manifest.status !== "recording" || manifest.ended_at !== null || manifest.end_tick !== null)
+    throw new Error("only an unfinished recording can continue");
+  if (!isDeepStrictEqual(manifest.run, ledger.run)) throw new Error("continuation ledger identity does not match recorded run");
+  const samples = inspectRecords(files.samples, value => sampleSchema.parse(value));
+  const events = inspectRecords(files.events, value => z.object({ type: z.string() }).passthrough().parse(value));
+  const thoughts = inspectRecords(files.thoughts, value => z.object({ ts: z.string(), role: z.enum(["pilot", "strategist", "mining", "logistics"]),
+    kind: z.enum(["reasoning", "message"]), text: z.string(), said_at: z.string().nullable() }).strict().parse(value), true);
+  const baseline = samples.rows[0];
+  if (!baseline || baseline.status !== "ok" || baseline.kind !== "baseline" || baseline.tick !== manifest.start_tick
+    || baseline.snapshot.tick !== manifest.start_tick || baseline.actual_elapsed_ms !== 0 || baseline.scheduled_elapsed_ms !== 0
+    || samples.rows.slice(1).some(row => row.kind !== "checkpoint" && row.kind !== "continuation"))
+    throw new Error("continuation requires one original baseline and no final sample");
+  const origin = Date.parse(manifest.started_at), last = samples.rows.at(-1)!;
+  if (!Number.isFinite(origin) || Date.now() < origin + last.actual_elapsed_ms) throw new Error("continuation clock precedes recorded evidence");
+  return { files, manifest, baseline: baseline.snapshot, samples: samples.rows, last,
+    thoughts: thoughts.rows, repair: () => [samples.repair(), events.repair(), thoughts.repair()].filter(row => row !== null) };
+}
+
+export async function continueRun(options: Omit<RecordRunOptions, "variant" | "change" | "kind"> & { runId: string }): Promise<void> {
+  return runRecorder({ ...options, variant: "", change: "", kind: "debug" }, options.runId);
+}
 export function checkpointDelay(checkpoint: number, elapsedMs: number): number {
   return Math.max(0, checkpoint * 300_000 - elapsedMs);
 }
 export async function recordRun(options: RecordRunOptions): Promise<void> {
+  return runRecorder(options);
+}
+async function runRecorder(options: RecordRunOptions, continueRunId?: string): Promise<void> {
+  const ledger = operationsLedgerSchema.parse(JSON.parse(fs.readFileSync(options.ledger, "utf8")));
+  const release = lockRecording(runRoot(options.root), ledger.run.id);
+  try { await recordLocked(options, ledger, continueRunId); } finally { release(); }
+}
+async function recordLocked(options: RecordRunOptions, ledger: z.infer<typeof operationsLedgerSchema>, continueRunId?: string): Promise<void> {
   const config = loadConfig();
   if (!config) throw new Error("configuration is missing or invalid; run `factorio-codex setup`");
-  const ledger = operationsLedgerSchema.parse(JSON.parse(fs.readFileSync(options.ledger, "utf8")));
+  const root = runRoot(options.root);
+  const continuation = continueRunId === undefined ? undefined : inspectContinuation(root, ledger, continueRunId);
+  if (!continuation && fs.existsSync(runPaths(root, ledger.run.id).dir)) throw new Error("run already has recording evidence");
   const profiles = roleProfiles(ledger.run.roles);
   const duration = options.durationSeconds ?? BENCHMARK_SECONDS;
   if (!Number.isInteger(duration) || duration < 1 || duration > BENCHMARK_SECONDS)
@@ -481,20 +571,58 @@ export async function recordRun(options: RecordRunOptions): Promise<void> {
     const ping = await bridge.call<any>("ping"); assertRuntimeCompatibility(ping, companionVersion());
     if (!ping.companion_exists) throw new Error("native player 'Codex' must have a living character before GO");
     // Refuse duplicate run stores before changing the game state.
-    const root = runRoot(options.root);
-    if (fs.existsSync(runPaths(root, ledger.run.id).manifest)) throw new Error("run already has recording evidence");
+    if (continuation && (ping.mod_version !== continuation.manifest.mod_version
+      || ping.factorio_version !== continuation.manifest.factorio_version || companionVersion() !== continuation.manifest.app_version))
+      throw new Error("continuation requires the recorded companion, mod and Factorio versions");
     if (control) await control.call("benchmark_control", { action: "prepare", run_id: ledger.run.id,
       duration_seconds: duration, label: `${options.variant}: ${profiles.map(p => `${p.id} ${p.model}/${p.reasoning}${p.fast ? "/Fast" : "/normal"}`).join("; ")}`,
       summary: options.incumbentSummary });
     // The baseline marks the body-time window: idle before GO is not a gap of this run.
-    const baseline = parseRunSnapshot(await bridge.call("run_snapshot", { window: true }));
-    const startedAt = new Date(), startedMono = performance.now();
-    let manifest: RunManifest = { schema_version: 1, run: ledger.run, variant: options.variant, change: options.change,
+    const baseline = continuation?.baseline ?? parseRunSnapshot(await bridge.call("run_snapshot", { window: true }));
+    const boundaryStarted = new Date(), boundaryMono = performance.now();
+    const boundary = continuation ? parseRunSnapshot(await bridge.call("run_snapshot")) : undefined;
+    if (boundary && continuation) {
+      const lastTick = Math.max(...continuation.samples.flatMap(row => row.status === "ok" ? [row.tick] : []));
+      if (boundary.tick < lastTick || (baseline.body_time && (!boundary.body_time
+        || boundary.body_time.since_tick !== baseline.body_time.since_tick || boundary.body_time.window_tick !== baseline.tick)))
+        throw new Error("continuation game state was rolled back or the body-time window changed");
+    }
+    const resumedAt = new Date();
+    const startedAt = continuation ? new Date(continuation.manifest.started_at) : resumedAt;
+    const elapsedAtResume = resumedAt.getTime() - startedAt.getTime(), startedMono = performance.now() - elapsedAtResume;
+    let manifest: RunManifest = continuation?.manifest ?? { schema_version: 1, run: ledger.run, variant: options.variant, change: options.change,
       kind: options.kind, status: "recording", assisted: false, app_version: companionVersion(),
       mod_version: ping.mod_version, factorio_version: ping.factorio_version, started_at: startedAt.toISOString(),
       start_tick: baseline.tick, ended_at: null, end_tick: null };
-    const files = createRunStore(root, manifest);
-    appendJson(files.samples, { status: "ok", kind: "baseline", scheduled_elapsed_ms: 0, actual_elapsed_ms: 0,
+    const files = continuation?.files ?? createRunStore(root, manifest);
+    const pointer = path.join(path.dirname(options.ledger), "rollouts.json");
+    const sources = profiles.map(p => ({ role: p.id as ThoughtRole,
+      file: rolloutResolver(pointer, p.id, p.id === "pilot" ? options.pilotRollout : p.id === "strategist" ? options.strategistRollout : undefined) }));
+    if (continuation) {
+      const repairs = continuation.repair();
+      const lastObservation = [...continuation.samples].reverse().find(row => row.status === "ok")!;
+      const lastSlot = Math.max(...continuation.samples.filter(row => row.kind !== "continuation").map(row => row.scheduled_elapsed_ms));
+      const firstMissing = lastSlot + 300_000, lastMissing = Math.floor(elapsedAtResume / 300_000) * 300_000;
+      appendJson(files.events, { type: "recorder_continued", at: resumedAt.toISOString(),
+        last_record: { status: continuation.last.status, scheduled_elapsed_ms: continuation.last.scheduled_elapsed_ms,
+          actual_elapsed_ms: continuation.last.actual_elapsed_ms, captured_at: continuation.last.capture_completed_at },
+        last_observation: { tick: lastObservation.status === "ok" ? lastObservation.tick : null,
+          captured_at: lastObservation.capture_completed_at, actual_elapsed_ms: lastObservation.actual_elapsed_ms },
+        resumed_elapsed_ms: elapsedAtResume, observation_gap: { from: lastObservation.capture_completed_at, to: resumedAt.toISOString() },
+        missing_checkpoints: firstMissing <= lastMissing ? { first_elapsed_ms: firstMissing, last_elapsed_ms: lastMissing,
+          interval_ms: 300_000 } : null, repairs,
+        thought_recovery: { coverage: "available_current_sources_only", sources: sources.map(source => {
+          const file = source.file();
+          let available = false;
+          try { if (file) { fs.accessSync(file, fs.constants.R_OK); available = fs.statSync(file).isFile(); } } catch { /* unavailable */ }
+          return { role: source.role, available };
+        }), limits: "Unavailable, retired or untimestamped sources may leave gaps; acknowledgement before loss may be unknown." },
+        previous_telemetry: manifest.telemetry ?? null });
+      appendJson(files.samples, { status: "ok", kind: "continuation", scheduled_elapsed_ms: elapsedAtResume,
+        actual_elapsed_ms: elapsedAtResume, capture_started_at: boundaryStarted.toISOString(), capture_completed_at: resumedAt.toISOString(),
+        capture_latency_ms: performance.now() - boundaryMono, tick: boundary!.tick, tick_delta: boundary!.tick - baseline.tick,
+        snapshot: boundary!, delta: snapshotDelta(boundary!, baseline) } satisfies RunSample);
+    } else appendJson(files.samples, { status: "ok", kind: "baseline", scheduled_elapsed_ms: 0, actual_elapsed_ms: 0,
       capture_started_at: startedAt.toISOString(), capture_completed_at: startedAt.toISOString(), capture_latency_ms: 0,
       tick: baseline.tick, tick_delta: 0, snapshot: baseline, delta: snapshotDelta(baseline, baseline) });
     const attestor = createAttestor(root, ledger.run.id);
@@ -503,7 +631,11 @@ export async function recordRun(options: RecordRunOptions): Promise<void> {
       if (issues.length) manifest.assisted = true;
       for (const issue of issues) console.log(`ASSISTED attestation: ${issue}`);
     };
-    attest(baseline);
+    // Loss can fall between an observation append and its assistance mark.
+    if (continuation) {
+      for (const sample of continuation.samples) if (sample.status === "ok") attest(sample.snapshot);
+      attest(boundary!);
+    } else attest(baseline);
     const stopped = new Promise<void>(resolve => { finishSignal = resolve; if (finishing) resolve(); });
     let freezeError: unknown;
     const freeze = () => {
@@ -534,13 +666,12 @@ export async function recordRun(options: RecordRunOptions): Promise<void> {
       await control.call("benchmark_control", { action: "begin", run_id: ledger.run.id });
       cutoffTimer = setTimeout(() => { void freeze(); }, Math.max(0, duration * 1000 - (performance.now() - startedMono)));
     }
-    if (!finishing) console.log(`GO ${manifest.started_at} tick=${manifest.start_tick} run=${manifest.run.id}`);
-    const pointer = path.join(path.dirname(options.ledger), "rollouts.json");
-    const sources = profiles.map(p => ({ role: p.id as ThoughtRole,
-      file: rolloutResolver(pointer, p.id, p.id === "pilot" ? options.pilotRollout : p.id === "strategist" ? options.strategistRollout : undefined) }));
+    if (!finishing) console.log(continuation ? `CONTINUE ${resumedAt.toISOString()} run=${manifest.run.id}`
+      : `GO ${manifest.started_at} tick=${manifest.start_tick} run=${manifest.run.id}`);
     // The game shows only the ledger writer's thinking (the strategist; the pilot in a solo trial).
     const splits = new Map(profiles.map(p => [p.id as ThoughtRole, createTimeSplit()]));
     feed = createThoughtFeed({ sources, out: files.thoughts, say: (role, text) => bridge.call("say", { role, text }),
+      recovery: continuation ? { startedAt: manifest.started_at, archived: continuation.thoughts } : undefined,
       onLine: (role, line) => splits.get(role)?.line(line),
       shown: role => profiles.some(p => p.id === role && p.ledger_writer),
       now: { read: () => {
@@ -560,7 +691,7 @@ export async function recordRun(options: RecordRunOptions): Promise<void> {
           error: error instanceof Error ? error.message : String(error) };
       }
     };
-    let nextCheckpoint = 1;
+    let nextCheckpoint = Math.floor(elapsedAtResume / 300_000) + 1;
     const schedule = () => {
       const deadline = nextCheckpoint * 300_000;
       if (control && deadline >= duration * 1000) return; // final sample is the frozen boundary
@@ -584,6 +715,8 @@ export async function recordRun(options: RecordRunOptions): Promise<void> {
     appendJson(files.samples, final);
     if (final.status === "ok") attest(final.snapshot);
     manifest.telemetry = { roles: Object.fromEntries([...splits].map(([role, split]) => [role, split.summary()])),
+      ...(continuation ? { role_coverage: { mode: "partial" as const, since: resumedAt.toISOString(),
+        reason: "Only rollout lines observed after this continuation; prior timing was not reconstructed. Prior telemetry, if any, is retained in the continuation receipt." } } : {}),
       body: final.status === "ok" ? bodySummary(baseline, final.snapshot) : null,
       ...(final.status === "ok" ? runEvents(baseline, final.snapshot) : {}) };
     // Preserve the ordinary 20-minute comparison checkpoint using frozen state.

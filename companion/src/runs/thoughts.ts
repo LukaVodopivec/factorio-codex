@@ -170,6 +170,7 @@ export function splitThought(text: string, max = THOUGHT_LINE_MAX): string[] {
 /** Follows a growing file from its end at construction (or from its start
  *  with fromStart); restarts at 0 after truncation or replacement. */
 export class RolloutTail {
+  available = false;
   private offset = 0;
   private ino: number | undefined;
   constructor(private readonly file: string, options: { fromStart?: boolean } = {}) {
@@ -185,6 +186,7 @@ export class RolloutTail {
     try {
       fd = fs.openSync(this.file, "r");
       const st = fs.fstatSync(fd);
+      this.available = true;
       if (st.ino !== this.ino || st.size < this.offset) { this.ino = st.ino; this.offset = 0; }
       if (st.size === this.offset) return [];
       const chunk = Buffer.alloc(st.size - this.offset);
@@ -194,6 +196,7 @@ export class RolloutTail {
       this.offset += end + 1;
       return chunk.subarray(0, end).toString("utf8").split("\n").filter((line) => line.trim());
     } catch {
+      this.available = false;
       return [];
     } finally {
       if (fd !== undefined) fs.closeSync(fd);
@@ -209,6 +212,9 @@ export interface ThoughtFeedOptions {
   /** Roles shown in the game (default all); the others are only saved. */
   shown?: (role: ThoughtRole) => boolean;
   out: string;
+  /** Continuation archives available history without showing it again. Timing
+   * coverage starts with subsequent live lines, never the recovered history. */
+  recovery?: { startedAt: string; archived: ThoughtRecord[] };
   /** The strategist's current NOW objective for the panel's top line, sent through say_now when it changes. */
   now?: { read: () => string | null; say: (text: string) => Promise<unknown> };
   intervalMs?: number;
@@ -225,13 +231,40 @@ export interface ThoughtFeed {
 export function createThoughtFeed(options: ThoughtFeedOptions): ThoughtFeed {
   const roles = options.sources.map(({ role, file }) => {
     const first = file();
-    return { role, file, path: first, tail: first ? new RolloutTail(first) : null, queue: [] as Thought[] };
+    return { role, file, path: first, tail: first ? new RolloutTail(first, { fromStart: !!options.recovery }) : null,
+      recovering: !!options.recovery, queue: [] as Thought[] };
   });
   const record = (thoughts: Thought[], saidAt: string | null = null) => {
     const rows = thoughts.map(thought => `${JSON.stringify({ ...thought, said_at: saidAt } satisfies ThoughtRecord)}\n`);
     try { if (rows.length) fs.appendFileSync(options.out, rows.join(""), { encoding: "utf8", mode: 0o600 }); }
-    catch { /* evidence unavailable: keep feeding the game */ }
+    catch (error) {
+      if (options.recovery) throw error; // a continuation must not silently lose recovered evidence
+      /* evidence unavailable: keep feeding the game */
+    }
   };
+  const key = ({ ts, role, kind, text }: Thought) => JSON.stringify([ts, role, kind, text]);
+  const archived = new Map<string, number>();
+  for (const thought of options.recovery?.archived ?? []) archived.set(key(thought), (archived.get(key(thought)) ?? 0) + 1);
+  const recover = (source: typeof roles[number]) => {
+    if (!source.recovering || !source.path || !fs.existsSync(source.path)) return;
+    const recovered: Thought[] = [];
+    const lines = source.tail?.read() ?? [];
+    if (!source.tail?.available) return;
+    for (const line of lines) {
+      // No usable rollout timestamp means historical run membership is unknown.
+      let timestamp: number;
+      try { timestamp = Date.parse(JSON.parse(line).timestamp); } catch { continue; }
+      if (!Number.isFinite(timestamp) || timestamp < Date.parse(options.recovery!.startedAt)) continue;
+      for (const item of extractThoughts(line)) for (const text of splitThought(item.text)) {
+        const thought = { ...item, role: source.role, text }, id = key(thought), remaining = archived.get(id) ?? 0;
+        if (remaining) archived.set(id, remaining - 1); else recovered.push(thought);
+      }
+    }
+    record(recovered);
+    source.recovering = false;
+  };
+  // Drain history at the resumption boundary; lines appended later are live.
+  for (const source of roles) recover(source);
   let stopped = false;
   let shownNow: string | null = null;
   const runTick = async () => {
@@ -250,6 +283,7 @@ export function createThoughtFeed(options: ThoughtFeedOptions): ThoughtFeed {
         source.path = resolved;
         source.tail = new RolloutTail(resolved, { fromStart: true });
       }
+      if (source.recovering) { recover(source); return; }
       for (const line of source.tail?.read() ?? []) {
         try { options.onLine?.(source.role, line); } catch { /* telemetry never stops the feed */ }
         for (const item of extractThoughts(line)) {

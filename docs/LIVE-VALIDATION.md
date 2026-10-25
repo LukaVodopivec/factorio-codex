@@ -1459,6 +1459,110 @@ diagnostic guidance, not live validation of the current release.
 These engineering records explain retained mod and instruction behaviour.
 None of them is gameplay or benchmark evidence.
 
+### Underground direction, automatic pairing and completion readback (2026-10-25)
+
+VK-4919 was investigated against source
+`c7539a47ebe7729ba7fac1d2b8b06ee747814906`, mod **0.38.1**, protocol **29**,
+using official Factorio **2.0.77, build 84539, linux64 headless**. The downloaded
+archive SHA-256 was
+`c4efc11529f74d37c96933e291e0db73fd9f5aa4738913d9301b24680b3e947f`.
+The live-state readback correction from
+`40032d1a4786ed5553f69ed7f6f24bc26164752e` is already present: ground layout
+completion reads the retained entity's actual direction, endpoint type and
+partner, including a paid placement that failed configuration verification.
+
+#### Native creation survey
+
+An isolated copy of the existing live-test harness created a real character
+and clear concrete ground. On clear ground, all eight combinations of native
+direction `0`, `4`, `8`, `12` and explicit `input`/`output` preserved both
+requested values and had no partner. In particular, a north-facing output
+really has direction `0`; direction `8` is not a universal output convention.
+
+A second survey held an earlier endpoint at `(162.5,29.5)` and created the new
+endpoint three tiles north at `(162.5,26.5)`. It exercised all sixteen
+combinations of earlier and new direction `0`/`8` and `input`/`output`:
+
+| Earlier endpoint | New request | New native state | Pairing |
+| --- | --- | --- | --- |
+| `0 input` | `0 output` | `0 output` | Paired with earlier input |
+| `0 input` | `8 input` | `0 output` | Paired with earlier input |
+| `8 output` | `8 input` | `8 input` | Paired with earlier output |
+| `8 output` | `0 output` | `8 input` | Paired with earlier output |
+| Remaining twelve combinations | Requested direction and type | Both preserved | No partner |
+
+The earlier endpoint retained its unit identity, direction and type in every
+case; successful pairing added its reciprocal neighbor. Thus these samples
+demonstrate automatic changes to the **new** endpoint, not a reversal of an
+earlier endpoint. They do not establish that earlier-endpoint reversal is
+impossible in other configurations. Existing final-readback protection remains.
+
+#### Physical placement and ground-layout receipts
+
+The physical comparison used the real `place`, `build_plan` and queued
+`build_layout` paths, one character at `(160,30)`, and the new endpoint position
+above, within build reach. Each single-placement case started with ten carried
+underground belts. The nearby-endpoint case also had an existing `8 output` at
+the earlier position. Every request explicitly asked for a `0 output`:
+
+| Path | Clear ground | Near existing `8 output` | Inventory after either attempt |
+| --- | --- | --- | --- |
+| `place` | `done`, actual `0 output`, no partner | `failed`, `UNDERGROUND_CONFIGURATION_MISMATCH`, actual `8 input` paired with earlier output | 9 |
+| `build_plan` | `done`, placed 1/1 | `failed`, `BUILD_PLAN_STEP_FAILED`, placed 1/1 with configuration mismatch | 9 |
+| `build_layout` through FIFO | `completed`, `LAYOUT_BUILT`, row `0 output` | `partial`, `LAYOUT_PARTIAL`, retained placed row `8 input`, partner `8 output`, configuration mismatch in failed row | 9 |
+
+Fresh inspection agreed with each completion's reported native state. The
+nearby output kept its unit identity, direction `8` and type `output`; its new
+partner remained valid and paid. No corrective rotation, refund or replacement
+was performed. The layout's queue transitions were tick 98 to 99 on clear
+ground and tick 108 to 109 beside the existing endpoint; each terminal read
+reported an empty FIFO. These receipts exercise ordinary elapsed game ticks,
+not offline substitutions for entity direction or type.
+
+A separate physical input placement at the earlier position completed as
+`0 input`, initially unpaired. A subsequent queued `0 output` layout completed
+as `LAYOUT_BUILT`; the earlier input kept its unit identity, direction and type
+and gained the output as its partner. Inventory went 10 to 9 to 8. A two-end
+layout also completed as `LAYOUT_BUILT`, consumed exactly two belts, and
+reported **both** reciprocal partners in its final placed rows, including the
+earlier input whose partner was absent when it was first built.
+
+The mismatching case changes endpoint type as well as direction: the requested
+north-facing output becomes a south-facing input. This is an unmet explicit
+configuration request, not merely a numeric direction discrepancy. Native
+evidence therefore supports retaining the existing mismatch classification
+and live readback; no production placement code change is justified.
+
+#### Fixture limits
+
+Both throwaway servers reused the harness's isolated config, copied mod,
+random local ports, cleanup, and real-character setup. No gameplay server,
+installed mod or client was upgraded or restarted. The raw creation survey
+does not prove physical reach or material accounting; the physical cases above
+supply that separate evidence. Test setup supplied inventory and cleared the
+fixture site; this is assisted engineering evidence, not gameplay progress.
+
+Disconnected headless servers do not process player chart requests. The
+existing harness already substitutes its documented body and chart adapters.
+For the physical comparison only, the **copied** `build_layout.lua` replaced
+its corner-chunk chart query with the native generated-chunk query. This
+admits the generated fixture ground while preserving placement geometry,
+collision checks, real inventory, reach, FIFO execution and native pairing.
+No chart substitution was made in repository source. Cases stayed within
+reach and needed no walking or fetching; they do not validate chart admission,
+remote logistics, human takeover, active deployment, or other endpoint geometries.
+
+Verification passed: the focused underground and layout Lua tests, typecheck,
+build, and `npm test` (20 unit-test files, 513 unit tests, mod tests and package
+verification). The unmodified `FACTORIO_LIVE_REQUIRED=1 npm run test:live`
+suite passed all 19 scenarios and its handler, script-error and timing checks:
+145 RPCs, 174 job ticks, slowest measured RPC/tick 4.48 ms, and worst
+600-tick average 0.266 ms/tick. Separate receipt assertions checked all 24
+native creation cases and eight physical comparisons above. A fresh independent
+read-only review compared the documentation, fixture adaptations, receipts and
+placement code and found no actionable discrepancies. This is source evidence;
+it does not assert validation of a deployed gameplay runtime.
+
 ### Occupied-belt placement agreement (2026-10-02)
 
 An isolated Factorio **2.0.77** headless reproduction establishes a manual

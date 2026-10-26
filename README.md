@@ -124,16 +124,25 @@ You can take the body over with mouse and keyboard at any time: real control
 input parks the bot's queue, which resumes about five seconds after your last
 input.
 
-### 5. Start Codex in the repository
+### 5. Start the supervisor in the repository
+
+For supervised runs, start the supervisor with an explicit MCP role:
 
 ```sh
-codex
+codex -c 'mcp_servers.factorio={command="./scripts/start-factorio-mcp",args=["--role","supervisor"],enabled=true,required=true,startup_timeout_sec=180,tool_timeout_sec=600}'
 ```
 
-Trust the project when Codex asks: the committed `.codex/config.toml` then
-starts the full-surface `factorio` MCP server (`scripts/start-factorio-mcp`,
-which installs locked dependencies on first use). Ask it to call
-`connect_status`; it should report `connected` with the Codex body.
+Trust the project when Codex asks. This override starts the full-surface
+`factorio` MCP server with `--role supervisor` before it connects, so both
+ordinary `stop` and `stop` with `keep_upkeep: true` carry `stop/supervisor`.
+`scripts/start-factorio-mcp` installs locked dependencies on first use. Ask
+for `connect_status`; it should report `connected` with the Codex body.
+
+The shared `.codex/config.toml` deliberately leaves the role unspecified for
+solo play and general connections. Plain `codex` uses that configuration and
+reports `unknown`; it is not the supervisor launch. To change an existing
+session's role, restart it with the command above before issuing supervisor
+calls. The pilot and planner use their own explicit launches in section 7.
 
 ### 6. Play with one bot
 

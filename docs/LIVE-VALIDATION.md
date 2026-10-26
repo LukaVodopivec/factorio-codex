@@ -992,9 +992,13 @@ Fast mode is `service_tier=fast` (read back as the `priority` tier) with
 `features.fast_mode` enabled;
 the strategist keeps the default (normal) tier. `--role` names the session in
 the `origin` of every cancel its MCP process makes. The supervisor starts its
-own factorio server with
+own factorio MCP server using the [README supervisor launch](../README.md#5-start-the-supervisor-in-the-repository):
 `-c 'mcp_servers.factorio={command="./scripts/start-factorio-mcp",args=["--role","supervisor"],enabled=true,required=true,startup_timeout_sec=180,tool_timeout_sec=600}'`
-before it rehearses `stop`; a server started without one reports `unknown`.
+before it rehearses `stop`. Restart an existing roleless session with that
+launch first: the shared configuration and solo launch intentionally leave the
+role unspecified and report `unknown`. Both ordinary `stop` and
+`stop` with `keep_upkeep: true` must report `stop/supervisor`; offline
+configuration tests do not verify attribution in an already-running session.
 
 Before relying on the feed, confirm on a throwaway session that both models
 emit reasoning summaries with that setting, and record the setting in the

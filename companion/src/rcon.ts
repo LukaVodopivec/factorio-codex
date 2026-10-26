@@ -69,6 +69,8 @@ export class RconClient extends EventEmitter {
   private nextId = 1;
   private pendingExec: PendingExec | null = null;
   private pendingAuth: PendingAuth | null = null;
+  private pendingConnect: ((error: Error) => void) | null = null;
+  private authTimer: NodeJS.Timeout | null = null;
   private chain: Promise<unknown> = Promise.resolve();
   private authed = false;
 
@@ -80,14 +82,20 @@ export class RconClient extends EventEmitter {
     return this.authed && this.socket !== null;
   }
 
+  /** Local end of the authenticated IPv4 loopback connection, for server ownership checks. */
+  get localPort(): number | undefined { return this.connected ? this.socket?.localPort : undefined; }
+
   async connect(): Promise<void> {
     if (this.connected) return;
     this.close();
 
     await new Promise<void>((resolve, reject) => {
       const socket = net.createConnection({ host: this.opts.host, port: this.opts.port });
+      this.socket = socket;
+      this.pendingConnect = reject;
       const onError = (err: Error) => {
-        socket.destroy();
+        this.pendingConnect = null;
+        this.close();
         reject(new RconError(`cannot connect to RCON at ${this.opts.host}:${this.opts.port}: ${err.message}`));
       };
       socket.once("error", onError);
@@ -95,7 +103,7 @@ export class RconClient extends EventEmitter {
         socket.off("error", onError);
         // Small commands go out at once instead of waiting on Nagle's algorithm.
         socket.setNoDelay(true);
-        this.socket = socket;
+        this.pendingConnect = null;
         socket.on("data", (data: Buffer) => this.onData(data));
         socket.on("error", (err) => this.teardown(new RconError(`RCON socket error: ${err.message}`)));
         socket.on("close", () => this.teardown(new RconError("RCON connection closed")));
@@ -107,7 +115,7 @@ export class RconClient extends EventEmitter {
       const id = this.allocId();
       this.pendingAuth = { id, resolve, reject };
       this.socket!.write(encodePacket(id, AUTH, this.opts.password));
-      setTimeout(() => {
+      this.authTimer = setTimeout(() => {
         if (this.pendingAuth?.id === id) {
           this.pendingAuth = null;
           this.close();
@@ -128,8 +136,21 @@ export class RconClient extends EventEmitter {
     const socket = this.socket;
     this.socket = null;
     this.authed = false;
+    this.recvBuf = Buffer.alloc(0);
     socket?.removeAllListeners();
     socket?.destroy();
+    const error = new RconError("RCON connection closed");
+    this.pendingConnect?.(error);
+    this.pendingConnect = null;
+    if (this.authTimer) clearTimeout(this.authTimer);
+    this.authTimer = null;
+    this.pendingAuth?.reject(error);
+    this.pendingAuth = null;
+    if (this.pendingExec) {
+      clearTimeout(this.pendingExec.timer);
+      this.pendingExec.reject(new RconReplyLostError(error.message));
+      this.pendingExec = null;
+    }
   }
 
   private execNow(command: string): Promise<string> {
@@ -182,6 +203,8 @@ export class RconClient extends EventEmitter {
       if (type !== AUTH_RESPONSE) return; // some servers send an empty RESPONSE_VALUE first
       const auth = this.pendingAuth;
       this.pendingAuth = null;
+      if (this.authTimer) clearTimeout(this.authTimer);
+      this.authTimer = null;
       if (id === -1) {
         auth.reject(new RconError("RCON auth failed — wrong password?"));
         this.close();
@@ -214,7 +237,6 @@ export class RconClient extends EventEmitter {
   }
 
   private teardown(err: Error): void {
-    this.close();
     if (this.pendingAuth) {
       this.pendingAuth.reject(err);
       this.pendingAuth = null;
@@ -225,6 +247,7 @@ export class RconClient extends EventEmitter {
       this.pendingExec.reject(new RconReplyLostError(err.message));
       this.pendingExec = null;
     }
+    this.close();
     this.emit("close", err);
   }
 }

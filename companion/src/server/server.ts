@@ -132,35 +132,100 @@ async function waitForExit(pid: number, timeoutMs: number): Promise<boolean> {
   return false;
 }
 
+/** Match the accepted IPv4 loopback socket, not just a listener or a live PID.
+ * /proc/<pid>/net/tcp is namespace-wide; only the child's fd inode proves ownership.
+ * This lifecycle already uses Linux /proc for PID identity. Never read cmdline. */
+function ownsRconConnection(pid: number, localPort: number | undefined, serverPort: number): boolean {
+  if (localPort === undefined) return false;
+  const endpoint = (port: number) => `0100007F:${port.toString(16).toUpperCase().padStart(4, "0")}`;
+  try {
+    const sockets = new Set(fs.readdirSync(`/proc/${pid}/fd`).flatMap((fd) => {
+      try { return [fs.readlinkSync(`/proc/${pid}/fd/${fd}`)]; } catch { return []; }
+    }));
+    return fs.readFileSync(`/proc/${pid}/net/tcp`, "utf8").trim().split("\n").slice(1).some((row) => {
+      const fields = row.trim().split(/\s+/);
+      return fields[1] === endpoint(serverPort) && fields[2] === endpoint(localPort)
+        && fields[3] === "01" && sockets.has(`socket:[${fields[9]}]`);
+    });
+  } catch { return false; }
+}
+
 export async function startServer(runDir: string, options: { factorio?: string; bind?: string; readyTimeoutMs?: number } = {}) {
   const paths = runPaths(runDir), config = requireConfig(), bin = requireBinary(options.factorio);
   if (!fs.existsSync(paths.save)) throw new Error(`no save at ${paths.save}; run \`factorio-codex server create ${runDir}\` first`);
   if (serverPid(paths)) throw new Error(`a server for ${paths.dir} is already running`);
   const log = fs.openSync(paths.log, "a");
-  const child = spawn(bin, startArgs(paths, config.rcon.password, options.bind), { cwd: paths.dir, detached: true, stdio: ["ignore", log, log] });
-  fs.closeSync(log);
-  if (!child.pid) throw new Error("factorio did not start");
-  fs.writeFileSync(paths.pid, `${child.pid}\n`, { mode: 0o600 });
-  child.unref();
-  const deadline = Date.now() + (options.readyTimeoutMs ?? 180_000);
-  for (;;) {
-    const rcon = new RconClient(config.rcon);
-    try {
-      await rcon.connect();
-      const bridge = new Bridge(rcon);
-      await bridge.unlock();
-      const ping = await bridge.call<{ protocol_version?: number; mod_version?: string; factorio_version?: string }>("ping");
-      try { assertRuntimeCompatibility(ping, companionVersion()); } catch (error) {
-        await stopServer(runDir).catch(() => undefined);
-        throw error;
-      }
-      atomicWriteFile(currentRunPointer(), `${paths.dir}\n`);
-      return { pid: child.pid, save: paths.save, log: paths.log, factorio_version: ping.factorio_version, mod_version: ping.mod_version, protocol_version: ping.protocol_version };
-    } catch (error) {
-      if (!(error instanceof Error) || !/cannot connect to RCON|auth timed out|ECONNRESET|closed/i.test(error.message)) throw error;
-      if (Date.now() > deadline) throw new Error(`server did not accept RCON within the timeout; see ${paths.log}`);
-      await sleep(1000);
-    } finally { rcon.close(); }
+  let child;
+  try { child = spawn(bin, startArgs(paths, config.rcon.password, options.bind), { cwd: paths.dir, detached: true, stdio: ["ignore", log, log] }); }
+  finally { fs.closeSync(log); }
+  let failure: Error | undefined;
+  let fail!: (error: Error) => void;
+  const failed = new Promise<never>((_, reject) => { fail = (error) => { failure ??= error; reject(failure); }; });
+  const exited = new Promise<void>((resolve) => {
+    child.once("error", () => { fail(new Error(`factorio failed to spawn; see ${paths.log}`)); resolve(); });
+    child.once("exit", (code, signal) => { fail(new Error(`factorio exited during startup (${signal ?? code}); see ${paths.log}`)); resolve(); });
+  });
+  const timeoutMs = options.readyTimeoutMs ?? 180_000;
+  const timer = setTimeout(() => fail(new Error(`server did not accept RCON within the timeout; see ${paths.log}`)), timeoutMs);
+  const rcon = new RconClient({ ...config.rcon, timeoutMs });
+  const assertLive = () => {
+    if (failure) throw failure;
+    if (!child.pid || child.exitCode !== null || child.signalCode !== null) throw new Error(`factorio exited during startup; see ${paths.log}`);
+  };
+  const ready = async () => {
+    if (!child.pid) await failed;
+    for (;;) {
+      assertLive();
+      try {
+        await rcon.connect();
+        assertLive();
+        if (!ownsRconConnection(child.pid!, rcon.localPort, config.rcon.port)) {
+          throw new Error("RCON endpoint does not belong to the spawned server");
+        }
+        const bridge = new Bridge(rcon);
+        await bridge.unlock();
+        assertLive();
+        const ping = await bridge.call<{ protocol_version?: number; mod_version?: string; factorio_version?: string }>("ping");
+        assertLive();
+        assertRuntimeCompatibility(ping, companionVersion());
+        if (!ownsRconConnection(child.pid!, rcon.localPort, config.rcon.port)) throw new Error("spawned server lost its RCON connection during startup");
+        return ping;
+      } catch (error) {
+        assertLive();
+        if (!(error instanceof Error) || !/cannot connect to RCON|auth timed out|ECONNRESET|closed/i.test(error.message)) throw error;
+      } finally { rcon.close(); }
+      await sleep(100, undefined, { signal: retry.signal });
+    }
+  };
+  const retry = new AbortController();
+  let pidWritten = false;
+  try {
+    const ping = await Promise.race([ready(), failed]);
+    assertLive();
+    atomicWriteFile(paths.pid, `${child.pid}\n`, 0o600);
+    pidWritten = true;
+    atomicWriteFile(currentRunPointer(), `${paths.dir}\n`);
+    child.unref();
+    return { pid: child.pid, save: paths.save, log: paths.log, factorio_version: ping.factorio_version, mod_version: ping.mod_version, protocol_version: ping.protocol_version };
+  } catch (error) {
+    // Only our ChildProcess handle may be signalled. An unverified endpoint must
+    // never be saved, unlocked or stopped, even when compatibility checks fail.
+    rcon.close();
+    if (child.pid && child.exitCode === null && child.signalCode === null) {
+      if (!child.kill("SIGKILL")) throw new Error("could not settle spawned server after startup failure", { cause: error });
+      const cleanup = new AbortController();
+      try {
+        await Promise.race([exited, sleep(5000, undefined, { signal: cleanup.signal }).then(() => {
+          throw new Error("spawned server did not exit after startup failure", { cause: error });
+        })]);
+      } finally { cleanup.abort(); }
+    }
+    if (pidWritten && fs.existsSync(paths.pid) && fs.readFileSync(paths.pid, "utf8").trim() === String(child.pid)) fs.rmSync(paths.pid);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    retry.abort();
+    rcon.close();
   }
 }
 

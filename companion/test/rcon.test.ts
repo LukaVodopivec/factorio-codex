@@ -149,6 +149,21 @@ describe("RconClient", () => {
     await vi.waitFor(() => expect(server.activeConnections).toBe(0));
   });
 
+  it.each(["auth", "command"])("close promptly settles a pending %s operation", async (operation) => {
+    client = new RconClient({ host: "127.0.0.1", port: server.port, password: "secret" });
+    if (operation === "auth") server.respondToAuth = false;
+    else await client.connect();
+    server.handler = () => [];
+    const pending = operation === "auth" ? client.connect() : client.exec("wait");
+    const rejected = expect(pending).rejects.toThrow(/closed/);
+    await vi.waitFor(() => expect(server.activeConnections).toBe(1));
+    // Let exec's serialized microtask start before closing it.
+    await new Promise((resolve) => setImmediate(resolve));
+    client.close();
+    await rejected;
+    await vi.waitFor(() => expect(server.activeConnections).toBe(0));
+  });
+
   it("executes a command and returns the response body", async () => {
     client = new RconClient({ host: "127.0.0.1", port: server.port, password: "secret" });
     await client.connect();

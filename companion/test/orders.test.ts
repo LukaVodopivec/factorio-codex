@@ -889,25 +889,22 @@ describe("package auto-queue", () => {
 
   it("holds an empty replacement behind stop, records refusal, and reapplies after save rollback", async () => {
     const dir = runDir();
+    const at = (time: string) => new Date(`2026-10-05T${time}Z`);
     writeLedger(dir, 2, [], "research", { mode: "replace", technologies: [] });
-    fs.utimesSync(path.join(dir, "operations.json"), new Date(0), new Date(0));
+    fs.utimesSync(path.join(dir, "operations.json"), at("09:00:00"), at("09:00:00"));
     const held = fakeBridge({ event_state: () => ({ tick: 900, last_cancel_all_tick: 900 }) });
-    await createPackageQueue(() => dir, held.bridge).tick();
+    await createPackageQueue(() => dir, held.bridge, () => at("10:00:00")).tick();
     expect(held.call.mock.calls.some(([method]) => method === "start_research")).toBe(false);
     writeLedger(dir, 3, [], "research", { mode: "replace", technologies: [] });
-    // This branch requires a ledger written after the recorded stop. A
-    // synchronous rewrite may share its wall-clock millisecond; set the
-    // fixture's ordering explicitly rather than relying on elapsed time.
-    const afterStop = new Date(Date.parse(readPackageQueue(dir)!.cancel_all!.observed_at) + 1);
-    fs.utimesSync(path.join(dir, "operations.json"), afterStop, afterStop);
+    fs.utimesSync(path.join(dir, "operations.json"), at("10:01:00"), at("10:01:00"));
     const rejected = fakeBridge({ start_research: () => { throw new ModError("replacement refused"); } });
-    await createPackageQueue(() => dir, rejected.bridge).tick();
+    await createPackageQueue(() => dir, rejected.bridge, () => at("10:02:00")).tick();
     expect(readPackageQueue(dir)?.research).toMatchObject({ revision: 3, status: "failed", mode: "replace" });
-    await createPackageQueue(() => dir, rejected.bridge).tick();
+    await createPackageQueue(() => dir, rejected.bridge, () => at("10:02:00")).tick();
     expect(rejected.call.mock.calls.filter(([method]) => method === "start_research")).toHaveLength(1);
     const rollback = fakeBridge({ ping: () => ({ companion_exists: true, tick: 800 }),
       start_research: () => ({ replaced: true, research_queue: {}, current_research: false, tick: 801 }) });
-    await createPackageQueue(() => dir, rollback.bridge).tick();
+    await createPackageQueue(() => dir, rollback.bridge, () => at("10:02:00")).tick();
     expect(rollback.call).toHaveBeenCalledWith("start_research", { mode: "replace", technologies: [], origin: "ledger/r3/4e65d3fbe8ad6535681b021b30785b12b6c0e3f8878859a4148b3f58b8835db0" });
     expect(readPackageQueue(dir)?.research).toMatchObject({ status: "replaced", tick: 801 });
   });

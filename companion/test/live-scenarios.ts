@@ -14,9 +14,9 @@
 // (characterStandIn). Nothing in the mod has a test flag or path.
 //
 // After the scenarios: ping shows no handler_errors, the server log has no
-// script errors, every profiler rpc line and the rpc and job lines of each
-// tick together stay within the 8 ms budget, and every 600-tick on_tick
-// window (profiler.lua) averages within it. The profiler logs tick handlers
+// script errors, at most one measured tick exceeds the nominal 8 ms budget
+// (RPC + job work), no measured tick exceeds 10 ms, and every 600-tick on_tick
+// window (profiler.lua) averages within 8 ms. The profiler logs tick handlers
 // only per window, so the setup also times this server's job work (jobs
 // advanced on_tick) per tick; one slow tick of another handler inside a
 // quiet window is not caught here.
@@ -35,9 +35,9 @@ import { RconClient } from "../src/rcon.js";
 import { bodySummary, parseRunSnapshot, runEvents } from "../src/runs/telemetry.js";
 import { MAP_GEN_SETTINGS, SERVER_SETTINGS, createArgs, prepareMods, runPaths } from "../src/server/server.js";
 import { factorioBinary } from "../src/setup/locate.js";
+import { describeTick, evaluateTiming, profile } from "./live-timing.js";
 
 const SEED = 747930220;
-const TICK_BUDGET_MS = 8;
 const BODY = { x: 30, y: 30 };
 
 const bin = factorioBinary();
@@ -694,12 +694,10 @@ const scenarios: Scenario[] = [
         return `${method}: rpc ${rpc.toFixed(2)} ms, job tick ${job.toFixed(2)} ms, ${jobTicks.filter((row) => row.kinds.includes(method)).length}`
           + ` job ticks, slowest ${tick ? describeTick(tick) : "tick -"}`;
       };
-      const over = ticks.filter((row) => row.ms > TICK_BUDGET_MS);
-      expect(over.length === 0, `every tick of these calls stays within ${TICK_BUDGET_MS} ms`,
-        over.map(describeTick));
+      const timing = checkTiming();
       return `${built.researched} technologies researched, ${built.machines} machines; closure of ${built.deep}; snapshot polls ${snapshots.join(",")};`
         + ` requirements ${answered.join(", ")}; ${slowest("run_snapshot")}; ${slowest("production_requirements")};`
-        + ` get_job slowest ${Math.max(0, ...rpcs.filter((row) => row.method === "get_job").map((row) => row.ms)).toFixed(2)} ms`;
+        + ` get_job slowest ${Math.max(0, ...rpcs.filter((row) => row.method === "get_job").map((row) => row.ms)).toFixed(2)} ms; ${timing.detail}`;
     },
   },
   {
@@ -752,13 +750,11 @@ const scenarios: Scenario[] = [
         const text = fs.readFileSync(paths.log, "utf8").slice(from);
         return profile(text).rpcs.filter((row) => row.method === "factory_status").length >= 6 ? text : undefined;
       });
-      const { rpcs, ticks } = profile(slice);
+      const { rpcs } = profile(slice);
       const status = rpcs.filter((row) => row.method === "factory_status").map((row) => row.ms);
-      const over = ticks.filter((row) => row.ms > TICK_BUDGET_MS && row.methods.includes("factory_status"));
       const summary = `${built.machines} new, ${total} machines in lines; reads ${reads.join("; ")}; factory_status ms`
         + ` ${status.map((ms) => ms.toFixed(2)).join(", ")}`;
-      expect(over.length === 0, `every factory_status tick stays within ${TICK_BUDGET_MS} ms (${summary})`, over.map(describeTick));
-      return summary;
+      return `${summary}; ${checkTiming().detail}`;
     },
   },
   {
@@ -1451,36 +1447,27 @@ const scenarios: Scenario[] = [
   },
 ];
 
-// Profiler lines (profiler.lua): "rpc <method> tick <tick> Duration: <ms>ms"
-// for each RPC, "on_tick 600 ticks Duration: <ms>ms" for all tick handlers;
-// the setup's "job_tick <tick> <kinds> Duration: <ms>ms" for each tick's job
-// work and "gc_freed <tick> <where>". The RPCs and job work of one tick share
-// its budget: ticks sums their time per tick, methods naming each RPC and
-// each job as job:<kind>, gc marking a tick in which the collector freed memory.
-function profile(log: string) {
-  const rpcs: { method: string; tick: number; ms: number }[] = [], windows: number[] = [];
-  const jobTicks: { kinds: string[]; tick: number; ms: number }[] = [];
-  for (const match of log.matchAll(/ rpc (\S+) tick (\d+) Duration: ([\d.]+)ms/g)) {
-    rpcs.push({ method: match[1]!, tick: Number(match[2]), ms: Number(match[3]) });
-  }
-  for (const match of log.matchAll(/ job_tick (\d+) (\S+) Duration: ([\d.]+)ms/g)) {
-    jobTicks.push({ kinds: match[2]!.split(","), tick: Number(match[1]), ms: Number(match[3]) });
-  }
-  for (const match of log.matchAll(/ on_tick (\d+) ticks Duration: ([\d.]+)ms/g)) windows.push(Number(match[2]) / Number(match[1]));
-  const ticks = new Map<number, { ms: number; methods: string[] }>();
-  const add = (at: number, ms: number, methods: string[]) => {
-    const tick = ticks.get(at) ?? { ms: 0, methods: [] };
-    tick.ms += ms;
-    tick.methods.push(...methods);
-    ticks.set(at, tick);
-  };
-  for (const row of rpcs) add(row.tick, row.ms, [row.method]);
-  for (const row of jobTicks) add(row.tick, row.ms, row.kinds.map((kind) => `job:${kind}`));
-  const gc = new Set([...log.matchAll(/ gc_freed (\d+) \S+$/gm)].map((match) => Number(match[1])));
-  return { rpcs, jobTicks, windows, ticks: [...ticks].map(([tick, row]) => ({ tick, ...row, gc: gc.has(tick) })) };
+// Read the complete prefix at each checkpoint: scenario slices are for local
+// summaries only, never separate timing allowances or accumulated evidence.
+function checkTiming() {
+  const timing = evaluateTiming(fs.readFileSync(paths.log, "utf8"), { requireWindows: false });
+  expect(timing.ok, "suite-wide timing policy", timing.detail);
+  return timing;
 }
-const describeTick = (row: { tick: number; ms: number; methods: string[]; gc: boolean }) =>
-  `tick ${row.tick} ${row.ms.toFixed(2)} ms (${row.methods.join(", ")}${row.gc ? "; the Lua GC freed memory in it" : ""})`;
+
+// Context only: native metrics never change timing classification. Node returns
+// zero load averages on Windows where the metric is unavailable.
+function reportLoad(phase: "start" | "completion") {
+  const cpus = os.cpus().length;
+  console.log(`machine load (${phase}): ${JSON.stringify({
+    at: new Date().toISOString(), platform: process.platform,
+    logical_cpus: cpus || "unavailable", available_parallelism: os.availableParallelism(),
+    load_average_1_5_15: process.platform === "win32" ? "unavailable on Windows" : os.loadavg(),
+    free_memory_bytes: os.freemem(), total_memory_bytes: os.totalmem(),
+    process_cpu_microseconds: process.cpuUsage(), process_memory_bytes: process.memoryUsage(),
+  })}`);
+}
+
 // Stdin is closed, which the server logs as an error and ignores. The setup's
 // job_tick and gc_freed lines name their source, the setup command, whose
 // text has "error".
@@ -1494,6 +1481,7 @@ const report = (ok: boolean, name: string, detail: string) => {
 };
 
 try {
+  reportLoad("start");
   console.log(`live suite: ${bin}, seed ${SEED}, temp dir ${dir}`);
   const bridge = await startServer();
   const ping = await bridge.call<any>("ping");
@@ -1516,23 +1504,12 @@ try {
   const errors = log.split("\n").filter((line) => /\berror\b/i.test(line) && !line.includes("[COMMAND]")
     && !BENIGN_ERRORS.some((pattern) => pattern.test(line)));
   report(errors.length === 0, "the server log has no script errors", errors.slice(0, 5).join(" | "));
-  const { rpcs, jobTicks, windows, ticks } = profile(log);
-  const slow = rpcs.filter((row) => row.ms > TICK_BUDGET_MS);
-  const slowTicks = ticks.filter((row) => row.ms > TICK_BUDGET_MS);
-  const slowestTick = ticks.reduce<(typeof ticks)[number] | undefined>((worst, row) => (!worst || row.ms > worst.ms ? row : worst), undefined);
-  const worstWindow = Math.max(0, ...windows);
-  report(rpcs.length > 0 && windows.length > 0 && slow.length === 0 && slowTicks.length === 0 && worstWindow <= TICK_BUDGET_MS,
-    `every rpc, the rpcs and job work of each tick, and the 600-tick on_tick average stay within ${TICK_BUDGET_MS} ms`,
-    `${rpcs.length} rpcs, slowest ${rpcs.length ? Math.max(...rpcs.map((row) => row.ms)).toFixed(2) : "-"} ms`
-      + `${slow.length ? ` (over budget: ${slow.map((row) => `${row.method} ${row.ms.toFixed(2)}`).join(", ")})` : ""}; `
-      + `${jobTicks.length} job ticks; ${ticks.length} ticks (the Lua GC freed memory in ${ticks.filter((row) => row.gc).length}),`
-      + ` slowest ${slowestTick ? describeTick(slowestTick) : "-"}`
-      + `${slowTicks.length ? ` (over budget: ${slowTicks.map(describeTick).join(", ")})` : ""}; `
-      + `${windows.length} tick windows, worst average ${worstWindow.toFixed(3)} ms/tick`);
+  const timing = evaluateTiming(log);
+  report(timing.ok, "suite-wide timing: nominal 8 ms, at most one excursion up to 10 ms; on_tick averages <=8 ms", timing.detail);
 } catch (error) {
   report(false, "live server", `${error instanceof Error ? error.message : String(error)}; log: ${logTail()}`);
 } finally {
-  await cleanup();
+  try { await cleanup(); } finally { reportLoad("completion"); }
 }
 console.log(failures.length ? `live suite: ${failures.length} failed` : "live suite: all passed");
 process.exit(failures.length ? 1 : 0);

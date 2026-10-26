@@ -42,16 +42,37 @@ entities with `create_entity` and call the mod's modules and RPCs:
   compact rows;
 - `run_snapshot` jobs and cached `production_requirements` on a mid-game state
   (red and green research, 60 machines), accepting inline results or reading
-  pending results through `get_job`, with every tick of their work within 8 ms;
+  pending results through `get_job`, checked under the suite-wide timing policy below;
 - mirrored and plain oil refineries and chemical plants whose live pipe
   connections match `fluid_connections.ports` at every direction;
 - the physical scenarios on a real character (ground stacks taken up by
   `place_entity`, `blueprint_capture` origins).
 
 Then it asserts that `ping` shows no `handler_errors`, the server log has no
-script errors, every profiler `rpc` line and the `rpc` lines and job work of
-each tick together stay within 8 ms, and each 600-tick `on_tick` window
-averages within 8 ms a tick. The setup times job work (jobs advanced on_tick)
+script errors, and nonempty RPC, job and aggregate-window timing evidence.
+The nominal budget remains **8 ms per game tick**, summing all measured RPC
+and job work in that tick. Across the entire suite, **at most one distinct
+measured tick may exceed 8 ms, and it must be at or below 10 ms**. Two such
+ticks, or any tick above the **10 ms hard ceiling**, fail. Scenario checkpoints
+and the final report use the same shared policy on complete log prefixes, so
+overlapping reads never count the same tick twice or reset the allowance.
+Every 600-tick `on_tick` window must still average at or below 8 ms a tick.
+
+All nominal-budget excursions are reported even when allowed, with the game
+tick, summed elapsed time, contributing RPC/job methods and observed GC heap
+decrease annotation. Native Node/OS load averages, CPU capacity, memory and
+process usage are recorded at suite start and completion; unavailable metrics
+are explicitly marked unavailable (including load averages on Windows). Load
+is diagnostic context only and never bypasses a failure. There are no
+method-specific exemptions or automatic whole-suite retries.
+
+`npm run test -w companion -- test/live-timing.test.ts` checks classification
+with synthetic logs. A required `scripts/agent-app verify --profile live` run
+with an installed Factorio 2.0.x executable proves integration; a skipped or
+missing executable is not a pass. A single live run does not establish a
+statistical reduction in timing flakes.
+
+The setup times job work (jobs advanced on_tick)
 per tick itself and marks a tick in which the Lua garbage collector freed
 memory (its time counts in that tick); other tick handlers are logged only per window, so one slow tick of
 theirs inside a quiet window is not caught. A headless

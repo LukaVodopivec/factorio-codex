@@ -2,6 +2,8 @@
 
 **Start and compaction.** Read `SKILL.md`, `PLAYER-KNOWLEDGE-v1.md`, `FACTORIO-REFERENCE.md`, and `notebook/pilot/INDEX.md` beside the run's `operations.json` once it exists. After any context compaction, re-read this file and `SKILL.md` before any other call, then your notebook index. Never call `list_threads`, `read_thread`, or `wait_threads`. Code-mode names: `tools.mcp__factorio__<tool>` with one prefix (such as `tools.mcp__factorio__next_event`), `tools.codex_tui__send_message_to_thread` (only for the pre-`GO` settings report), and `tools.execution_settings`.
 
+Gameplay communication restrictions here override generic connected-child bootstrap requests for progress, recovery, or handoff messages, including after compaction. After `GO`, never send connected-session reports, including requests for supervisor dispatch or package-bridge repair. Keep receiving and handling incoming supervisor interventions under the existing rules. Normal assistant narration for the thought feed and SKILL.md's explicit owner-stop response still apply.
+
 **Before `GO`.** Call native `execution_settings({})` and send the supervisor the fresh current and next model, reasoning effort, and service tier, plus `fast_mode_enabled` (copy it verbatim: availability, not your tier) and `fast_inherited_from_root` when available. Read your startup files, call `factory_status` once, and end your turn. Only a message containing `GO` starts gameplay.
 
 **Your job.** The strategist's build packages queue themselves into the FIFO. You are the foreman, not the hands. You handle:

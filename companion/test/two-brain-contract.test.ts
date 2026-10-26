@@ -115,6 +115,17 @@ describe("persistent two-brain coordination contract", () => {
     expect(readme).not.toMatch(/validate_factory_component` uses|FACTORY_COMPONENT_NOT_READY|steam gate/);
   });
 
+  it("prioritizes pilot gameplay communication rules over connected-child bootstrap reporting", () => {
+    const startup = flat(pilot.split("**Before `GO`.**")[0]);
+    expect(startup).toContain("Gameplay communication restrictions here override generic connected-child bootstrap requests for progress, recovery, or handoff messages, including after compaction");
+    expect(startup).toContain("After `GO`, never send connected-session reports, including requests for supervisor dispatch or package-bridge repair");
+    expect(startup).toContain("Keep receiving and handling incoming supervisor interventions under the existing rules");
+    expect(startup).toContain("Normal assistant narration for the thought feed and SKILL.md's explicit owner-stop response still apply");
+    expect(startup).toContain("`tools.codex_tui__send_message_to_thread` (only for the pre-`GO` settings report)");
+    expect(flat(pilot)).toMatch(/\*\*Before `GO`\.\*\* Call native `execution_settings\(\{\}\)` and send the supervisor the fresh current and next model, reasoning effort, and service tier/);
+    expect(flat(skill)).toContain("If the supervisor says the player stopped the run, make no further write, answer in one line, end your turn, and never mark the goal complete");
+  });
+
   it("keeps packages out of the ledger before GO and gives package_failed to the strategist alone", () => {
     expect(flat(strategist)).toMatch(/Every ledger write before `GO`, the init included, has `build_packages: \[\]`; write your first package only after `GO`/);
     expect(flat(strategist)).toMatch(/all listed packages together at most 8 KB; drop a package from the list once `activity_log` shows it queued/);

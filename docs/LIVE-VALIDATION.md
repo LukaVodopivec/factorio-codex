@@ -2226,6 +2226,42 @@ exact loaded source/runtime identity and all interventions; it remains excluded
 from benchmark evidence. Publishing corrected source does not establish that
 an existing role or MCP process has loaded it.
 
+### Release 0.21.0 pilot recovery-report incident
+
+The supplied incident report for release 0.21.0 supervised gameplay states
+that, after `GO`, the pilot sent the supervisor a recovery message requesting
+package-bridge dispatch repair while the physical FIFO was empty. These facts
+are attributed to that report; this change does not provide a new reproduction.
+The pilot goal restricted connected messaging to the pre-`GO` native settings
+report and prohibited reports after `GO`, while generic connected-child
+bootstrap guidance requested material recovery updates. A conflict in instruction
+priority is suspected causation, not proven attribution of the pilot's choice.
+
+The correction stays near Start and compaction in the existing pilot goal:
+gameplay communication restrictions explicitly override generic progress,
+recovery, and handoff requests. Offline contract checks and instruction review
+cover four scenarios:
+
+- Preparation permits the required native `execution_settings({})` profile
+  report to the supervisor before `GO`.
+- A post-`GO` package-bridge failure does not permit a connected recovery report
+  or a request for supervisor dispatch or package-bridge repair.
+- Incoming supervisor interventions remain receivable and actionable under
+  existing rules, including the shared skill's explicit owner-stop response.
+- Compaction reloads the same goal and shared skill before other calls,
+  retaining this communication precedence.
+
+The pilot remains the sole gameplay writer; the strategist's ledger remains
+its only command channel to the pilot. Normal assistant narration still feeds
+the thought panel. No generic bootstrap behavior, executable enforcement,
+bridge dispatch, or active-session configuration changes are required.
+
+Source publication and future-session loading are separate from observed live
+compliance. This correction requires no mod deployment, server replacement,
+active-session reconfiguration, or gameplay restart. Offline instruction
+consistency does not demonstrate live behavioral compliance; validation of that
+behavior requires a separately authorized fresh run.
+
 ### Burner fuel delivery versus plate cargo (2026-10-03)
 
 The 2026-10-03 isolated Factorio **2.0.77, build 84539, linux64 headless**

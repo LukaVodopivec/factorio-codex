@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { DEFAULT_TASK_TIMEOUT_MS, holdAwareDeadline, monitoringUnknown, TaskCancelledError, type TaskClock } from "../bridge.js";
+import { cancelAndReadback, DEFAULT_TASK_TIMEOUT_MS, holdAwareDeadline, monitoringUnknown, TaskCancelledError, type TaskClock } from "../bridge.js";
 import type { Bridge } from "../bridge.js";
 import { normalizeObservation } from "./observation.js";
 import { NEXT_EVENT_MAX_SECONDS } from "./events.js";
@@ -361,6 +361,7 @@ export const planStatusSchema = z.object({
 export type RunPlanInput = z.infer<typeof runPlanSchema>;
 export interface PlanOutcome { step: number; action: RunPlanInput["steps"][number]["action"]; status: "completed" | "partial" | "failed" | "cancelled"; result?: unknown; error?: string }
 export interface RunPlanResult {
+  cancellation?: import("../bridge.js").CancellationEvidence;
   plan_id?: number; status: "queued" | "running" | "waiting" | "completed" | "partial" | "failed" | "cancelled"; source_tick?: number;
   position?: { x: number; y: number }; current_step?: number; completed_steps?: number;
   total_steps?: number; outcomes: PlanOutcome[]; queue_depth?: number;
@@ -378,6 +379,15 @@ const realClock: TaskClock = { now: () => Date.now(), sleep: (ms) => new Promise
 
 const terminalStatuses = new Set(["completed", "partial", "failed", "cancelled"]);
 function isTerminal(status: RunPlanResult): boolean { return terminalStatuses.has(status.status); }
+function validPlanStatus(value: unknown, plan_id: number): value is RunPlanResult {
+  const status = value as RunPlanResult;
+  return isFields(status) && status.plan_id === plan_id
+    && ["queued", "running", "waiting", ...terminalStatuses].includes(status.status)
+    && (Array.isArray(status.outcomes) ? status.outcomes.every((outcome) => isFields(outcome)
+      && Number.isInteger(outcome.step) && outcome.step > 0 && typeof outcome.action === "string"
+      && terminalStatuses.has(outcome.status))
+      : isFields(status.outcomes) && Object.keys(status.outcomes).length === 0);
+}
 function progressMarker(status: RunPlanResult): string {
   return `${status.outcomes?.length ?? 0}:${status.status === "waiting" ? "waiting" : "active"}:${isTerminal(status) ? "terminal" : "open"}`;
 }
@@ -422,14 +432,7 @@ export async function executeRunPlan(bridge: Bridge, input: RunPlanInput, signal
     for (;;) {
       if (signal?.aborted) throw new TaskCancelledError("run_plan was cancelled");
       const status = await bridge.call<RunPlanResult>("plan_status", { plan_id });
-      if (!isFields(status) || status.plan_id !== plan_id
-        || !["queued", "running", "waiting", ...terminalStatuses].includes(status.status)
-        || !(Array.isArray(status.outcomes) ? status.outcomes.every((outcome) => isFields(outcome)
-          && Number.isInteger(outcome.step) && outcome.step > 0 && typeof outcome.action === "string"
-          && terminalStatuses.has(outcome.status))
-          : isFields(status.outcomes) && Object.keys(status.outcomes).length === 0)) {
-        throw new Error("malformed plan_status reply or mismatched plan_id");
-      }
+      if (!validPlanStatus(status, plan_id)) throw new Error("malformed plan_status reply or mismatched plan_id");
       lastKnown = status;
       budget.sample(status.fifo?.human_control === true);
       if (isTerminal(status)) {
@@ -454,27 +457,13 @@ export async function executeRunPlan(bridge: Bridge, input: RunPlanInput, signal
     }
   } catch (error) {
     if (!signal?.aborted) throw monitoringUnknown(`${tool} (plan ${plan_id})`, { plan_id }, error, lastKnown);
-    await bridge.call("cancel", { plan_id, origin: `${tool}/${role}/abort` }).catch(() => {});
-    try {
-      const cancelled = await bridge.call<RunPlanResult>("plan_status", { plan_id });
-      if (isTerminal(cancelled)) {
-        if (cancelled.observation) cancelled.observation = normalizeObservation(cancelled.observation);
-        return cancelled;
-      }
-    } catch (readbackError) {
-      if (error instanceof TaskCancelledError || signal?.aborted) {
-        return { plan_id, status: "cancelled", outcomes: [],
-          observation_error: `${error instanceof Error ? error.message : String(error)}; terminal readback unavailable: ${readbackError instanceof Error ? readbackError.message : String(readbackError)}`,
-          execution: { mode: "sequential_nontransactional", rollback: "none", effects_state: "unknown",
-            incomplete_step: { step: 1, status: "cancelled", effects: "unknown" } } };
-      }
-    }
-    if (error instanceof TaskCancelledError || signal?.aborted) {
-      return { plan_id, status: "cancelled", outcomes: [],
-        observation_error: `${error instanceof Error ? error.message : String(error)}; cancellation did not yield terminal readback`,
-        execution: { mode: "sequential_nontransactional", rollback: "none", effects_state: "unknown",
-          incomplete_step: { step: 1, status: "cancelled", effects: "unknown" } } };
-    }
-    throw error;
+    const terminal = await cancelAndReadback(bridge, { plan_id }, `${tool}/${role}/abort`,
+      async () => {
+        const status = await bridge.call<unknown>("plan_status", { plan_id });
+        return isFields(status) && status.observation !== undefined
+          ? { ...status, observation: normalizeObservation(status.observation) } : status;
+      },
+      (value): value is RunPlanResult => validPlanStatus(value, plan_id), isTerminal, lastKnown);
+    return terminal;
   }
 }

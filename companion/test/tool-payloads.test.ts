@@ -543,14 +543,14 @@ describe("registered MCP handler parity with the current Lua protocol", () => {
 
   it("passes the abort signal to the build_plan owned by connect_entities", async () => {
     const handlers: Record<string, (args: any, extra?: { signal?: AbortSignal }) => Promise<any>> = {};
-    const enqueueAndWait = vi.fn(async () => "cancelled");
+    const enqueueAndWaitResult = vi.fn(async () => ({ status: "cancelled" as const, detail: "cancelled" }));
     const call = vi.fn(async () => ({ steps: [{ name: "transport-belt", x: 0, y: 0 }], kind: "belt" }));
     registerMcpTools({ registerTool(name, _config, handler) { handlers[name] = handler; } },
-      async () => ({ call, enqueueAndWait } as unknown as Bridge), validConfig);
+      async () => ({ call, enqueueAndWaitResult } as unknown as Bridge), validConfig);
     const controller = new AbortController(); controller.abort();
     const before = Date.now();
     await handlers.connect_entities({ kind: "belt", prototype: "transport-belt", from: { x: 0, y: 0 }, to: { x: 1, y: 0 } }, { signal: controller.signal });
-    const options: any = enqueueAndWait.mock.calls[0]?.[1];
+    const options: any = enqueueAndWaitResult.mock.calls[0]?.[1];
     expect(options).toMatchObject({ tool: "connect_entities", role: "unknown", signal: controller.signal });
     // The route search came first: the build's return guard counts from the tool's start, not from its enqueue.
     expect(call.mock.calls[0]?.[2]).toBe(controller.signal);

@@ -24,9 +24,8 @@ describe("protocol v29 DTO and tool registry", () => {
     const call = vi.fn(async (method: string) => method === "connect_entities"
       ? { kind: "belt", prototype: "transport-belt", from: { x: 0.5, y: 0.5 }, to: { x: 4.5, y: 0.5 }, length: 1, steps: [{ name: "transport-belt", x: 1.5, y: 0.5, direction: 4 }], physical: true, ghosts: false }
       : { method });
-    const enqueueAndWait = vi.fn(async () => "built 1/1 placements");
     const enqueueAndWaitResult = vi.fn(async () => ({ status: "done" as const, detail: "done" }));
-    registerMcpTools({ registerTool(name: string, config: any, handler: (args: any) => Promise<any>) { handlers[name] = handler; schemas[name] = config.inputSchema; } }, async () => ({ call, enqueueAndWait, enqueueAndWaitResult } as unknown as Bridge), validConfig);
+    registerMcpTools({ registerTool(name: string, config: any, handler: (args: any) => Promise<any>) { handlers[name] = handler; schemas[name] = config.inputSchema; } }, async () => ({ call, enqueueAndWaitResult } as unknown as Bridge), validConfig);
     expect(Object.keys(handlers)).toHaveLength(54);
     expect(Object.keys(handlers)).not.toContain("build_block");
 
@@ -58,7 +57,7 @@ describe("protocol v29 DTO and tool registry", () => {
     const route = schemas.connect_entities.parse({ kind: "belt", prototype: "transport-belt", from: { x: 0.5, y: 0.5 }, to: { x: 4.5, y: 0.5 } });
     await handlers.connect_entities(route);
     expect(call).toHaveBeenLastCalledWith("connect_entities", { kind: "belt", prototype: "transport-belt", from: { x: 0.5, y: 0.5 }, to: { x: 4.5, y: 0.5 }, max_length: 200 }, undefined);
-    expect(enqueueAndWait).toHaveBeenCalledWith({
+    expect(enqueueAndWaitResult).toHaveBeenCalledWith({
       type: "build_plan", auto_craft: true, stop_on_error: true,
       steps: [{ item: "transport-belt", position: { x: 1.5, y: 0.5 }, direction: 4 }],
     }, expect.objectContaining({ tool: "connect_entities", role: "unknown" }));
@@ -77,9 +76,9 @@ describe("protocol v29 DTO and tool registry", () => {
       failure: { code: "ROUTE_TOO_LONG", reason: "the shortest charted belt route is 19 tiles; max_length is 12 (the leg to `to`)",
         min_length: 19, limit: 12, leg: 1 } };
     const call = vi.fn(async () => reply);
-    const enqueueAndWait = vi.fn(async () => "built");
+    const enqueueAndWaitResult = vi.fn(async () => ({ status: "done" as const, detail: "built" }));
     registerMcpTools({ registerTool(name: string, config: any, handler: (args: any) => Promise<any>) { handlers[name] = handler; schemas[name] = config.inputSchema; } },
-      async () => ({ call, enqueueAndWait } as unknown as Bridge), validConfig);
+      async () => ({ call, enqueueAndWaitResult } as unknown as Bridge), validConfig);
     const args = { kind: "belt", prototype: "transport-belt", from: { x: 0.5, y: 0.5 }, to: { x: 9.5, y: 0.5 }, via: [{ x: 4.5, y: 4.5 }], max_length: 12 };
     const failed = await handlers.connect_entities(schemas.connect_entities.parse(args));
     expect(call).toHaveBeenLastCalledWith("connect_entities", { kind: "belt", prototype: "transport-belt", from: { x: 0.5, y: 0.5 },
@@ -88,7 +87,7 @@ describe("protocol v29 DTO and tool registry", () => {
     expect(failed.structuredContent).toMatchObject({ status: "failed", code: "ROUTE_TOO_LONG", min_length: 19, limit: 12, leg: 1,
       summary: expect.stringContaining("19 tiles") });
     expect(failed.structuredContent).not.toHaveProperty("failure");
-    expect(enqueueAndWait).not.toHaveBeenCalled();
+    expect(enqueueAndWaitResult).not.toHaveBeenCalled();
     reply = { kind: "belt", from: { x: 0.5, y: 0.5 }, to: { x: 9.5, y: 0.5 },
       failure: { code: "ROUTE_BLOCKED", reason: "no charted belt route reaches the end", closest: { x: 3.5, y: 0.5 }, remaining: 6 } };
     const blocked = await handlers.connect_entities(schemas.connect_entities.parse({ ...args, check_only: true }));
@@ -104,7 +103,7 @@ describe("protocol v29 DTO and tool registry", () => {
     const pole = await handlers.connect_entities(schemas.connect_entities.parse({ kind: "power", prototype: "small-electric-pole",
       from: { x: 0.5, y: 0.5 }, to: { x: 9.5, y: 0.5 } }));
     expect(pole.structuredContent).toMatchObject({ status: "failed", code: "ROUTE_BLOCKED", at: { x: 5.5, y: 0.5 } });
-    expect(enqueueAndWait).not.toHaveBeenCalled();
+    expect(enqueueAndWaitResult).not.toHaveBeenCalled();
     expect(normalizePhysicalRoute({ kind: "pipe", steps: {}, fluid_segments: {}, via: {} })).toMatchObject({ steps: [], fluid_segments: [], via: [] });
     expect(schemas.connect_entities.safeParse({ ...args, kind: "power", prototype: "small-electric-pole" }).success).toBe(false);
     expect(schemas.connect_entities.safeParse({ ...args, via: Array(9).fill({ x: 1, y: 1 }) }).success).toBe(false);
@@ -130,10 +129,9 @@ describe("protocol v29 DTO and tool registry", () => {
       : method === "plan_status" ? { plan_id: 8, status: "completed", outcomes: [] }
       : method === "connect_entities" ? { kind: "pipe", steps: [{ name: "pipe", x: 1.5, y: 0.5 }] }
       : { method, params });
-    const enqueueAndWait = vi.fn(async () => "built");
     const enqueueAndWaitResult = vi.fn(async () => ({ status: "done" as const, detail: "done" }));
     registerMcpTools({ registerTool(name: string, config: any, handler: (args: any) => Promise<any>) { handlers[name] = handler; schemas[name] = config.inputSchema; } },
-      async () => ({ call, enqueueAndWait, enqueueAndWaitResult } as unknown as Bridge), validConfig);
+      async () => ({ call, enqueueAndWaitResult } as unknown as Bridge), validConfig);
     const queued = () => call.mock.calls.filter(([method]) => method === "queue_plan").at(-1)?.[1];
     const plans: Array<[string, Record<string, unknown>]> = [
       ["move_entity", { from: { x: 1.5, y: 1.5 }, to: { x: 5.5, y: 1.5 } }],
@@ -181,7 +179,7 @@ describe("protocol v29 DTO and tool registry", () => {
     expect(call).toHaveBeenLastCalledWith("connect_entities", { kind: "pipe", prototype: "pipe", from: { x: 0.5, y: 0.5 }, to: { x: 2.5, y: 0.5 },
       max_length: 200, fluid: "water", underground: false, check_only: true }, undefined);
     expect(routed.structuredContent).toMatchObject({ check_only: true, steps: [{ name: "pipe" }] });
-    expect(enqueueAndWait).not.toHaveBeenCalled();
+    expect(enqueueAndWaitResult).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ tool: "connect_entities" }));
 
     const area = (extra: Record<string, unknown>) => schemas.build_ghosts.safeParse(extra).success;
     expect(area({ area: { left_top: { x: 0, y: 0 }, right_bottom: { x: 1, y: 1 } }, center: { x: 0, y: 0 }, radius: 1 })).toBe(false);
@@ -727,9 +725,9 @@ describe("protocol v29 DTO and tool registry", () => {
       }
       return {};
     });
-    const enqueueAndWait = vi.fn(async () => "placed 1/1");
+    const enqueueAndWaitResult = vi.fn(async () => ({ status: "done" as const, detail: "placed 1/1" }));
     registerMcpTools({ registerTool(name, _config, handler) { handlers[name] = handler; } },
-      async () => ({ call, enqueueAndWait } as unknown as Bridge), validConfig);
+      async () => ({ call, enqueueAndWaitResult } as unknown as Bridge), validConfig);
     const output = await handlers.connect_entities({ kind: "power", prototype: "small-electric-pole",
       from: { x: 0, y: 0 }, to: { x: 8, y: 0 }, max_length: 25 });
     expect(output.structuredContent).toMatchObject({
@@ -748,7 +746,7 @@ describe("protocol v29 DTO and tool registry", () => {
         length: 1, steps: [{ name: "small-electric-pole", x: 4, y: 0 }], physical: true, ghosts: false }
       : { entities: [{ electric_network_id: 1 }, { error: "no entity" }, { electric_network_id: 1 }] });
     registerMcpTools({ registerTool(name, _config, handler) { handlers[name] = handler; } }, async () => ({
-      call, enqueueAndWait: vi.fn(async () => "placed 1/1"),
+      call, enqueueAndWaitResult: vi.fn(async () => ({ status: "done", detail: "placed 1/1" })),
     } as unknown as Bridge), validConfig);
     const output = await handlers.connect_entities({ kind: "power", prototype: "small-electric-pole",
       from: { x: 0, y: 0 }, to: { x: 8, y: 0 }, max_length: 25 });

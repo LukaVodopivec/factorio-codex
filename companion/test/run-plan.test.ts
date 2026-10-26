@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { Bridge, DEFAULT_TASK_TIMEOUT_MS, ModError, OutcomeUnknownError, type TaskClock } from "../src/bridge.js";
+import { Bridge, DEFAULT_TASK_TIMEOUT_MS, ModError, OutcomeUnknownError, WriterRetiredError, type TaskClock } from "../src/bridge.js";
 import { RconError } from "../src/rcon.js";
 import type { RconClient } from "../src/rcon.js";
 import { executeRunPlan, packageStepSchema, planStatusSchema, queuePlanSchema, runPlanSchema, waitForPlanStatus } from "../src/mcp/runPlan.js";
@@ -256,10 +256,165 @@ describe("current queued-plan protocol", () => {
     });
     const output = await executeRunPlan({ call } as unknown as Bridge, runPlanSchema.parse({ steps: [
       { action: "mine", x: 1, y: 2 }, { action: "walk_to", x: 3, y: 4 },
-    ] }), controller.signal, clock);
-    expect(output.completed_steps).toBeUndefined();
-    expect(output).toMatchObject({ plan_id: 16, status: "cancelled",
-      execution: { rollback: "none", effects_state: "unknown", incomplete_step: { effects: "unknown" } } });
+    ] }), controller.signal, clock).catch((error: unknown) => error);
+    expect(output).toBeInstanceOf(OutcomeUnknownError);
+    expect(output).toMatchObject({ accepted: { plan_id: 16 },
+      lastKnown: { status: "running", completed_steps: 1, outcomes: [{ step: 1, status: "completed" }] },
+      cancellation: { acknowledgement: { cancelled: 1 }, readback_error: "readback unavailable" } });
+    expect(output).not.toHaveProperty("execution.incomplete_step");
+  });
+
+  it.each([
+    ["fence", "running"], ["transport", "running"], ["transport", "unavailable"],
+    ["malformed", "malformed"], ["zero", "mismatched"], ["acknowledged", "running"],
+    ["acknowledged", "unavailable"], ["acknowledged", "malformed"], ["acknowledged", "invalid observation"],
+  ])("retains seven committed steps with %s cancel and %s readback", async (cancel, readback) => {
+    const controller = new AbortController();
+    const latest = { plan_id: 91, status: "running", current_step: 8, completed_steps: 7,
+      outcomes: Array.from({ length: 7 }, (_, i) => ({ step: i + 1, action: "mine", status: "completed" })),
+      execution: { mode: "sequential_nontransactional", rollback: "none", committed_steps: [1, 2, 3, 4, 5, 6, 7] } };
+    let requested = false;
+    const call = vi.fn(async (method: string) => {
+      if (method === "queue_plan") return { plan_id: 91 };
+      if (method === "cancel") {
+        requested = true;
+        if (cancel === "fence") throw new WriterRetiredError("WRITER_RETIRED: newer writer");
+        if (cancel === "transport") throw new RconError("transport lost");
+        return cancel === "malformed" ? { cancelled: "1" } : { cancelled: cancel === "zero" ? 0 : 1 };
+      }
+      if (!requested || readback === "running") return latest;
+      if (readback === "unavailable") throw new Error("readback unavailable");
+      if (readback === "invalid observation") return { ...latest, status: "completed", observation: { entities: 7 } };
+      return readback === "mismatched" ? { plan_id: 92, status: "completed", outcomes: [] }
+        : { plan_id: 91, status: "cancelled", outcomes: [{ step: 1, action: "mine", status: "nonsense" }] };
+    });
+    const clock: TaskClock = { now: () => 0, sleep: async () => { controller.abort(); } };
+    const output = await executeRunPlan({ call } as unknown as Bridge,
+      runPlanSchema.parse({ steps: [{ action: "mine", x: 1, y: 2 }] }), controller.signal, clock, "build_plan", "pilot")
+      .catch((error: unknown) => error);
+    expect(output).toBeInstanceOf(OutcomeUnknownError);
+    expect(output).toMatchObject({ accepted: { plan_id: 91 }, lastKnown: latest,
+      cancellation: { origin: "build_plan/pilot/abort", readback_error: expect.any(String) } });
+    expect((output as Error).message).toContain("last_known is historical");
+    if (cancel === "fence") expect(output).toMatchObject({ cancellation: { code: "WRITER_RETIRED" } });
+    if (cancel === "transport") expect(output).toMatchObject({ cancellation: { error: "transport lost" } });
+    if (cancel === "malformed") expect(output).toMatchObject({ cancellation: { error: expect.stringContaining("malformed") } });
+    expect(call.mock.calls.map(([method]) => method)).toEqual(["queue_plan", "plan_status", "cancel", "plan_status"]);
+    expect(call).toHaveBeenCalledWith("cancel", { plan_id: 91, origin: "build_plan/pilot/abort" });
+  });
+
+  it.each(["completed", "partial", "failed", "cancelled"])("preserves authoritative plan %s after a zero cancellation", async (status) => {
+    const controller = new AbortController();
+    let requested = false;
+    const terminal = { plan_id: 91, status, completed_steps: 1,
+      outcomes: [{ step: 1, action: "mine", status: "completed" }] };
+    const call = vi.fn(async (method: string) => {
+      if (method === "queue_plan") return { plan_id: 91 };
+      if (method === "cancel") { requested = true; return { cancelled: 0 }; }
+      return requested ? terminal : { plan_id: 91, status: "running", outcomes: [] };
+    });
+    const clock: TaskClock = { now: () => 0, sleep: async () => { controller.abort(); } };
+    const result = await executeRunPlan({ call } as unknown as Bridge,
+      runPlanSchema.parse({ steps: [{ action: "mine", x: 1, y: 2 }] }), controller.signal, clock);
+    expect(result).toMatchObject({ ...terminal, cancellation: { acknowledgement: { cancelled: 0 } } });
+    expect(call.mock.calls.map(([method]) => method)).toEqual(["queue_plan", "plan_status", "cancel", "plan_status"]);
+  });
+
+  it.each(["run_plan", "walk_to", "connect_entities"])("exposes cancellation rejection and historical evidence through MCP %s", async (tool) => {
+    const controller = new AbortController();
+    const handlers: Record<string, (args: any, extra?: any) => Promise<any>> = {};
+    let reads = 0;
+    const plan = { plan_id: 91, status: "running", current_step: 8, completed_steps: 7,
+      outcomes: Array.from({ length: 7 }, (_, i) => ({ step: i + 1, action: "mine", status: "completed" })),
+      execution: { mode: "sequential_nontransactional", rollback: "none", committed_steps: [1, 2, 3, 4, 5, 6, 7] } };
+    const task = { status: "running", detail: "historical progress", outcome: { inserted: 7 } };
+    const methods: string[] = [];
+    const exec = vi.fn(async (cmd: string) => {
+      const method = /"rpc","([a-z_]+)"/.exec(cmd)![1]!;
+      methods.push(method);
+      if (method === "connect_entities") return JSON.stringify({ ok: true, data: { kind: "belt", steps: [{ x: 1, y: 0, name: "transport-belt" }] } });
+      if (method === "enqueue" || method === "queue_plan") return JSON.stringify({ ok: true, data: { task_id: 92, plan_id: 91 } });
+      if (method === "cancel") return JSON.stringify({ ok: false, error: "WRITER_RETIRED: newer writer" });
+      if (++reads === 1) controller.abort();
+      return JSON.stringify({ ok: true, data: tool === "run_plan" ? plan : task });
+    });
+    const bridge = new Bridge({ exec } as unknown as RconClient);
+    bridge.writerGeneration = 4;
+    registerMcpTools({ registerTool(name, _config, handler) { handlers[name] = handler; } }, async () => bridge, validConfig);
+    vi.useFakeTimers();
+    try {
+      const pending = handlers[tool]!(tool === "run_plan" ? { steps: [{ action: "mine", x: 1, y: 2 }] } : tool === "connect_entities"
+        ? { kind: "belt", prototype: "transport-belt", from: { x: 0, y: 0 }, to: { x: 2, y: 0 } } : { x: 1, y: 2 },
+        { signal: controller.signal });
+      await vi.advanceTimersByTimeAsync(2_000);
+      const output = await pending;
+      expect(output.isError).toBe(true);
+      expect(output.structuredContent).toMatchObject({ status: "outcome_unknown", code: "OUTCOME_UNKNOWN", physical_state: "unknown",
+        ...(tool === "run_plan" ? { plan_id: 91, last_known: plan } : { task_id: 92, last_known: task }),
+        cancellation: { code: "WRITER_RETIRED", error: "WRITER_RETIRED: newer writer",
+          origin: `${tool}/unknown/abort` } });
+      expect(output.content[0].text).toContain("was not confirmed");
+      expect(output.content[0].text).not.toMatch(/was cancelled|task cancelled|retry the call/);
+      expect(methods).toEqual(tool === "run_plan" ? ["queue_plan", "plan_status", "cancel", "plan_status"]
+        : [...(tool === "connect_entities" ? ["connect_entities"] : []), "enqueue", "get_task", "cancel", "get_task"]);
+      const cancel = exec.mock.calls.find(([cmd]) => cmd.includes('"cancel"'))![0];
+      expect(cancel).toContain('writer_generation');
+      expect(methods).not.toContain("claim_writer");
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each(["fence", "transport", "malformed"])("keeps terminal plan results and %s cancellation evidence", async (failure) => {
+    const controller = new AbortController();
+    let requested = false;
+    const terminal = { plan_id: 91, status: "completed", completed_steps: 1,
+      outcomes: [{ step: 1, action: "mine", status: "completed" }] };
+    const call = vi.fn(async (method: string) => {
+      if (method === "queue_plan") return { plan_id: 91 };
+      if (method === "cancel") {
+        requested = true;
+        if (failure === "fence") throw new WriterRetiredError("WRITER_RETIRED: newer writer");
+        if (failure === "transport") throw new RconError("transport lost");
+        return null;
+      }
+      return requested ? terminal : { plan_id: 91, status: "running", outcomes: [] };
+    });
+    const clock: TaskClock = { now: () => 0, sleep: async () => { controller.abort(); } };
+    const output = await executeRunPlan({ call } as unknown as Bridge,
+      runPlanSchema.parse({ steps: [{ action: "mine", x: 1, y: 2 }] }), controller.signal, clock);
+    expect(output).toMatchObject({ ...terminal, cancellation: { error: expect.any(String) } });
+    expect(call.mock.calls.map(([method]) => method)).toEqual(["queue_plan", "plan_status", "cancel", "plan_status"]);
+  });
+
+  it.each(["belt", "power"])("connect_entities preserves terminal results and zero cancellation for %s routes", async (kind) => {
+    for (const status of ["done", "partial", "failed", "cancelled"]) {
+    const controller = new AbortController();
+    const handlers: Record<string, (args: any, extra?: any) => Promise<any>> = {};
+    let requested = false;
+    const outcome = { placed: 7, requested: 8 };
+    const exec = vi.fn(async (cmd: string) => {
+      const method = /"rpc","([a-z_]+)"/.exec(cmd)![1]!;
+      let data: unknown;
+      if (method === "connect_entities") data = { kind, steps: [{ x: 1, y: 0, name: "transport-belt" }] };
+      else if (method === "enqueue") data = { task_id: 92 };
+      else if (method === "cancel") { requested = true; data = { cancelled: 0 }; }
+      else { controller.abort(); data = requested ? { status, detail: "native progress", outcome } : { status: "running" }; }
+      return JSON.stringify({ ok: true, data });
+    });
+    const bridge = new Bridge({ exec } as unknown as RconClient);
+    registerMcpTools({ registerTool(name, _config, handler) { handlers[name] = handler; } }, async () => bridge, validConfig);
+    vi.useFakeTimers();
+    try {
+      const pending = handlers.connect_entities!({ kind, prototype: kind === "power" ? "small-electric-pole" : "transport-belt", from: { x: 0, y: 0 }, to: { x: 2, y: 0 } },
+        { signal: controller.signal });
+      await vi.advanceTimersByTimeAsync(2_000);
+      const output = await pending;
+      expect(output.structuredContent).toMatchObject({ status: status === "done" ? "completed" : status, task_id: 92,
+        cancellation: { acknowledgement: { cancelled: 0 } }, ...outcome });
+      if (kind === "power" && status === "done") expect(output.content[0].text).toContain("electrical continuity was not checked");
+      expect(output.isError).toBe(status === "failed" || status === "cancelled");
+      expect(exec).toHaveBeenCalledTimes(5);
+    } finally { vi.useRealTimers(); }
+    }
   });
 
   it("plan_status normalizes terminal empty collections", async () => {
@@ -333,14 +488,15 @@ describe("run_plan and direct tools under a human hold", () => {
   it("direct tools fail with a retry-after-hold result and cancel the task; run_plan stays nonterminal", async () => {
     const handlers: Record<string, (args: any, extra?: any) => Promise<any>> = {};
     const methods: string[] = [];
+    let cancelled = false;
     const reply = (data: unknown) => JSON.stringify({ ok: true, data });
     const exec = vi.fn(async (cmd: string) => {
       const method = /"rpc","([a-z_]+)"/.exec(cmd)![1]!;
       methods.push(method);
       switch (method) {
         case "enqueue": return reply({ task_id: 41 });
-        case "get_task": return reply({ status: "running", detail: "", fifo: { human_control: true, human_idle_ticks: 2 } });
-        case "cancel": return reply({ cancelled: 1 });
+        case "get_task": return reply(cancelled ? { status: "cancelled" } : { status: "running", detail: "", fifo: { human_control: true, human_idle_ticks: 2 } });
+        case "cancel": cancelled = true; return reply({ cancelled: 1 });
         case "connect_entities": return reply({ kind: "belt", prototype: "transport-belt", from: { x: 0, y: 0 }, to: { x: 2, y: 0 },
           length: 1, steps: [{ x: 1, y: 0, name: "transport-belt", direction: 4 }], physical: true, ghosts: false });
         case "queue_plan": return reply({ plan_id: 51 });
@@ -356,13 +512,14 @@ describe("run_plan and direct tools under a human hold", () => {
       for (const [name, args] of [["walk_to", { x: 1, y: 2 }],
         ["connect_entities", { kind: "belt", prototype: "transport-belt", from: { x: 0, y: 0 }, to: { x: 2, y: 0 } }]] as const) {
         methods.length = 0;
+        cancelled = false;
         const out = await settle(handlers[name]!(args));
         expect(out.isError).toBe(true);
-        expect(out.structuredContent).toMatchObject({ status: "failed", terminal: true, next_action: null });
-        expect(out.structuredContent).not.toHaveProperty("task_id");
+        expect(out.structuredContent).toMatchObject({ status: "cancelled", task_id: 41, terminal: true, next_action: null,
+          cancellation: { acknowledgement: { cancelled: 1 } } });
         expect(out.content[0].text).toMatch(/a human holds the body: task 41 was still running after 570s and was cancelled/);
         expect(out.content[0].text).toMatch(/retry the call after the hold ends/);
-        expect(methods.at(-1)).toBe("cancel");
+        expect(methods.slice(-2)).toEqual(["cancel", "get_task"]);
       }
 
       methods.length = 0;

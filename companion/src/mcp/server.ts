@@ -73,6 +73,7 @@ function failure(error: unknown, prefix = "Error") {
   if (error instanceof OutcomeUnknownError) {
     return result({ status: "outcome_unknown", terminal: true, code: "OUTCOME_UNKNOWN", summary: message,
       ...(error.accepted ? { ...error.accepted, physical_state: "unknown", last_known: error.lastKnown } : {}),
+      ...(error.cancellation ? { cancellation: error.cancellation } : {}),
       next_action: null }, true);
   }
   const code = error instanceof WriterRetiredError ? "WRITER_RETIRED" : /^([A-Z][A-Z0-9_]*[A-Z0-9]):/.exec(message)?.[1] ?? "TOOL_ERROR";
@@ -261,14 +262,16 @@ export function registerMcpTools(
       return result({ ...value, status: "completed", terminal: true, summary: summary(value), next_action: null });
     } catch (error) { return failure(error); }
   };
-  // A TUI turn interruption aborts the MCP request; the bridge then cancels
-  // the owned game task, naming the tool and this process's role in the
+  // A TUI turn interruption aborts the MCP request; the bridge then
+  // requests cancellation of the owned task, naming the tool and role in the
   // cancel's origin.
   const task = async (tool: string, type: string, params: Record<string, unknown>, signal?: AbortSignal) => {
     try {
       const terminal = await (await bridge()).enqueueAndWaitResult({ type, ...params } as never, { tool, role, ...(signal ? { signal } : {}) });
       const status = terminal.status === "done" ? "completed" : terminal.status;
       return result({ status, terminal: true, summary: terminal.detail || status,
+        ...(terminal.task_id !== undefined ? { task_id: terminal.task_id } : {}),
+        ...(terminal.cancellation ? { cancellation: terminal.cancellation } : {}),
         ...(terminal.human_control ? { human_control: true } : {}),
         ...(terminal.outcome ?? {}), next_action: null }, status === "failed" || status === "cancelled");
     } catch (error) { return failure(error); }
@@ -389,11 +392,18 @@ export function registerMcpTools(
     }
     if (check_only) return result({ ...route, check_only: true, status: "completed", terminal: true,
       summary: `route of ${route.steps.length} pieces planned; nothing built`, next_action: null });
-    const detail = route.steps.length === 0
-      ? "endpoints already have a physical connection"
-      : await b.enqueueAndWait({ type: "build_plan", ...toolPayloads.buildPlan(route.steps, { auto_craft: true, stop_on_error: true }) } as never,
+    const terminal = route.steps.length === 0 ? undefined
+      : await b.enqueueAndWaitResult({ type: "build_plan", ...toolPayloads.buildPlan(route.steps, { auto_craft: true, stop_on_error: true }) } as never,
         { tool: "connect_entities", role, deadlineMs: started + DEFAULT_TASK_TIMEOUT_MS,
           returnByMs: started + DEFAULT_TASK_TIMEOUT_MS, ...(signal ? { signal } : {}) });
+    const evidence = terminal?.cancellation ? { task_id: terminal.task_id, cancellation: terminal.cancellation } : {};
+    const detail = terminal?.detail || (terminal ? terminal.status : "endpoints already have a physical connection");
+    if (terminal && (terminal.cancellation || terminal.status !== "done")) return result({ ...route, ...evidence,
+      ...(terminal.outcome ?? {}), ...(terminal.human_control ? { human_control: true } : {}),
+      status: terminal.status === "done" ? "completed" : terminal.status, terminal: true,
+      summary: detail + (p.kind === "power" && terminal.status === "done"
+        ? "; electrical continuity was not checked after cancellation was requested" : ""), detail, next_action: null },
+    terminal.status === "failed" || terminal.status === "cancelled");
     if (p.kind !== "power") return result({ ...route, status: "completed", terminal: true, summary: detail, detail, next_action: null });
 
     const ordered = [p.from, ...route.steps.map((step: any) => ({ x: step.x, y: step.y })), p.to];

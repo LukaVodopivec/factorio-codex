@@ -168,7 +168,7 @@ describe("Bridge.enqueueAndWait", () => {
         cancelled.push(cmd);
         return ok({ cancelled: 1 });
       }
-      return ok({ status: "running", detail: "" });
+      return ok({ status: cancelled.length ? "cancelled" : "running", detail: "" });
     });
     const time = fakeClock();
     await expect(
@@ -181,22 +181,79 @@ describe("Bridge.enqueueAndWait", () => {
     expect(cancelled[0]).toContain(escapeLuaString(JSON.stringify({ task_id: 9, origin: "walk_to/supervisor/direct-task-timeout" })));
   });
 
-  it("cancels its owned task on abort and never polls again", async () => {
+  it("confirms exact-task cancellation after abort", async () => {
     const controller = new AbortController();
     const methods: string[] = [];
     const cancels: string[] = [];
     const { rcon } = fakeRcon((cmd) => {
       if (cmd.includes('"enqueue"')) { methods.push("enqueue"); return ok({ task_id: 12 }); }
       if (cmd.includes('"cancel"')) { methods.push("cancel"); cancels.push(cmd); return ok({ cancelled: 1 }); }
-      methods.push("get_task"); return ok({ status: "running" });
+      methods.push("get_task"); return ok({ status: "cancelled" });
     });
     const clock: TaskClock = { now: () => 0, sleep: async () => { controller.abort(); } };
     await expect(new Bridge(rcon).enqueueAndWait(
       { type: "mine", target: { x: 0, y: 0 }, count: 2 }, { signal: controller.signal, clock, tool: "mine", role: "pilot" },
     )).rejects.toThrow(/cancelled/);
-    expect(methods).toEqual(["enqueue", "cancel"]);
+    expect(methods).toEqual(["enqueue", "cancel", "get_task"]);
     // An interrupted turn's cancel names the session role of this process.
     expect(cancels[0]).toContain(escapeLuaString(JSON.stringify({ task_id: 12, origin: "mine/pilot/abort" })));
+  });
+
+  it.each([
+    ["abort", "fence", "running"], ["deadline", "fence", "running"],
+    ["abort", "transport", "unavailable"], ["deadline", "transport", "running"],
+    ["abort", "malformed", "malformed"], ["deadline", "zero", "mismatched"],
+    ["deadline", "acknowledged", "running"], ["abort", "acknowledged", "unavailable"],
+  ])("retains task evidence after %s with %s cancel and %s readback", async (trigger, cancel, readback) => {
+    const controller = new AbortController();
+    let now = 0, requested = false;
+    const latest = { status: "running", detail: "historical progress", outcome: { inserted: 7 } };
+    const clock: TaskClock = { now: () => now, sleep: async (ms) => {
+      now += ms;
+      if (trigger === "abort" && now > 100) controller.abort();
+    } };
+    const { rcon, exec } = fakeRcon((cmd) => {
+      if (cmd.includes('"enqueue"')) return ok({ task_id: 92 });
+      if (cmd.includes('"cancel"')) {
+        requested = true;
+        if (cancel === "fence") return Promise.resolve(JSON.stringify({ ok: false, error: "WRITER_RETIRED: newer writer" }));
+        if (cancel === "transport") throw new RconError("transport lost");
+        return ok(cancel === "malformed" ? {} : { cancelled: cancel === "zero" ? 0 : 1 });
+      }
+      if (!requested || readback === "running") return ok(latest);
+      if (readback === "unavailable") throw new RconError("readback unavailable");
+      return ok(readback === "mismatched" ? { task_id: 93, status: "done" } : { status: "nonsense" });
+    });
+    const output = await new Bridge(rcon).enqueueAndWaitResult(
+      { type: "walk_to", target: { x: 1, y: 2 } },
+      { clock, timeoutMs: 300, signal: controller.signal, tool: "walk_to", role: "pilot" }).catch((error: unknown) => error);
+    expect(output).toBeInstanceOf(OutcomeUnknownError);
+    expect(output).toMatchObject({ accepted: { task_id: 92 }, lastKnown: latest,
+      cancellation: { origin: `walk_to/pilot/${trigger === "abort" ? "abort" : "direct-task-timeout"}` } });
+    expect((output as Error).message).toContain("was not confirmed");
+    expect((output as Error).message).not.toMatch(/task cancelled|was cancelled|retry the call/);
+    if (cancel === "fence") expect(output).toMatchObject({ cancellation: { code: "WRITER_RETIRED", error: expect.stringContaining("newer writer") } });
+    if (cancel === "transport") expect(output).toMatchObject({ cancellation: { error: expect.stringContaining("transport lost") } });
+    if (cancel === "malformed") expect(output).toMatchObject({ cancellation: { error: expect.stringContaining("malformed") } });
+    const methods = exec.mock.calls.map(([cmd]) => /rpc","([^"]+)"/.exec(cmd)?.[1]);
+    expect(methods).toEqual(trigger === "abort" ? ["enqueue", "get_task", "cancel", "get_task"]
+      : ["enqueue", "get_task", "get_task", "cancel", "get_task"]);
+    const command = exec.mock.calls.find(([cmd]) => cmd.includes('"cancel"'))![0];
+    expect(command).toContain(escapeLuaString(JSON.stringify({ task_id: 92,
+      origin: `walk_to/pilot/${trigger === "abort" ? "abort" : "direct-task-timeout"}` })));
+  });
+
+  it.each(["done", "partial", "failed", "cancelled"] as const)("preserves terminal task %s when cancel acknowledges zero", async (status) => {
+    const controller = new AbortController();
+    const terminal = { status, detail: "native outcome", outcome: { inserted: 7 } };
+    const { rcon, exec } = fakeRcon((cmd) => cmd.includes('"enqueue"') ? ok({ task_id: 92 })
+      : cmd.includes('"cancel"') ? ok({ cancelled: 0 }) : ok(terminal));
+    const clock: TaskClock = { now: () => 0, sleep: async () => { controller.abort(); } };
+    const result = await new Bridge(rcon).enqueueAndWaitResult({ type: "walk_to", target: { x: 1, y: 2 } },
+      { clock, signal: controller.signal });
+    expect(result).toMatchObject({ ...terminal, ...(status === "cancelled" ? { detail: "the task was cancelled" } : {}),
+      task_id: 92, cancellation: { acknowledgement: { cancelled: 0 } } });
+    expect(exec).toHaveBeenCalledTimes(3);
   });
 
   it("does not enqueue when already aborted", async () => {
@@ -213,12 +270,13 @@ describe("Bridge.enqueueAndWaitResult under a human hold", () => {
   // get_task carries the mod's fifo block; human_control is the current hold.
   function heldRcon(held: (now: number) => boolean, done: (now: number) => boolean, now: () => number) {
     const methods: string[] = [];
+    let cancelled = false;
     const fake = fakeRcon((cmd) => {
       if (cmd.includes('"enqueue"')) { methods.push("enqueue"); return ok({ task_id: 21 }); }
-      if (cmd.includes('"cancel"')) { methods.push("cancel"); return ok({ cancelled: 1 }); }
+      if (cmd.includes('"cancel"')) { methods.push("cancel"); cancelled = true; return ok({ cancelled: 1 }); }
       methods.push("get_task");
       const t = now();
-      return ok(done(t) ? { status: "done", detail: "arrived", fifo: { human_control: held(t) } }
+      return ok(cancelled ? { status: "cancelled" } : done(t) ? { status: "done", detail: "arrived", fifo: { human_control: held(t) } }
         : { status: "running", detail: "", fifo: { human_control: held(t), human_idle_ticks: 3 } });
     });
     return { ...fake, methods };
@@ -228,13 +286,13 @@ describe("Bridge.enqueueAndWaitResult under a human hold", () => {
     let now = 0;
     const clock: TaskClock = { now: () => now, sleep: async (ms) => { now += ms; } };
     const { rcon, methods } = heldRcon(() => true, () => false, () => now);
-    const error = await new Bridge(rcon).enqueueAndWaitResult({ type: "walk_to", target: { x: 1, y: 2 } }, { clock })
+    const error = await new Bridge(rcon).enqueueAndWait({ type: "walk_to", target: { x: 1, y: 2 } }, { clock })
       .catch((e: unknown) => e);
     expect(error).toBeInstanceOf(ModError);
     expect((error as Error).message).toMatch(/a human holds the body: task 21 was still running after 570s and was cancelled/);
     expect((error as Error).message).toMatch(/retry the call after the hold ends/);
     expect(now).toBe(DEFAULT_TASK_TIMEOUT_MS);
-    expect(methods.at(-1)).toBe("cancel");
+    expect(methods.slice(-2)).toEqual(["cancel", "get_task"]);
   });
 
   it("does not charge held time to the deadline and marks the result delayed", async () => {
@@ -254,7 +312,7 @@ describe("Bridge.enqueueAndWaitResult under a human hold", () => {
     const { rcon, methods } = heldRcon((t) => t <= 2_000, () => false, () => now);
     await expect(new Bridge(rcon).enqueueAndWait({ type: "mine", target: { x: 0, y: 0 }, count: 1 },
       { clock, timeoutMs: 1_000 })).rejects.toThrow(/gave up after 1s — task cancelled \(3s wall time including a human hold\)/);
-    expect(methods.at(-1)).toBe("cancel");
+    expect(methods.slice(-2)).toEqual(["cancel", "get_task"]);
     expect(now).toBe(2_700); // 1 s budget plus the 1.7 s between held samples 100 and 1800 ms
   });
 
@@ -266,7 +324,7 @@ describe("Bridge.enqueueAndWaitResult under a human hold", () => {
     await expect(new Bridge(rcon).enqueueAndWait({ type: "mine", target: { x: 0, y: 0 }, count: 1 },
       { clock, timeoutMs: 1_000 })).rejects.toThrow(/gave up after 1s/);
     expect(now).toBe(1_000);
-    expect(methods.at(-1)).toBe("cancel");
+    expect(methods.slice(-2)).toEqual(["cancel", "get_task"]);
   });
 });
 

@@ -73,9 +73,22 @@ is `factorio-codex`.
   `plan_id` or `task_id`, `physical_state: "unknown"`, and `last_known` when
   available. That sample is historical, not a current physical outcome.
   Monitoring failures never cancel, re-enqueue, or retry the mutation. An
-  owning call's abort cancels only its exact work; direct-task deadlines also
-  cancel explicitly. A `run_plan` monitoring deadline returns the latest
-  nonterminal sample without cancellation.
+  owning call's abort requests cancellation of only its exact work;
+  direct-task deadlines also request cancellation explicitly. A request is
+  not confirmation: the bridge sends one exact-target cancel and reads that
+  work's status once, even after a rejection or lost reply. Only validated
+  terminal readback confirms the physical outcome, preserving work that
+  completed, partially completed, or failed before cancellation. Plan readback
+  must match its accepted identity; native task replies are bound by the exact
+  `get_task` request. Nonterminal, unavailable, malformed or mismatched readback
+  returns `OUTCOME_UNKNOWN` with accepted identity and historical `last_known`
+  progress. Cancellation evidence includes the origin, acknowledgement or
+  error (including writer retirement), and any readback error; terminal results
+  also retain this evidence. After cancellation is requested, `connect_entities`
+  returns the build task's terminal outcome directly; a power route's electrical
+  continuity is explicitly unverified. Neither uncertainty nor rejection retries writes,
+  reclaims a writer, or cancels unrelated work. A `run_plan` monitoring deadline
+  returns the latest nonterminal sample without cancellation.
 - **MCP server** (`mcp/server.ts`): a stdio MCP server started by Codex from the
   committed `.codex/config.toml` through `scripts/start-factorio-mcp`. The
   `full` surface has every tool; `read-only` has only reads and dry runs.

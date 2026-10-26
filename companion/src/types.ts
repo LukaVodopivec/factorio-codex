@@ -1,5 +1,5 @@
 export interface ChunkedEnvelope { ok: true; chunked: true; id: number; parts: number; data: string }
-export interface GetTaskResult { status: "queued" | "running" | "done" | "partial" | "failed" | "cancelled"; detail?: string; outcome?: Record<string, unknown>;
+export interface GetTaskResult { task_id?: number; cancellation?: import("./bridge.js").CancellationEvidence; status: "queued" | "running" | "done" | "partial" | "failed" | "cancelled"; detail?: string; outcome?: Record<string, unknown>;
   /** Read from the mod: the body's FIFO state, including the current human hold. */
   fifo?: { human_control?: boolean };
   /** Set by the bridge: a human hold delayed this task (delayed, not failed). */

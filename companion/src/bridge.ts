@@ -16,7 +16,8 @@ export const JOBS_BUSY = "JOBS_BUSY:";
  *  ModError, and never retried here. Also used when accepted work loses its
  *  monitor, retaining its identity and historical sample when known. */
 export class OutcomeUnknownError extends Error {
-  constructor(message: string, readonly accepted?: { plan_id: number } | { task_id: number }, readonly lastKnown?: unknown) {
+  constructor(message: string, readonly accepted?: { plan_id: number } | { task_id: number }, readonly lastKnown?: unknown,
+    readonly cancellation?: CancellationEvidence) {
     super(message);
   }
 }
@@ -76,6 +77,56 @@ export function monitoringUnknown(what: string, accepted: { plan_id: number } | 
   error: unknown, lastKnown?: unknown): OutcomeUnknownError {
   const reason = error instanceof Error ? error.message : String(error);
   return new OutcomeUnknownError(`monitoring failed during ${what} (${reason}); physical state is unknown; nothing was cancelled or re-enqueued; read observe_local or plan_status before deciding what to do next`, accepted, lastKnown);
+}
+/** A cancellation request is separate from its physical readback. */
+export interface CancellationEvidence {
+  origin: string;
+  acknowledgement?: { cancelled: 0 | 1 };
+  error?: string;
+  code?: string;
+  readback_error?: string;
+  /** A later nonterminal read; historical evidence, not a terminal outcome. */
+  readback?: unknown;
+}
+
+/** One exact-target write and one read, even when the write's answer is lost.
+ * Never reclaim a retired writer or retry a physical mutation. */
+export async function cancelAndReadback<T extends { status: string }>(
+  bridge: Bridge, accepted: { plan_id: number } | { task_id: number }, origin: string,
+  readback: () => Promise<unknown>, valid: (value: unknown) => value is T,
+  terminal: (value: T) => boolean, lastKnown?: T,
+): Promise<T & { cancellation: CancellationEvidence }> {
+  const cancellation: CancellationEvidence = { origin };
+  try {
+    const ack = await bridge.call<{ cancelled: number }>("cancel", { ...accepted, origin });
+    if (!ack || (ack.cancelled !== 0 && ack.cancelled !== 1)) throw new ModError("malformed cancellation acknowledgement");
+    cancellation.acknowledgement = { cancelled: ack.cancelled };
+  } catch (error) {
+    cancellation.error = error instanceof Error ? error.message : String(error);
+    if (error instanceof WriterRetiredError) cancellation.code = "WRITER_RETIRED";
+  }
+  try {
+    const status = await readback();
+    if (!valid(status)) throw new ModError("malformed cancellation readback or mismatched identity");
+    if (terminal(status)) return { ...status, cancellation };
+    lastKnown ??= status;
+    cancellation.readback = status;
+    cancellation.readback_error = `readback is nonterminal (${status.status})`;
+  } catch (error) {
+    cancellation.readback_error = error instanceof Error ? error.message : String(error);
+  }
+  throw new OutcomeUnknownError(`cancellation requested by ${origin} was not confirmed; physical state is unknown; `
+    + `${cancellation.error ?? `cancel acknowledged ${cancellation.acknowledgement!.cancelled}`}; ${cancellation.readback_error}; `
+    + "last_known is historical evidence; inspect the accepted work before deciding what to do next",
+  accepted, lastKnown, cancellation);
+}
+
+function validTaskStatus(value: unknown): value is GetTaskResult {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const status = value as GetTaskResult;
+  return ["queued", "running", "done", "partial", "failed", "cancelled"].includes(status.status)
+    && (status.detail === undefined || typeof status.detail === "string")
+    && (status.outcome === undefined || (!!status.outcome && typeof status.outcome === "object" && !Array.isArray(status.outcome)));
 }
 function pendingJob(value: unknown): value is JobStatus {
   const job = value as JobStatus | undefined;
@@ -227,15 +278,15 @@ export class Bridge {
   async enqueueAndWait(task: Task, opts: EnqueueOptions = {}): Promise<string> {
     const st = await this.enqueueAndWaitResult(task, opts);
     if (st.status === "done") return st.detail || "done";
-    if (st.status === "cancelled") throw new TaskCancelledError("the task was cancelled");
+    if (st.status === "cancelled") throw new TaskCancelledError(st.detail || "the task was cancelled");
     throw new ModError(st.detail || (st.status === "partial" ? "task partially completed" : "task failed"));
   }
 
   /** Same physical queue path, retaining the structured terminal outcome.
    *  Time the body spends under a human hold (get_task's fifo.human_control)
    *  is not charged to the deadline. A direct call has no parked form: if the
-   *  body is still held at the return guard, the task is cancelled and the call
-   *  fails asking for a retry after the hold. */
+   *  body is still held at the return guard, cancellation is requested. Only a
+   *  terminal readback confirms the physical outcome. */
   async enqueueAndWaitResult(task: Task, opts: EnqueueOptions = {}): Promise<GetTaskResult> {
     if (opts.signal?.aborted) throw new TaskCancelledError("the task was cancelled");
     const { task_id } = await this.call<{ task_id: number }>("enqueue", { task });
@@ -255,8 +306,7 @@ export class Bridge {
         await clock.sleep(Math.max(0, Math.min(delay, budget.remaining())));
         if (opts.signal?.aborted) throw new TaskCancelledError("the task was cancelled");
         const st = await this.call<GetTaskResult>("get_task", { task_id });
-        if (opts.signal?.aborted) throw new TaskCancelledError("the task was cancelled");
-        if (!st || !["queued", "running", "done", "partial", "failed", "cancelled"].includes(st.status)) {
+        if (!validTaskStatus(st)) {
           throw new ModError("malformed get_task status");
         }
         lastKnown = st;
@@ -265,6 +315,7 @@ export class Bridge {
         if (status.status !== "queued" && status.status !== "running") {
           return budget.held ? { ...status, human_control: true } : status;
         }
+        if (opts.signal?.aborted) throw new TaskCancelledError("the task was cancelled");
         if (budget.remaining() > 0) continue;
         deadlineReached = true;
         const waited = Math.round((clock.now() - started) / 1000);
@@ -280,8 +331,15 @@ export class Bridge {
         throw monitoringUnknown(`${opts.tool ?? task.type} (task ${task_id})`, { task_id }, error, lastKnown);
       }
       const cause = opts.signal?.aborted ? "abort" : "direct-task-timeout";
-      await this.call("cancel", { task_id, origin: `${opts.tool ?? task.type}/${opts.role ?? "unknown"}/${cause}` }).catch(() => {});
-      throw error;
+      const terminal = await cancelAndReadback(this, { task_id }, `${opts.tool ?? task.type}/${opts.role ?? "unknown"}/${cause}`,
+        // Native get_task has no identity field: the exact request binds its reply.
+        () => this.call("get_task", { task_id }),
+        (value): value is GetTaskResult => validTaskStatus(value)
+          && (!("task_id" in value) || value.task_id === task_id),
+        (status) => status.status !== "queued" && status.status !== "running", lastKnown);
+      const { fifo: _fifo, ...status } = terminal;
+      return { ...status, task_id, ...(budget.held ? { human_control: true } : {}),
+        ...(status.status === "cancelled" ? { detail: error instanceof Error ? error.message : String(error) } : {}) };
     }
   }
 }

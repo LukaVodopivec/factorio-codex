@@ -376,8 +376,8 @@ check(mine.tick(holding) == nil and body.mining_state.mining and body.selected =
 body.mining_state, body.selected, machine_contents = { mining = false }, nil, {}
 machine_fluids = { water = 1 }
 local wet, wet_error = pcall(mine.start, { target = { x = 5, y = 0 }, count = 1, target_kind = "owned" })
-check(not wet and tostring(wet_error):match("with fluids") ~= nil,
-  "player-owned recovery fails closed for nonempty fluids")
+check(not wet and tostring(wet_error):match("^refusing to recover a player%-owned entity with fluids") ~= nil,
+  "player-owned recovery fails closed for nonempty fluids without a source location prefix")
 configure_capacity(2)
 local drainless = { target = { x = 5, y = 0 }, count = 1, target_kind = "owned", allow_fluid_loss = true }
 mine.start(drainless)

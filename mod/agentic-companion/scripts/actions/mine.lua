@@ -291,7 +291,7 @@ function M.start(task)
   end
   if count > 1 and found == owned then error("mine count greater than 1 is only valid for resources, trees and rocks") end
   if found == owned and not recoverable(found, task.allow_fluid_loss) then
-    error("refusing to recover a player-owned entity with fluids; set allow_fluid_loss=true to discard fluids through ordinary dismantling")
+    error("refusing to recover a player-owned entity with fluids; set allow_fluid_loss=true to discard fluids through ordinary dismantling", 0)
   end
   task._entity, task._entity_name = found, found.name
   task._resolved_target = entity_snapshot(found)

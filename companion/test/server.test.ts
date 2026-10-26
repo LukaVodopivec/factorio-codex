@@ -45,10 +45,13 @@ describe("run-local server lifecycle", () => {
   it("keeps every server path inside the run directory and binds RCON to loopback only", () => {
     const paths = runPaths(tempDir());
     expect(createArgs(paths)).toEqual(["--create", paths.save, "--map-gen-settings", paths.mapGen, "--mod-directory", paths.mods]);
-    const args = startArgs(paths, "secret");
-    expect(args).not.toContain("--bind");
-    expect(args).toEqual(expect.arrayContaining(["--mod-directory", paths.mods, "--rcon-bind", "127.0.0.1:19015"]));
-    expect(startArgs(paths, "secret", "10.0.0.5")).toEqual(expect.arrayContaining(["--bind", "10.0.0.5"]));
+    for (const bind of [undefined, "10.0.0.5"]) {
+      const args = startArgs(paths, "secret", bind);
+      expect(args).not.toContain("--disable-audio");
+      expect(args).toEqual(["--start-server", paths.save, "--server-settings", paths.serverSettings,
+        "--mod-directory", paths.mods, ...(bind ? ["--bind", bind] : []), "--port", "34197",
+        "--rcon-bind", "127.0.0.1:19015", "--rcon-password", "secret"]);
+    }
   });
 
   it("only trusts a recorded pid that is a factorio executable running in this run directory", () => {

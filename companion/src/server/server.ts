@@ -71,7 +71,7 @@ export function createArgs(paths: RunPaths): string[] {
 export function startArgs(paths: RunPaths, password: string, bind?: string): string[] {
   return ["--start-server", paths.save, "--server-settings", paths.serverSettings, "--mod-directory", paths.mods,
     ...(bind ? ["--bind", bind] : []), "--port", String(GAME_PORT), "--rcon-bind", "127.0.0.1:19015",
-    "--rcon-password", password, "--disable-audio"];
+    "--rcon-password", password];
 }
 
 function requireBinary(explicit?: string): string {

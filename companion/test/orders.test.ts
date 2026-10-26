@@ -1,9 +1,10 @@
 import fs from "node:fs";
+import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { JobBusyError, ModError, WriterRetiredError, type Bridge } from "../src/bridge.js";
-import { createOrdersTracker, createPackageQueue, holdLock, packageFailures, packageVerifications, readPackageQueue } from "../src/coordination/orders.js";
+import { createOrdersTracker, createPackageQueue, holdLock, releaseLock, packageFailures, packageVerifications, readPackageQueue } from "../src/coordination/orders.js";
 import { registerMcpTools, result, runMcpServer, type McpSurface, type SessionRole } from "../src/mcp/server.js";
 import * as coordination from "../src/coordination/orders.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -15,7 +16,10 @@ afterEach(() => {
   vi.clearAllTimers();
   vi.useRealTimers();
   vi.restoreAllMocks();
-  dirs.splice(0).forEach((dir) => fs.rmSync(dir, { recursive: true, force: true }));
+  dirs.splice(0).forEach((dir) => {
+    releaseLock(dir);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
 });
 const runDir = () => { const dir = fs.mkdtempSync(path.join(os.tmpdir(), "factorio-orders-")); dirs.push(dir); return dir; };
 
@@ -918,6 +922,47 @@ describe("package auto-queue", () => {
     await createPackageQueue(() => dir, bridge).tick();
     expect(call).toHaveBeenCalledWith("start_research", { technologies: ["automation"], origin: "ledger/r2" });
     expect(readPackageQueue(dir)?.research).toMatchObject({ revision: 2, tick: 900 });
+  });
+
+  it("releases only its own exit listener across repeated acquisitions of new and reused directories", () => {
+    const baseline = process.listeners("exit");
+    const reused = runDir();
+    for (let cycle = 0; cycle < 12; cycle++) {
+      const dir = cycle % 2 === 0 ? reused : runDir();
+      expect(holdLock(dir)).toBe(true);
+      expect(holdLock(dir)).toBe(true);
+      expect(process.listenerCount("exit")).toBe(baseline.length + 1);
+      releaseLock(dir);
+      expect(fs.existsSync(path.join(dir, "package-queue.lock"))).toBe(false);
+      expect(process.listeners("exit")).toEqual(baseline);
+      releaseLock(dir);
+      expect(process.listeners("exit")).toEqual(baseline);
+    }
+  });
+
+  it("releases its exit listener without deleting a replacement owner's lock", () => {
+    const baseline = process.listeners("exit");
+    const dir = runDir();
+    const file = path.join(dir, "package-queue.lock");
+    expect(holdLock(dir)).toBe(true);
+    fs.writeFileSync(file, `${process.ppid}\n`);
+    releaseLock(dir);
+    expect(fs.readFileSync(file, "utf8")).toBe(`${process.ppid}\n`);
+    expect(process.listeners("exit")).toEqual(baseline);
+  });
+
+  it("cleans up held locks on process exit and preserves a replacement owner's lock", () => {
+    const owned = runDir();
+    const replaced = runDir();
+    execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", `
+      import fs from "node:fs";
+      import path from "node:path";
+      import { holdLock } from ${JSON.stringify(new URL("../src/coordination/orders.ts", import.meta.url).href)};
+      if (!holdLock(process.argv[1]) || !holdLock(process.argv[2])) throw new Error("lock not acquired");
+      fs.writeFileSync(path.join(process.argv[2], "package-queue.lock"), process.ppid + "\\n");
+    `, owned, replaced], { timeout: 10_000 });
+    expect(fs.existsSync(path.join(owned, "package-queue.lock"))).toBe(false);
+    expect(fs.readFileSync(path.join(replaced, "package-queue.lock"), "utf8")).toBe(`${process.pid}\n`);
   });
 
   it("takes over a dead process's lock atomically: a lock replaced meanwhile is put back", () => {

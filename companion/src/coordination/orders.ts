@@ -233,9 +233,16 @@ function alive(pid: number): boolean {
   try { process.kill(pid, 0); return true; }
   catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
 }
-/** Gives up this process's package lock, if it holds it. */
+const lockExitHandlers = new Map<string, () => void>();
+
+/** Gives up this process's package lock and exit handler, if it holds them. */
 export function releaseLock(dir: string, pid = process.pid): void {
-  const file = lockFile(dir);
+  const file = path.resolve(lockFile(dir));
+  if (pid === process.pid) {
+    const onExit = lockExitHandlers.get(file);
+    if (onExit) process.removeListener("exit", onExit);
+    lockExitHandlers.delete(file);
+  }
   try { if (Number(fs.readFileSync(file, "utf8").trim()) === pid) fs.rmSync(file); } catch { /* none */ }
 }
 /** One process per run queues packages: whoever holds the lock while alive.
@@ -243,14 +250,14 @@ export function releaseLock(dir: string, pid = process.pid): void {
  *  what was moved is not the stale lock judged dead (a live process replaced
  *  it meanwhile) it is put back, so two bridges never both hold it. */
 export function holdLock(dir: string, pid = process.pid, isAlive: (pid: number) => boolean = alive): boolean {
-  const file = lockFile(dir);
+  const file = path.resolve(lockFile(dir));
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       fs.writeFileSync(file, `${pid}\n`, { flag: "wx", mode: 0o600 });
-      if (pid === process.pid) {
-        process.once("exit", () => {
-          try { if (Number(fs.readFileSync(file, "utf8")) === pid) fs.rmSync(file); } catch { /* gone */ }
-        });
+      if (pid === process.pid && !lockExitHandlers.has(file)) {
+        const onExit = () => releaseLock(path.dirname(file), pid);
+        lockExitHandlers.set(file, onExit);
+        process.once("exit", onExit);
       }
       return true;
     } catch (error) {

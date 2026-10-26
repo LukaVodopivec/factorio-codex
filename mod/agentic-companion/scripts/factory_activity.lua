@@ -1,10 +1,44 @@
 -- Run-local character transfer telemetry. This records only physical transfers
 -- performed through the sole task queue; it is not a second coordination store.
 local autonomy = require("scripts.autonomy")
+local companion = require("scripts.companion")
 local M = {}
 local MAX_EVENTS = 128
 local MAX_RETURNED_EVENTS = 8
 local MAX_TARGET_ROWS = 16
+local MAX_UPKEEP_TRANSFERS = 128
+
+-- The existing physical transfer recorder sees nested supply extracts and
+-- each partial-insert attempt before cancellation/recovery can hide it.
+-- Keep those receipts on the owning upkeep plan, never infer them from its
+-- eventual top-level step result or a later body position.
+local function record_upkeep(kind, outcome)
+  local plan = storage.tasks and storage.tasks.active
+  if not (plan and plan.type == "plan" and plan.source == "upkeep") then return end
+  local c = companion.get()
+  local anchor = companion.anchor()
+  local surface = anchor and anchor.surface_ref or plan.surface
+  local body = { kind = "body", surface = surface,
+    position = c and c.valid and { x = c.position.x, y = c.position.y } or nil }
+  local target = outcome.target or {}
+  local entity = { kind = "entity", name = target.name, surface = surface,
+    position = target.position and { x = target.position.x, y = target.position.y } or nil }
+  local source, destination = body, entity
+  if kind == "extract" then source, destination = entity, body end
+  local rows = plan.upkeep_transfers or {}
+  plan.upkeep_transfers = rows
+  for _, row in ipairs(outcome.transfers) do
+    local amount = tonumber(kind == "insert" and row.inserted or row.extracted) or 0
+    if amount > 0 then
+      if #rows < MAX_UPKEEP_TRANSFERS then
+        rows[#rows + 1] = { tick = game.tick, step = plan.current_step, action = kind,
+          item = row.item, quality = row.quality, amount = amount, requested = row.requested,
+          status = row.requested and amount < row.requested and "partial" or "completed",
+          source = source, destination = destination }
+      else plan.upkeep_transfers_omitted = (plan.upkeep_transfers_omitted or 0) + 1 end
+    end
+  end
+end
 
 local function target_key(target)
   return string.format("%s\0%s\0%.17g\0%.17g", target.name or "", target.type or "", target.position.x, target.position.y)
@@ -37,6 +71,7 @@ function M.record(kind, outcome)
     end
   end
   if moved == 0 then return end
+  record_upkeep(kind, outcome)
   table.sort(items, function(a, b) return a.name < b.name end)
   local activity = ensure()
   local target = target_identity(outcome.target)

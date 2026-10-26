@@ -808,14 +808,80 @@ function M.bill(c, wants)
     local running
     pcall(function() running = tonumber(c.character_running_speed) end)
     local ok, nearest = pcall(registry.nearest_holders, fetch, position)
-    if running and running > 0 and ok then
+    if ok then
       for _, row in ipairs(rows) do
         local d2 = nearest[row.item]
-        if d2 then row.walk_s_lower_bound = tenth_down(math.sqrt(d2) / (running * 60)) end
+        if d2 then
+          row.walk_tiles_to_nearest_holder = math.sqrt(d2)
+          if running and running > 0 then row.walk_s_lower_bound = tenth_down(math.sqrt(d2) / (running * 60)) end
+        end
       end
     end
   end
   return rows
+end
+
+-- Attribute the existing shared supply bill to resolved layout steps. The
+-- real runner supplies all materials together, not one independent trip per
+-- placement. Only the first short use of an item carries its fetch bound;
+-- the bounds for different items overlap and must not be added together.
+-- No new stock/recipe scan, path request, reservation or physical action.
+function M.route_estimate_start(c, steps, bill)
+  local pool, by_item = {}, {}
+  for _, row in ipairs(bill) do pool[row.item], by_item[row.item] = row.carried or 0, row end
+  local speed, reach, surface
+  pcall(function() speed = c.character_running_speed * 60 end)
+  pcall(function() reach = c.reach_distance end)
+  pcall(function() surface = c.surface.name end)
+  local out = { source_tick = game.tick, surface = surface,
+    origin = c.position and { x = c.position.x, y = c.position.y } or nil, steps = {},
+    basis = "shared_initial_supply_straight_line_lower_bound",
+    assumptions = { "material bill and carried stock at source_tick; no reservation",
+      "layout supplies its whole bill before placement; repeated item fetch bounds appear only once",
+      "different item bounds overlap: take their maximum, never their sum",
+      "cached holder contents; additional holders and exact trip order are unavailable",
+      "current running speed; no obstacles, capacity trips, crafting, smelting or gathering travel included" } }
+  return { steps = steps, cursor = 1, pool = pool, by_item = by_item, charged = {},
+    speed = speed, reach = reach, out = out }
+end
+function M.route_estimate_step(state, budget)
+  -- Pure arithmetic, bounded independently of the enclosing dry run's size.
+  local stop = math.min(#state.steps, state.cursor + 31)
+  while state.cursor <= stop and budget.left >= 4 do
+    local index, step = state.cursor, state.steps[state.cursor]
+    local wants = {}
+    if not step._adopt then wants[step.item] = 1 end
+    for name, n in pairs(step.insert or {}) do wants[name] = (wants[name] or 0) + n end
+    local names = {}; for name in pairs(wants) do names[#names + 1] = name end
+    table.sort(names)
+    local row = { step = index, layout_source = step._source, position = step.position, items = {},
+      distance_tiles_lower_bound = 0, unavailable = {} }
+    for _, name in ipairs(names) do
+      local carried = math.min(state.pool[name] or 0, wants[name])
+      state.pool[name] = (state.pool[name] or 0) - carried
+      local item = { item = name, requested = wants[name], from_initial_carried = carried }
+      local bill = state.by_item[name]
+      if carried < wants[name] then
+        if state.charged[name] then item.shared_initial_supply = true
+        else
+          state.charged[name] = true
+          if bill and bill.walk_tiles_to_nearest_holder and type(state.reach) == "number" then
+            item.distance_tiles_lower_bound = math.max(0, bill.walk_tiles_to_nearest_holder - state.reach)
+            row.distance_tiles_lower_bound = math.max(row.distance_tiles_lower_bound, item.distance_tiles_lower_bound)
+          else row.unavailable[#row.unavailable + 1] = "no stock-holder distance/reach evidence for " .. name end
+          if not bill or (bill.short or 0) > 0 then
+            row.unavailable[#row.unavailable + 1] = "crafting/smelting/gathering route for " .. name
+          end
+        end
+      end
+      row.items[#row.items + 1] = item
+    end
+    if state.speed and state.speed > 0 then row.seconds_lower_bound = row.distance_tiles_lower_bound / state.speed
+    else row.unavailable[#row.unavailable + 1] = "running speed" end
+    state.out.steps[#state.out.steps + 1] = row
+    state.cursor, budget.left = index + 1, budget.left - 4
+  end
+  if state.cursor > #state.steps then return state.out end
 end
 
 -- The hand-craft part of the bill for wants: {total_s, items = the bill

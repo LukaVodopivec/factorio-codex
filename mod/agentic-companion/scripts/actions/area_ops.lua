@@ -427,6 +427,12 @@ M.place_check_job = {
         reserved = params.reserved }) }
   end,
   step = function(job, budget)
+    if job.supply_route then
+      local estimate = supply.route_estimate_step(job.supply_route, budget)
+      if not estimate then return nil end
+      job.out.supply_route_estimate = estimate
+      return job.out
+    end
     if job.layout_check then
       local report = build_layout.layout_check_job.step(job.layout_check, budget)
       if not report then return nil end
@@ -456,6 +462,10 @@ M.place_check_job = {
           job.out.ok = false
           for i = 1, math.min(MAX_ROWS, #mixes) do job.out.collisions[i] = mixes[i] end
         end
+      end
+      if job.estimate_state then
+        job.supply_route = job.estimate_state
+        return nil
       end
       return job.out
     end
@@ -494,6 +504,10 @@ M.place_check_job = {
     -- the next tick.
     local started = s.ctx.calls
     job.out, job.survey = out, build_layout.survey_start(s.ctx, result, SURVEYED)
+    -- The survey yields while the pilot may move. Freeze origin, speed and
+    -- carried evidence in the same tick as the material bill, not after it.
+    job.estimate_state = job.mode ~= "ghosts"
+      and supply.route_estimate_start(c, build_layout.plan_steps(result), report.materials) or nil
     budget.left = budget.left - build_layout.CHECK_COST * (s.ctx.calls - started)
     return nil
   end,

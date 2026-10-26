@@ -78,6 +78,11 @@ function M.init()
   }
   local body_time = storage.tasks.body_time
   if not body_time.phases then body_time.phases, body_time.tiles = {}, 0 end
+  -- Existing cumulative counters cannot reconstruct the last hour. Start
+  -- rolling coverage at this upgrade; keep an existing ring on later changes.
+  body_time.rolling = body_time.rolling or { since_tick = game and game.tick or 0,
+    last_tick = game and game.tick or 0, next = 1, count = 0, samples = {},
+    short = { states = {}, phases = {} }, long = { states = {}, phases = {} } }
   -- Recent plan outcomes, oldest first (tasks.activity_log).
   storage.activity_log = storage.activity_log or {}
   -- The repeat counter (tasks.lua): "<action>|<target>" -> {code, count,

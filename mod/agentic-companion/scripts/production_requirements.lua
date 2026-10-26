@@ -320,47 +320,6 @@ end
 
 -- ------------------------------------------------------------- expansion
 
--- The force's recipes that make each product: {names, cursor, by_product =
--- {[product] = {recipe names}}}, read once per request instead of once per
--- product, INDEX_RECIPE_WORK per recipe (index_step), so the job spreads it over
--- ticks.
-local function new_index(force)
-  local names = {}
-  for name in pairs(force.recipes or {}) do names[#names + 1] = name end
-  return { names = names, cursor = 1, by_product = {} }
-end
-
--- What reading one recipe (its hidden flag and products) is charged.
-M.INDEX_RECIPE_WORK = 3
--- Reads recipes while budget is left; true once every one is read.
-local function index_step(force, index, budget)
-  local recipes, names, by_product = force.recipes, index.names, index.by_product
-  while index.cursor <= #names do
-    if budget.left <= 0 then return false end
-    local name = names[index.cursor]
-    index.cursor, budget.left = index.cursor + 1, budget.left - M.INDEX_RECIPE_WORK
-    local recipe = recipes[name]
-    -- Hidden recipes (quality recycling, debug items) are never production routes.
-    local hidden_ok, hidden = pcall(function() return recipe.hidden end)
-    if recipe and not (hidden_ok and hidden) then
-      for _, product in ipairs(recipe.products or {}) do
-        local list = product.name and (by_product[product.name] or {})
-        if list then
-          by_product[product.name] = list
-          if list[#list] ~= name then list[#list + 1] = name end
-        end
-      end
-    end
-  end
-  return true
-end
-
-local function whole_index(force)
-  local index = new_index(force)
-  index_step(force, index, { left = math.huge })
-  return index.by_product
-end
-
 local function technology_effects(technology)
   local ok, effects = pcall(function() return technology.prototype.effects end)
   return ok and type(effects) == "table" and effects or {}
@@ -378,18 +337,27 @@ end
 -- `undone`, the recipes another (unhidden) recipe undoes (its products are
 -- this one's ingredients and its ingredients this one's products, as a
 -- barrel's fill and empty are; such a pair only loops an item back), and
--- `unlocks`, each recipe's unlocking technologies, sorted. Reading them
+-- `unlocks`, each recipe's unlocking technologies, sorted, and `by_product`,
+-- unhidden recipe names per product (membership only, not force availability).
+-- Reading them
 -- means every recipe's ingredients and products and every technology's
 -- effects (thousands of new tables), so M.init reads them when the mod
 -- starts or its prototypes change (on_init, on_configuration_changed) into
 -- storage, the same on every peer.
 local function recipe_facts()
-  local by_key, keys = {}, {}
+  local by_key, keys, by_product = {}, {}, {}
   for name, recipe in pairs(prototypes.recipe or {}) do
     local ins, outs = names_key(read(function() return recipe.ingredients end)),
       names_key(read(function() return recipe.products end))
     keys[name] = { ins = ins, outs = outs }
     if not read(function() return recipe.hidden end) then
+      for _, product in ipairs(read(function() return recipe.products end) or {}) do
+        if product.name then
+          local list = by_product[product.name] or {}
+          by_product[product.name] = list
+          if list[#list] ~= name then list[#list + 1] = name end
+        end
+      end
       local key = ins .. "\n" .. outs
       by_key[key] = by_key[key] or {}
       table.insert(by_key[key], name)
@@ -415,14 +383,15 @@ local function recipe_facts()
     end
   end
   for _, list in pairs(unlocks) do table.sort(list) end
-  return { undone = undone, unlocks = unlocks }
+  for _, list in pairs(by_product) do table.sort(list) end
+  return { undone = undone, unlocks = unlocks, by_product = by_product }
 end
 function M.init()
   storage.production_roots, storage.recipe_facts = build_roots(), recipe_facts()
 end
 local function facts()
   -- (A save from before it has none until then.)
-  if storage.recipe_facts == nil then M.init() end
+  if storage.recipe_facts == nil or storage.recipe_facts.by_product == nil then M.init() end
   return storage.recipe_facts
 end
 
@@ -446,7 +415,7 @@ local function candidate_recipes(force, product, permitted_locked, location, by_
   for _, name in ipairs(by_product[product] or {}) do
     local recipe = force.recipes[name]
     -- Surface conditions are read only for the few recipes that make it.
-    if location == nil or conditions_hold(recipe_conditions(recipe), location) then
+    if recipe and (location == nil or conditions_hold(recipe_conditions(recipe), location)) then
       rows[#rows + 1] = { recipe = recipe,
         usable = recipe.enabled or permitted_locked and permitted_locked[name] or false }
     end
@@ -914,11 +883,12 @@ local function validate(params)
   return body, location
 end
 
--- index: the recipes by product (new_index), else read whole in this call.
-function M.production_requirements(params, index)
+-- Only product-to-recipe membership is cached. Availability and surface
+-- conditions are read from this force's live recipes for each candidate.
+function M.production_requirements(params)
   local body, location = validate(params)
   local force = body.force
-  index = index or whole_index(force)
+  local index = facts().by_product
   if params.technology then return closure_requirements(params, body, location, force, "technology", params.technology, index) end
   if params.location then return closure_requirements(params, body, location, force, "location", params.location, index) end
 
@@ -943,10 +913,9 @@ end
 -- the recipe searches are index lookups, the rest grows with the tree.
 M.EXPAND_WORK = 200
 M.EXPAND_NODE_WORK = 4
--- production_requirements as a job (control.lua registers it): the recipes
--- by product first, INDEX_RECIPE_WORK per recipe over ticks, then the
--- expansion whole (the resource catalogue and recipe facts are M.init's,
--- in storage), once EXPAND_WORK fits what is left of the tick or after one
+-- production_requirements as a job (control.lua registers it): the
+-- expansion uses M.init's resource catalogue and recipe facts in storage,
+-- once EXPAND_WORK fits what is left of the tick or after one
 -- deferral to a fresh tick, charged by the nodes it made.
 M.job = {
   start = function(params)
@@ -954,17 +923,11 @@ M.job = {
     return { params = params }
   end,
   step = function(S, budget)
-    local force = companion.require_present().force
-    if not S.index then
-      S.index = new_index(force)
-      budget.left = budget.left - math.ceil(#S.index.names / 16)
-    end
-    if not index_step(force, S.index, budget) then return nil end
     if budget.left < M.EXPAND_WORK and not S.waited then
       S.waited = true
       return nil
     end
-    local result = M.production_requirements(S.params, S.index.by_product)
+    local result = M.production_requirements(S.params)
     local nodes = result.nodes or result.rates and result.rates.stages
       or result.deterministic_requirements and result.deterministic_requirements.nodes or {}
     budget.left = budget.left - M.EXPAND_WORK - M.EXPAND_NODE_WORK * #nodes

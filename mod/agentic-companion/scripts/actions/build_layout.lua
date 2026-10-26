@@ -2848,6 +2848,12 @@ local function check_job(label, make_request)
       return { search = s, extra = extra, view = view }
     end,
     step = function(state, budget)
+      if state.supply_route then
+        local estimate = supply.route_estimate_step(state.supply_route, budget)
+        if not estimate then return nil end
+        state.answer.supply_route_estimate = estimate
+        return state.answer
+      end
       local c = state.view or actor(state.search.ctx.space)
       local s = state.search
       local ctx = s.ctx
@@ -2877,6 +2883,12 @@ local function check_job(label, make_request)
       if out.unobtainable then
         out.ok = false
         for _, row in ipairs(out.unobtainable) do out.failed[#out.failed + 1] = row end
+      end
+      if not ctx.ghosts and result.placements and #result.failed == 0 then
+        state.answer = out
+        state.supply_route = supply.route_estimate_start(c, plan_steps(result), out.materials)
+        -- Start the arithmetic on a fresh tick, after the survey/report.
+        return nil
       end
       return out
     end,
@@ -3052,7 +3064,7 @@ local function resolve(c, request)
   repeat result = advance(c, s, WORK_PER_TICK) until result
   return result, s
 end
-M._resolve, M._rotated, M._plan_steps = resolve, rotated, plan_steps
+M._resolve, M._rotated, M.plan_steps = resolve, rotated, plan_steps
 -- The resumable search for another dry run (blueprint_place check_only):
 -- search_start(c, {anchor? | site?, layouts}), search_step(c, s, budget) ->
 -- result | nil, check_report(c, result, extra) -> the check_only answer.

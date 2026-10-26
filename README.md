@@ -211,18 +211,29 @@ stays an instruction rule:
 # pilot: full surface, package bridge on
 codex -m gpt-6-luna -c 'model_reasoning_effort="low"' \
   -c 'model_reasoning_summary="detailed"' --add-dir "$RUN_DIR" \
+  -c 'model_provider="factorio-openai"' \
+  -c 'model_providers.factorio-openai={name="OpenAI",wire_api="responses",requires_openai_auth=true,stream_idle_timeout_ms=180000,stream_max_retries=0}' \
   -c 'web_search="disabled"' -c agents.enabled=false -c features.memories=false \
   -c features.multi_agent_v2=false \
   -c 'mcp_servers.factorio={command="./scripts/start-factorio-mcp",args=["--role","pilot"],enabled=true,required=true,startup_timeout_sec=180,tool_timeout_sec=600}'
 
 # planner: read-only surface only
 codex -m gpt-6.1-sol -c 'model_reasoning_effort="medium"' \
+  -c 'service_tier="default"' \
   -c 'model_reasoning_summary="detailed"' --add-dir "$RUN_DIR" \
+  -c 'model_provider="factorio-openai"' \
+  -c 'model_providers.factorio-openai={name="OpenAI",wire_api="responses",requires_openai_auth=true,stream_idle_timeout_ms=180000,stream_max_retries=0}' \
   -c 'web_search="disabled"' -c agents.enabled=false -c features.memories=false \
   -c features.multi_agent_v2=false \
   -c 'mcp_servers.factorio={command="./scripts/start-factorio-mcp",args=[],enabled=false}' \
   -c 'mcp_servers.factorio-readonly={command="./scripts/start-factorio-mcp",args=["--surface","read-only","--role","strategist"],enabled=true,required=false,startup_timeout_sec=180,tool_timeout_sec=600}'
 ```
+
+Both launches use the native OpenAI provider with the existing ChatGPT account,
+a three-minute stream-idle timeout and no automatic stream retries. This is
+independent of MCP startup and tool timeouts. Verify the effective configuration
+and reconcile accepted plans after a stream failure as described in
+[role launch validation](docs/LIVE-VALIDATION.md#launch-the-role-sessions).
 
 The read-only surface registers only the 23 read-only tools; the four that
 build (`build_layout`, `connect_entities`, `blueprint_place`, `place_tiles`)

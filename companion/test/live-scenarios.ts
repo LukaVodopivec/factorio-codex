@@ -592,9 +592,9 @@ const scenarios: Scenario[] = [
     // A mid-game state: every technology of at most two science packs
     // researched, and 60 machines on a third cleared site (48 powered
     // assemblers on a dozen recipes, 12 fuelled furnaces). The first
-    // run_snapshot and production_requirements after the load also build
-    // their per-load prototype caches.
-    name: "run_snapshot and production_requirements answer through get_job within the tick budget",
+    // run_snapshot builds its per-load cache. production_requirements reuses
+    // its persisted product index, so small expansions can now finish inline.
+    name: "run_snapshot jobs and cached production_requirements stay within the tick budget",
     async run() {
       const from = fs.readFileSync(paths.log, "utf8").length;
       const built = await lua<any>(`${BUILD}
@@ -671,7 +671,9 @@ const scenarios: Scenario[] = [
       for (const round of [1, 2]) {
         for (const [label, params, holds] of requests) {
           const { value, polls: n } = await viaJob<any>("production_requirements", params);
-          expect(n > 0, `production_requirements (${label}) answers pending and get_job returns it`, value);
+          // The removed request-local index no longer forces every small
+          // expansion to yield. Bridge still handles pending answers; the
+          // unchanged profiler assertions below bound inline and job work.
           expect(holds(value), `production_requirements (${label}) returns its plan`, JSON.stringify(value).slice(0, 600));
           if (round === 1) answered.push(`${label} ${n} polls`);
         }
@@ -1175,6 +1177,30 @@ const scenarios: Scenario[] = [
         c.insert({ name = "small-electric-pole", count = 2 })
         c.insert({ name = "assembling-machine-1", count = 1 })`);
       const check = await bridge.call<any>("blueprint_place", { name: "live-poles", position: origin, mode: "hand", check_only: true });
+      // The engine has no chart with no connected player. Keep that refusal
+      // proof, then reuse this suite's chart fixture for only these known
+      // footprint chunks to exercise the successful read-only RPC path.
+      expect(check.ok === false && check.supply_route_estimate === undefined,
+        "uncharted footprints do not invent a resolved supply route", check);
+      await lua(`local layout=mod("actions/build_layout")
+        layout.live_saved_search_start=layout.search_start
+        layout.search_start=function(c,request)
+          local job=layout.live_saved_search_start(c,request)
+          for x=4,5 do job.ctx.chunks[x .. ",0"]=true end
+          return job
+        end`);
+      try {
+        const charted = await bridge.call<any>("blueprint_place", {name:"live-poles",position:origin,mode:"hand",check_only:true});
+        const route = charted.supply_route_estimate;
+        expect(charted.ok && route?.basis === "shared_initial_supply_straight_line_lower_bound" && list(route.steps).length === 3,
+          "charted-fixture hand-blueprint check preserves per-step read-only supply evidence", charted);
+        expect(list(route.steps).every((row) => typeof row.step === "number" && row.distance_tiles_lower_bound >= 0),
+          "each resolved step carries a distance bound", route);
+      } finally {
+        await lua(`local layout=mod("actions/build_layout") layout.search_start=layout.live_saved_search_start
+          layout.live_saved_search_start=nil`);
+      }
+
       expect(check.wires_ignored === 1, "the dry run reports wires_ignored", check);
       const plan = await runPlan(bridge, [{ action: "blueprint_place", name: "live-poles", position: origin, mode: "hand" }], 60_000);
       const refused = list(plan.outcomes)[0]?.result;
@@ -1344,6 +1370,85 @@ const scenarios: Scenario[] = [
       return `${pair.b} behind ${pair.a}; alone: ${alone}`;
     },
   },
+  {
+    name: "persisted product membership survives live research and configuration rebuild with bounded repeated reads",
+    async run(bridge) {
+      await lua(`storage.live_recipe_index = storage.recipe_facts.by_product
+        storage.live_logistics_researched = game.forces.player.technologies["logistics-2"].researched
+        game.forces.player.technologies["logistics-2"].researched = false`);
+      let refused = false;
+      try { await bridge.call("production_requirements", {targets:{"fast-transport-belt":1},planet:"nauvis"}); }
+      catch(error) { refused = String(error).includes("NO_UNLOCKED_ROUTE"); }
+      expect(refused, "native force recipe availability is read live before research");
+      await lua(`game.forces.player.technologies["logistics-2"].research_recursive()`);
+      const heaps: number[] = [];
+      for (const phase of ["research", "configuration rebuild"]) {
+        if (phase === "configuration rebuild") {
+          await lua(`local before=storage.recipe_facts.by_product mod("production_requirements").init()
+            assert(storage.recipe_facts.by_product ~= before)
+            storage.live_recipe_index=storage.recipe_facts.by_product`);
+        }
+        for (let round=0; round<4; round++) {
+          const before = await lua<number>(`return collectgarbage("count")`);
+          const value = await bridge.call<any>("production_requirements", {targets:{"fast-transport-belt":1},planet:"nauvis"});
+          expect(list(value.nodes).some(row=>row.recipe==="fast-transport-belt"), "live research unlock is visible", value);
+          const evidence = await lua<any>(`return {same=storage.live_recipe_index==storage.recipe_facts.by_product, heap=collectgarbage("count")}`);
+          expect(evidence.same, "requests reuse the persisted index without replacing it");
+          heaps.push(evidence.heap-before);
+        }
+      }
+      await lua(`game.forces.player.technologies["logistics-2"].researched=storage.live_logistics_researched
+        storage.live_logistics_researched=nil storage.live_recipe_index=nil`);
+      return `8 repeated native requests; cached identity retained across reads; heap deltas KiB ${heaps.map(n=>n.toFixed(1)).join(",")}; `
+        + "configuration owner invoked directly in the isolated game; actual save upgrade event is a separate validation";
+    },
+  },
+  {
+    name: "rolling body observables and actual completed/partial upkeep transfers use native character APIs",
+    async run(bridge) {
+      await characterStandIn();
+      const native = await lua<any>(`${BUILD}
+        local c = storage.live_character
+        c.teleport({${SITE.x}, ${SITE.y}}, game.surfaces.nauvis)
+        c.get_main_inventory().clear()
+        c.insert({name="coal", count=20})
+        local s = c.surface
+        for _, e in pairs(s.find_entities_filtered({area={{162,29},{165,32}}})) do if e ~= c then e.destroy() end end
+        storage.live_upkeep_box = make(s, "steel-chest", 163.5, 30.5)
+        return {speed=c.character_running_speed * 60, tick=game.tick}`);
+      const body = (await bridge.call<any>("factory_status", {})).body;
+      expect(body.running_speed_units === "tiles_per_second" && body.running_speed === native.speed,
+        "factory body reports the native running speed in tiles/s", body);
+      for (const key of ["share_10m", "share_60m"]) {
+        const window = body[key];
+        expect(window.denominator_ticks > 0 && window.covered_seconds === window.denominator_ticks / 60
+          && window.through_tick - window.since_tick === window.denominator_ticks,
+          "rolling coverage and tick denominator agree", window);
+        const sum = Object.values(window.states).reduce<number>((n, v) => n + Number(v), 0);
+        expect(Math.abs(sum - 1) < 1e-9, "state shares cover every observed tick", window);
+      }
+      for (const moved of [10, 3]) {
+        await lua(`local c, box = storage.live_character, storage.live_upkeep_box
+          c.get_main_inventory().clear() c.insert({name="coal",count=20})
+          local inv = box.get_inventory(defines.inventory.chest) inv.clear() inv.set_bar(2)
+          if ${moved} == 3 then inv.insert({name="coal",count=47}) end`);
+        const queued = await lua<any>(`return mod("tasks").queue_plan({source="upkeep",steps={
+          {action="insert_items",x=163.5,y=30.5,items={coal=10}}}})`);
+        const result = await planEnd(bridge, queued.plan_id);
+        const receipts = list(result.upkeep?.transfers);
+        const actual = receipts.reduce((n, row) => n + row.amount, 0);
+        const read = await lua<any>(`return {body=storage.live_character.get_item_count("coal"),
+          target=storage.live_upkeep_box.get_item_count("coal")}`);
+        expect(actual === moved && read.body === 20-moved && read.target === (moved===3 ? 50 : 10),
+          "upkeep receipts equal the native inventory changes", {receipts,read});
+        expect(receipts[0]?.requested === 10 && receipts[0]?.source.surface === "nauvis"
+          && receipts[0]?.destination.position.x === 163.5 && receipts[0]?.destination.surface === "nauvis",
+          "requested amount and observed source/destination are distinct", receipts);
+      }
+      await lua(`storage.live_upkeep_box.destroy() storage.live_upkeep_box=nil`);
+      return "native tiles/s and rolling denominators; completed 10/10 and partial 3/10 transfers match inventory readback";
+    },
+  },
 ];
 
 // Profiler lines (profiler.lua): "rpc <method> tick <tick> Duration: <ms>ms"
@@ -1395,6 +1500,8 @@ try {
   assertRuntimeCompatibility(ping, companionVersion());
   expect(String(ping.factorio_version).startsWith("2.0."), "the live suite targets Factorio 2.0.x", ping.factorio_version);
   console.log(`server up: Factorio ${ping.factorio_version}, mod ${ping.mod_version}, protocol ${ping.protocol_version}`);
+  console.log(`initial save SHA256 ${crypto.createHash("sha256").update(fs.readFileSync(paths.save)).digest("hex")}; built-in mods ${JSON.stringify(["base", "elevated-rails", "quality", "space-age"])}`);
+
   await setup();
   for (const scenario of scenarios) {
     try { report(true, scenario.name, await scenario.run(bridge)); }

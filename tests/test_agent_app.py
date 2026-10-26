@@ -252,7 +252,23 @@ class AgentAppContractTests(unittest.TestCase):
                 (workspace / "node_modules" / "factorio-codex").resolve(),
                 (workspace / "companion").resolve(),
             )
+            self.assertFalse((workspace / "node_modules" / "dependency").is_symlink())
+            (workspace / "node_modules" / "dependency" / "marker").write_text("isolated copy\n")
+            self.assertEqual((owner / "node_modules" / "dependency" / "marker").read_text(), "owner dep\n")
             self.assertFalse((snapshot / "node_modules").exists())
+            self.assertEqual(self.git(snapshot, "status", "--porcelain=v1").stdout, "")
+            with (
+                mock.patch.object(app, "ROOT", snapshot),
+                mock.patch.object(app, "resolve_native_root", return_value=owner),
+                mock.patch.object(app, "resolve_npm_command", return_value=(["/node", "/npm-cli.js"], Path("/npm-bin"))),
+                mock.patch.object(app.shutil, "copytree", side_effect=OSError(28, "private scratch details")),
+            ):
+                payload, code = app.verify_payload("full", None)
+            self.assertEqual(code, 1)
+            self.assertEqual(payload["status"], "fail")
+            self.assertEqual(payload["schema"], "repo-agent-app-verify/v2")
+            self.assertEqual(payload["failure_summary"], ["installed dependency tree could not be copied"])
+            self.assertNotIn("private scratch details", json.dumps(payload))
             self.assertEqual(self.git(snapshot, "status", "--porcelain=v1").stdout, "")
 
     def test_each_dependency_descriptor_mismatch_blocks_reuse(self) -> None:

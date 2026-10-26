@@ -13,8 +13,8 @@ local native_autoplace = { autoplace_settings = {
 local character = { valid = true, surface = { name = "nauvis", planet = { name = "nauvis" } } }
 local force = { recipes = {
   gear = recipe("gear", { { name = "iron-plate", amount = 2 } }, { { name = "gear", amount = 1 } }, true, 0.5, "crafting"),
-  widget_a = recipe("widget-a", { { name = "gear", amount = 1 } }, { { name = "widget", amount = 2 } }, true, 1, "crafting"),
-  widget_b = recipe("widget-b", { { name = "copper-plate", amount = 1 } }, { { name = "widget", amount = 1 } }, true, 2, "advanced-crafting"),
+  ["widget-a"] = recipe("widget-a", { { name = "gear", amount = 1 } }, { { name = "widget", amount = 2 } }, true, 1, "crafting"),
+  ["widget-b"] = recipe("widget-b", { { name = "copper-plate", amount = 1 } }, { { name = "widget", amount = 1 } }, true, 2, "advanced-crafting"),
   locked = recipe("locked", { { name = "stone", amount = 1 } }, { { name = "future", amount = 1 } }, false, 1, "crafting"),
 } }
 character.force = force
@@ -33,7 +33,13 @@ end
 -- Roots are read into storage when the mod starts or its prototypes change
 -- (prototypes never change at runtime): a test that changes prototype data
 -- loads the module again and runs its init, as on_configuration_changed.
+local function sync_prototypes()
+  prototypes.recipe, prototypes.technology = {}, {}
+  for name, r in pairs(force.recipes) do prototypes.recipe[name] = r end
+  for name, t in pairs(force.technologies or {}) do prototypes.technology[name] = t.prototype or {} end
+end
 local function reload()
+  sync_prototypes()
   package.loaded["scripts.production_requirements"] = nil
   local module = require("scripts.production_requirements")
   module.init()
@@ -42,7 +48,7 @@ end
 _G.game = { tick = 42 }
 _G.storage = {}
 _G.defines = { flow_precision_index = { five_seconds = 1, one_minute = 2, ten_minutes = 3, one_hour = 4 } }
-local production = require("scripts.production_requirements")
+local production = reload()
 local ambiguous, ambiguity = pcall(production.production_requirements, { targets = { widget = 3 } })
 check(not ambiguous and tostring(ambiguity):match("ambiguous production route") ~= nil, "multiple unlocked producers require an explicit recipe choice")
 local result = production.production_requirements({ targets = { widget = 3, gear = 1 }, recipe_choices = { widget = "widget-a" } })
@@ -54,9 +60,8 @@ check(result.nodes[1].recipe_executions == 3 and result.nodes[2].recipe_executio
   and result.total_craft_time_seconds_at_speed_1 == 3.5 and result.targets.gear == 1
   and result.units.targets == "item_or_fluid_units" and result.units.time == "seconds_at_crafting_speed_1",
   "multiple targets aggregate craft counts, raw inputs, products, categories and time")
--- The force's recipes are read once a request, not once a product; the
--- job reads them a few work items per recipe over ticks, then expands on a
--- fresh tick, with the same answer.
+-- Requests use the init-built membership index without enumerating the
+-- force or prototypes. Expansion still respects the job budget.
 do
   local function same(a, b)
     if type(a) ~= "table" or type(b) ~= "table" then return a == b end
@@ -69,18 +74,49 @@ do
   local walks = 0
   setmetatable(force.recipes, { __pairs = function(t) walks = walks + 1; return next, t, nil end })
   local direct = production.production_requirements(params)
-  check(walks == 1, "a request reads the force's recipes once, not once per product (" .. walks .. " reads)")
+  check(walks == 0, "a request does not enumerate the force recipes")
+  local cached = storage.recipe_facts.by_product
+  local prototype_walks = 0
+  setmetatable(prototypes.recipe, { __pairs = function(t) prototype_walks = prototype_walks + 1; return next, t, nil end })
   local sliced, ticks = jobs.run_now(production.job, params, 1)
-  check(ticks > 4 and same(sliced, direct),
-    "the job reads its recipes over " .. ticks .. " ticks and answers like the direct read")
+  check(ticks == 2 and walks == 0 and same(sliced, direct),
+    "the job defers expansion to a fresh tick and answers without enumerating recipes")
   local whole, whole_ticks = jobs.run_now(production.job, params)
   check(whole_ticks == 1 and same(whole, direct), "with a whole tick's budget the job answers in its first tick")
+  for _ = 1, 20 do production.production_requirements(params) end
+  check(prototype_walks == 0 and walks == 0 and storage.recipe_facts.by_product == cached,
+    "repeated requests reuse the stored index without enumerating recipes or prototypes")
+  package.loaded["scripts.production_requirements"] = nil
+  production = require("scripts.production_requirements")
+  check(same(production.production_requirements(params), direct) and storage.recipe_facts.by_product == cached
+    and prototype_walks == 0, "a save reload retains the index without rebuilding prototype facts")
+  force.recipes.locked.enabled = true
+  local unlocked = production.production_requirements({ targets = { future = 2 } })
+  check(unlocked.nodes[1].recipe == "locked" and unlocked.raw.stone == 2 and storage.recipe_facts.by_product == cached,
+    "research changes availability immediately without rebuilding the index")
+  force.recipes.locked.enabled = false
+  local other = force.recipes["widget-b"]
+  force.recipes["widget-b"] = nil
+  check(production.production_requirements({ targets = { widget = 1 } }).nodes[2].recipe == "widget-a",
+    "prototype membership does not invent a recipe absent from the current force")
+  force.recipes["widget-b"] = other
+  setmetatable(prototypes.recipe, nil)
   setmetatable(force.recipes, nil)
   local refused, reason = pcall(production.job.start, { targets = { widget = 1 }, technology = "x" })
   check(not refused and tostring(reason):find("exactly one of", 1, true) ~= nil,
     "the job checks the request when it starts (the RPC's error)")
   local failed, why = pcall(jobs.run_now, production.job, { targets = { widget = 3 } })
   check(not failed and tostring(why):match("ambiguous production route") ~= nil, "an expansion error fails the job")
+  prototypes.item["upgrade-product"] = {}
+  force.recipes.upgrade = recipe("upgrade", {}, { { name = "upgrade-product", amount = 1 } }, true, 1)
+  production = reload()
+  check(storage.recipe_facts.by_product ~= cached
+    and production.production_requirements({ targets = { ["upgrade-product"] = 1 } }).nodes[1].recipe == "upgrade",
+    "a configuration change rebuilds membership for added prototypes")
+  force.recipes.upgrade = nil
+  production = reload()
+  check(storage.recipe_facts.by_product["upgrade-product"] == nil,
+    "a later configuration change removes obsolete recipe membership")
 end
 local progressed, progress_error = pcall(production.production_requirements, { targets = { future = 1 } })
 check(not progressed and tostring(progress_error):match("no progression route") ~= nil, "locked-only products refuse a nonexistent progression route")
@@ -110,11 +146,12 @@ prototypes.entity = {
 }
 production = reload()
 force.recipes.smelting = recipe("smelting", { { name = "iron-ore", amount = 1 } }, { { name = "iron-plate", amount = 1 } }, true, 3.2, "smelting")
-force.recipes.plate_recycling = recipe("plate-recycling", { { name = "scrap", amount = 1 } }, { { name = "iron-plate", amount = 1 } }, true)
-force.recipes.ore_recycling = recipe("ore-recycling", { { name = "scrap", amount = 2 } }, { { name = "iron-ore", amount = 1 } }, true)
-force.recipes.other_recycling = recipe("other-recycling", { { name = "scrap", amount = 3 } }, { { name = "iron-ore", amount = 1 } }, true)
-force.recipes.custom_recycling = recipe("custom-recycling", {}, { { name = "custom-mineral", amount = 1 } }, false)
-force.recipes.fluid_recycling = recipe("fluid-recycling", {}, { { name = "native-fluid", amount = 10 } }, true)
+force.recipes["plate-recycling"] = recipe("plate-recycling", { { name = "scrap", amount = 1 } }, { { name = "iron-plate", amount = 1 } }, true)
+force.recipes["ore-recycling"] = recipe("ore-recycling", { { name = "scrap", amount = 2 } }, { { name = "iron-ore", amount = 1 } }, true)
+force.recipes["other-recycling"] = recipe("other-recycling", { { name = "scrap", amount = 3 } }, { { name = "iron-ore", amount = 1 } }, true)
+force.recipes["custom-recycling"] = recipe("custom-recycling", {}, { { name = "custom-mineral", amount = 1 } }, false)
+force.recipes["fluid-recycling"] = recipe("fluid-recycling", {}, { { name = "native-fluid", amount = 10 } }, true)
+production = reload()
 local smelted = production.production_requirements({ targets = { ["iron-plate"] = 7 }, recipe_choices = { ["iron-plate"] = "smelting" } })
 check(#smelted.nodes == 1 and smelted.raw["iron-ore"] == 7 and smelted.products["iron-plate"] == 7,
   "explicit smelting terminates at native ore despite multiple recycling routes")
@@ -128,19 +165,21 @@ rejects({ targets = { ["iron-ore"] = 1 }, recipe_choices = { ["iron-ore"] = 42 }
 rejects({ targets = { ["custom-mineral"] = 1 }, recipe_choices = { ["custom-mineral"] = "custom-recycling" } }, "not a permitted", "explicit locked resource route remains an error")
 rejects({ targets = { widget = 1 } }, "ambiguous production route", "dismantled machines and wreckage do not make manufactured products raw roots")
 rejects({ targets = { future = 1 } }, "no progression route", "unmineable resources do not bypass locked-only refusal")
-force.recipes.cycle_a = recipe("cycle-a", { { name = "cycle-b", amount = 1 } }, { { name = "cycle-a", amount = 1 } }, true)
-force.recipes.cycle_b = recipe("cycle-b", { { name = "cycle-a", amount = 1 } }, { { name = "cycle-b", amount = 1 } }, true)
+force.recipes["cycle-a"] = recipe("cycle-a", { { name = "cycle-b", amount = 1 } }, { { name = "cycle-a", amount = 1 } }, true)
+force.recipes["cycle-b"] = recipe("cycle-b", { { name = "cycle-a", amount = 1 } }, { { name = "cycle-b", amount = 1 } }, true)
+production = reload()
 rejects({ targets = { ["cycle-a"] = 1 } }, "recipe cycle", "manufactured recipe cycles remain errors")
-force.recipes.other_recycling.products[1].probability = 0.5
+force.recipes["other-recycling"].products[1].probability = 0.5
 rejects({ targets = { ["iron-ore"] = 1 }, recipe_choices = { ["iron-ore"] = "other-recycling" } }, "probabilistic product", "explicit resource routes retain nondeterministic-product refusal")
 
 -- Factorio 2.0 quality recycling recipes are enabled from tick 0 but hidden; they are never routes.
 for _, name in ipairs({ "steel", "steel-raw" }) do prototypes.item[name] = {} end
 force.recipes.steel = recipe("steel", { { name = "steel-raw", amount = 5 } }, { { name = "steel", amount = 1 } }, true, 16, "smelting")
-force.recipes.steel_recycling = recipe("steel-recycling", { { name = "steel", amount = 1 } }, { { name = "steel", amount = 1, probability = 0.25 } }, true)
-force.recipes.steel_recycling.hidden = true
-force.recipes.raw_steel_recycling = recipe("steel-raw-recycling", { { name = "widget", amount = 1 } }, { { name = "steel-raw", amount = 1 } }, true)
-force.recipes.raw_steel_recycling.hidden = true
+force.recipes["steel-recycling"] = recipe("steel-recycling", { { name = "steel", amount = 1 } }, { { name = "steel", amount = 1, probability = 0.25 } }, true)
+force.recipes["steel-recycling"].hidden = true
+force.recipes["steel-raw-recycling"] = recipe("steel-raw-recycling", { { name = "widget", amount = 1 } }, { { name = "steel-raw", amount = 1 } }, true)
+force.recipes["steel-raw-recycling"].hidden = true
+production = reload()
 local unhidden = production.production_requirements({ targets = { steel = 2 } })
 check(#unhidden.nodes == 1 and unhidden.nodes[1].recipe == "steel" and unhidden.raw["steel-raw"] == 10,
   "hidden enabled recycling recipes are neither candidates nor locked producers")
@@ -149,10 +188,10 @@ rejects({ targets = { steel = 1 }, recipe_choices = { steel = "steel-recycling" 
 prototypes.fluid.water = {}
 prototypes.tile = { water = { name = "water", fluid = { name = "water" } }, grass = { name = "grass" } }
 production = reload()
-force.recipes.ice_melting = recipe("ice-melting", { { name = "custom-mineral", amount = 1 } }, { { name = "water", amount = 20 } }, false)
+force.recipes["ice-melting"] = recipe("ice-melting", { { name = "custom-mineral", amount = 1 } }, { { name = "water", amount = 20 } }, false)
 local pumped = production.production_requirements({ targets = { water = 100 } })
 check(#pumped.nodes == 0 and pumped.raw.water == 100, "offshore tile fluid is a raw root despite a locked producer")
-force.recipes.ice_melting = nil
+force.recipes["ice-melting"] = nil
 
 -- Roots follow the companion planet's own autoplace settings: another planet's
 -- geyser fluid or ocean fluid keeps its ordinary recipe or ambiguity handling.
@@ -160,8 +199,8 @@ for _, name in ipairs({ "acid", "sulfur", "heavy", "coal-feed", "oil-feed" }) do
 prototypes.entity.geyser = { type = "resource", mineable_properties = { minable = true, products = { { type = "fluid", name = "acid", amount = 10 } } } }
 prototypes.tile.ocean = { name = "ocean", fluid = { name = "heavy" } }
 force.recipes.acid = recipe("acid", { { name = "sulfur", amount = 5 } }, { { name = "acid", amount = 50, type = "fluid" } }, true, 1, "chemistry")
-force.recipes.heavy_a = recipe("heavy-a", { { name = "oil-feed", amount = 1 } }, { { name = "heavy", amount = 1, type = "fluid" } }, true, 1, "oil-processing")
-force.recipes.heavy_b = recipe("heavy-b", { { name = "coal-feed", amount = 1 } }, { { name = "heavy", amount = 1, type = "fluid" } }, true, 1, "oil-processing")
+force.recipes["heavy-a"] = recipe("heavy-a", { { name = "oil-feed", amount = 1 } }, { { name = "heavy", amount = 1, type = "fluid" } }, true, 1, "oil-processing")
+force.recipes["heavy-b"] = recipe("heavy-b", { { name = "coal-feed", amount = 1 } }, { { name = "heavy", amount = 1, type = "fluid" } }, true, 1, "oil-processing")
 prototypes.space_location.nauvis.map_gen_settings = { autoplace_settings = {
   entity = { settings = { deposit = {} } }, tile = { settings = { water = {}, grass = {} } },
 } }
@@ -178,7 +217,7 @@ check(unreadable.raw.acid == nil and unreadable.raw.sulfur == 5 and unreadable.n
   "a planet without map generation gives no raw-root shortcut")
 prototypes.space_location.nauvis.map_gen_settings = native_autoplace
 production = reload()
-force.recipes.acid, force.recipes.heavy_a, force.recipes.heavy_b = nil, nil, nil
+force.recipes.acid, force.recipes["heavy-a"], force.recipes["heavy-b"] = nil, nil, nil
 prototypes.entity.geyser, prototypes.tile.ocean = nil, nil
 
 local science_totals = {
@@ -215,6 +254,7 @@ force.get_item_production_statistics = function()
   return { get_flow_count = function() return 60 end }
 end
 
+production = reload()
 local closure = production.production_requirements({ location = "solar-system-edge", flow_precision = "one_minute" })
 local total = 0
 for pack, expected in pairs(science_totals) do
@@ -303,6 +343,7 @@ force.technologies["mineral-science"] = { name = "mineral-science", researched =
 } }
 prototypes.space_location["mineral-world"] = { name = "mineral-world" }
 force.recipes["mineral-pack"] = recipe("mineral-pack", { { name = "iron-ore", amount = 2 } }, { { name = "mineral-pack", amount = 1 } }, false, 1)
+production = reload()
 for _, technology in pairs(force.technologies) do
   setmetatable(technology, { __index = function(_, key) if key == "effects" then error("LuaTechnology has no effects field") end end })
 end
@@ -365,9 +406,9 @@ end
   for _, name in ipairs({ "barrel", "lube-barrel", "steel-sheet" }) do prototypes.item[name] = {} end
   prototypes.fluid.lube = {}
   force.recipes.barrel = recipe("barrel", { { name = "steel-sheet", amount = 1 } }, { { name = "barrel", amount = 1 } }, true, 1, "crafting")
-  force.recipes.lube_fill = recipe("lube-barrel", { { name = "barrel", amount = 1 }, { name = "lube", amount = 50 } },
+  force.recipes["lube-barrel"] = recipe("lube-barrel", { { name = "barrel", amount = 1 }, { name = "lube", amount = 50 } },
     { { name = "lube-barrel", amount = 1 } }, true, 0.2, "crafting-with-fluid")
-  force.recipes.lube_empty = recipe("empty-lube-barrel", { { name = "lube-barrel", amount = 1 } },
+  force.recipes["empty-lube-barrel"] = recipe("empty-lube-barrel", { { name = "lube-barrel", amount = 1 } },
     { { name = "barrel", amount = 1 }, { name = "lube", amount = 50 } }, true, 0.2, "crafting-with-fluid")
   force.recipes.lube = recipe("lube", { { name = "steel-sheet", amount = 1 } }, { { name = "lube", amount = 10 } }, true, 1, "chemistry")
   -- Which recipes another undoes is prototype data, read at init (here
@@ -388,7 +429,7 @@ end
   local fill
   for _, node in ipairs(filled.nodes) do if node.item == "lube-barrel" then fill = node.recipe end end
   check(fill == "lube-barrel", "a filled barrel, which only the fill recipe makes, keeps that route")
-  for key in pairs({ barrel = 1, lube_fill = 1, lube_empty = 1, lube = 1 }) do force.recipes[key] = nil end
+  for key in pairs({ barrel = 1, ["lube-barrel"] = 1, ["empty-lube-barrel"] = 1, lube = 1 }) do force.recipes[key] = nil end
 
   local ok_choice, choice = pcall(production.production_requirements, { targets = { widget = 1 } })
   check(not ok_choice and tostring(choice):find("^RECIPE_CHOICE_NEEDED: ambiguous production route for widget") ~= nil,

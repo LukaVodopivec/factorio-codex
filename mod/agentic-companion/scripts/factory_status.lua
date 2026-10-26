@@ -186,7 +186,13 @@ local function body_section(body, read_surface)
   out.human_control = ok and held == true
   -- A bounded queue-time snapshot, not a fresh stock/reach or success claim.
   out.upkeep_selection = storage.chores and storage.chores.last_selection or nil
+  local shares = tasks.body_shares()
+  if shares then out.share_10m, out.share_60m = shares.share_10m, shares.share_60m end
   if not (c and c.valid) then return out end
+  local speed_ok, speed = pcall(function() return c.character_running_speed end)
+  if speed_ok and type(speed) == "number" then
+    out.running_speed, out.running_speed_units = speed * 60, "tiles_per_second"
+  end
   local ok_ratio, ratio = pcall(function() return c.get_health_ratio() end)
   if ok_ratio and type(ratio) == "number" and ratio < 1 then out.health_ratio = math.floor(ratio * 1000 + 0.5) / 1000 end
   local inventory = c.get_main_inventory()

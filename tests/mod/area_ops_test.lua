@@ -193,10 +193,37 @@ stored.entities[2].use_filters, stored.entities[2].filters = true, { { index = 1
 inventory["assembling-machine-1"], inventory.inserter = 2, 2
 
 local check_ok = jobs.run_now(area_ops.place_check_job, { name = "gears", position = { x = 10, y = 10 }, check_only = true })
+check(check_ok.supply_route_estimate and #check_ok.supply_route_estimate.steps == 2,
+  "a hand-blueprint dry run retains a supply estimate for each resolved layout step")
 check(check_ok.ok and #check_ok.collisions == 0 and #check_ok.missing == 0 and check_ok.tool_unlock.tool == "blueprint"
   and check_ok.on_ore == nil, "the dry run on free ground reports no collisions, nothing missing and no ore")
 -- It also reports what would stand on ore, as build_layout's dry run does,
 -- and only the blueprint's survey rows.
+do
+  local supply = require("scripts.actions.supply")
+  local real_bill, old_position, old_speed = supply.bill, body.position, body.character_running_speed
+  body.character_running_speed = 0.15
+  local at_bill
+  supply.bill = function(c, wants)
+    at_bill = { tick = game.tick, x = c.position.x }
+    local rows = real_bill(c, wants)
+    for _, row in ipairs(rows) do
+      row.carried, row.in_stock, row.short, row.walk_tiles_to_nearest_holder = 0, 10, 0, 100 - c.position.x
+    end
+    return rows
+  end
+  local job = area_ops.place_check_job.start({ name = "gears", position = { x = 10, y = 10 }, check_only = true })
+  local answer
+  repeat
+    game.tick = game.tick + 1
+    answer = area_ops.place_check_job.step(job, { left = 600 })
+    if job.out then body.position = { x = 99.5, y = 0.5 } end
+  until answer
+  check(answer.supply_route_estimate.origin.x == at_bill.x
+    and answer.supply_route_estimate.source_tick == at_bill.tick,
+    "a blueprint estimate keeps the bill's snapshot when the pilot moves while the survey yields")
+  supply.bill, body.position, body.character_running_speed = real_bill, old_position, old_speed
+end
 local ore = spawn("iron-ore", { x = 9.5, y = 10.5 })
 local over_ore = jobs.run_now(area_ops.place_check_job, { name = "gears", position = { x = 10, y = 10 }, check_only = true })
 ore.valid = false

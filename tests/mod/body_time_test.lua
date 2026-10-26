@@ -197,6 +197,9 @@ do
   check(time.ticks.traveling == 5 and time.ticks.pilot == 2 + 2 and time.state == "idle",
     "a travel step's waiting phases count as traveling; boarding or landing stays pilot work ("
       .. tostring(time.ticks.traveling) .. ", " .. tostring(time.ticks.pilot) .. ")")
+  local shares = tasks.body_shares().share_10m
+  check(shares.states.traveling * shares.denominator_ticks == 5,
+    "travel waits retain their own rolling state instead of becoming idle")
 end
 
 -- Body phases: each pilot or package tick is one phase, walk first (tiles
@@ -247,6 +250,10 @@ do
   local snapshot = tasks.body_time()
   snapshot.phases.walk = 0
   check(storage.tasks.body_time.phases.walk == 6, "the read copies the phases")
+  local shares = tasks.body_shares().share_10m
+  check(shares.phases.walk * shares.denominator_ticks == 6
+    and shares.phases.upkeep * shares.denominator_ticks == 5,
+    "rolling phase shares use all covered ticks, including upkeep, as their denominator")
 end
 
 -- Aboard a platform the body has no character on a surface: a plan's
@@ -281,6 +288,52 @@ do
   ticks(2)
   check(storage.tasks.last_pilot_finished_tick == game.tick, "a human hold keeps restarting it")
   ticks(320)
+end
+
+-- Exact rolling cutoffs: one packed sample per tick, two sliding totals,
+-- one ring capped at an hour. A young/just-upgraded save has only observed
+-- coverage; reading it never walks the ring or mutates its aggregates.
+do
+  local start = game.tick
+  storage.tasks.body_time = { since_tick = start, state = "idle", state_since = start,
+    ticks = {}, gaps = {}, phases = {}, tiles = 0 }
+  body.crafting_queue_size = 1
+  ticks(30)
+  local short = tasks.body_shares().share_10m
+  check(short.denominator_ticks == 30 and short.covered_seconds == 0.5 and short.states.crafting == 1
+    and short.since_tick == start and short.through_tick == game.tick,
+    "young coverage uses observed simulation ticks instead of padding the requested window")
+  ticks(36000 - 30)
+  body.crafting_queue_size = 0
+  ticks(180000)
+  local shares = tasks.body_shares()
+  check(shares.share_10m.states.idle == 1 and shares.share_10m.states.crafting == 0
+    and shares.share_10m.denominator_ticks == 36000 and shares.share_10m.covered_seconds == 600,
+    "the ten-minute window drops all older crafting ticks at its exact boundary")
+  check(shares.share_60m.denominator_ticks == 216000 and shares.share_60m.states.crafting == 1 / 6
+    and shares.share_60m.states.idle == 5 / 6 and shares.share_60m.covered_seconds == 3600,
+    "the hour window retains exactly its last 216000 simulation ticks")
+  ticks(1)
+  shares = tasks.body_shares()
+  local ring = storage.tasks.body_time.rolling
+  check(shares.share_60m.states.crafting == 35999 / 216000 and #ring.samples == 216000
+    and ring.count == 216000, "the next tick expires one oldest sample and the ring stays bounded")
+  shares.share_60m.states.idle = 0
+  check(tasks.body_shares().share_60m.states.idle == 180001 / 216000,
+    "mutating a read cannot change the persisted rolling totals")
+  -- A changed surface with identical coordinates must never be a walk.
+  tasks.queue_plan({ steps = { { action = "walk_to", x = 50, y = 0 } } })
+  ticks(2)
+  body.position = { x = body.position.x + 0.1, y = body.position.y }
+  body.surface_index = 9
+  ticks(1)
+  check(storage.tasks.body_time.sample_phase ~= "walk", "a surface transition is not walking distance")
+  tasks.cancel({ all = true, origin = "test/body-time" })
+  -- Missing samples cannot be inferred from cumulative counters.
+  game.tick = game.tick + 600
+  ticks(1)
+  check(tasks.body_shares().share_60m.denominator_ticks == 1,
+    "a discontinuity starts fresh honest coverage rather than inventing unsampled activity")
 end
 
 -- A save without the counter (before state.init made it) reads nil and is not accounted.

@@ -84,11 +84,11 @@ _G.game = { tick = 0, forces = { player = force }, get_surface = function(index)
 -- The body: a character on Nauvis.
 local main = mock.inventory({ get_contents = function() return { { name = "coal", quality = "normal", count = 20 } } end })
 local body = mock.entity({ valid = true, name = "character", type = "character", position = { x = 5, y = 5 },
-  surface = nauvis, surface_index = 1, force = force, crafting_queue_size = 0,
+  surface = nauvis, surface_index = 1, force = force, crafting_queue_size = 0, character_running_speed = 0.15,
   get_main_inventory = function() return main end, get_health_ratio = function() return 0.75 end })
 package.loaded["scripts.companion"] = { human_control = function() return false, 999 end }
 dofile(here .. "/body_stub.lua")(package.loaded["scripts.companion"], function() return body end)
-package.loaded["scripts.tasks"] = { queue_length = function() return 0 end, active_summary = function() return nil end,
+package.loaded["scripts.tasks"] = { body_shares = function() return nil end, queue_length = function() return 0 end, active_summary = function() return nil end,
   queued_demand = function() return nil end }
 
 local next_unit = 100
@@ -209,6 +209,9 @@ check(lab_line.state == "idle" and lab_line.cause == "no_research", "labs with n
 -- factory_status on the body's surface, with the others summed up.
 calls.finds, calls.statistics, calls.unlocked, calls.samples = {}, 0, 0, 0
 local status = factory_status.factory_status({})
+check(status.body.running_speed == 9 and status.body.running_speed_units == "tiles_per_second"
+  and status.body.share_10m == nil and status.body.share_60m == nil,
+  "body reports native running speed in tiles/s without inventing unavailable history")
 local finds = 0
 for _, n in pairs(calls.finds) do finds = finds + n end
 local research_idle

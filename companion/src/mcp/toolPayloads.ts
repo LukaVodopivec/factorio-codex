@@ -186,7 +186,8 @@ function upkeepSelection(value: any): any {
 }
 function upkeepReadback(value: any): any {
   return value && typeof value === "object"
-    ? { ...value, unfinished_targets: luaArray(value.unfinished_targets) } : value;
+    ? { ...value, unfinished_targets: luaArray(value.unfinished_targets),
+      ...(value.transfers === undefined ? {} : { transfers: luaArray(value.transfers) }) } : value;
 }
 export function normalizeFactoryStatus(value: any): any {
   if (!value || typeof value !== "object") return value;
@@ -351,7 +352,15 @@ export function normalizePhysicalRoute(value: any): any {
 // A dry run's belt_joins rows as JSON lists, with null where the mod leaves
 // a lane's adds or mixes unknown (Lua has no null).
 export function normalizeBeltJoins(value: any): any {
-  if (!value || typeof value !== "object" || value.belt_joins === undefined) return value;
+  if (!value || typeof value !== "object") return value;
+  if (value.supply_route_estimate !== undefined) {
+    const estimate = value.supply_route_estimate;
+    value = { ...value, supply_route_estimate: { ...estimate,
+      assumptions: luaArray(estimate.assumptions ?? []),
+      steps: luaArray(estimate.steps ?? []).map((row: any) => ({ ...row,
+        items: luaArray(row.items ?? []), unavailable: luaArray(row.unavailable ?? []) })) } };
+  }
+  if (value.belt_joins === undefined) return value;
   return { ...value, belt_joins: luaArray(value.belt_joins).map((row: any) => ({ ...row,
     lanes: luaArray(row?.lanes).map((lane: any) => ({ ...lane, items: luaArray(lane?.items ?? []),
       adds: lane?.adds === undefined ? null : luaArray(lane.adds), mixes: lane?.mixes ?? null })) })) };

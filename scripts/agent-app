@@ -443,14 +443,13 @@ def prepare_workspace(destination: Path, native_root: Path) -> Path:
             shutil.copy2(source, target)
         except OSError as exc:
             raise RuntimeError("snapshot files could not be copied") from exc
-    dependency_view = workspace / "node_modules"
-    dependency_view.mkdir()
-    for dependency in sorted((native_root / "node_modules").iterdir(), key=lambda path: path.name):
-        link = dependency_view / dependency.name
-        if dependency.name == "factorio-codex":
-            link.symlink_to("../companion", target_is_directory=True)
-        else:
-            link.symlink_to(dependency, target_is_directory=dependency.is_dir())
+    # Top-level package symlinks make npm treat installed packages as linked
+    # development projects, incorrectly requiring their own devDependencies.
+    # Copy the installed tree, retaining its native relative .bin/workspace links.
+    try:
+        shutil.copytree(native_root / "node_modules", workspace / "node_modules", symlinks=True)
+    except OSError as exc:
+        raise RuntimeError("installed dependency tree could not be copied") from exc
     return workspace
 
 

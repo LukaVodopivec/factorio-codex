@@ -57,4 +57,25 @@ check(not activity.snapshot(500, true).history_complete and activity.snapshot(50
 game.tick = 501
 check(activity.snapshot(501, true).history_complete,
   "a later interval beyond the latest evicted tick remains complete")
+do
+  local plan = { type = "plan", source = "upkeep", current_step = 2, surface = "nauvis" }
+  storage.tasks = { active = plan }
+  -- The same recorder is called by nested auto-supply and the top-level
+  -- insert; both receipts must survive independently of the step's outcome.
+  activity.record("extract", { target = { name = "chest", position = { x = 4, y = 5 } },
+    transfers = { { item = "coal", requested = 10, extracted = 10 } } })
+  activity.record("insert", { target = { name = "furnace", position = { x = 8, y = 5 } },
+    transfers = { { item = "coal", requested = 10, inserted = 3 } } })
+  local fetch, delivery = plan.upkeep_transfers[1], plan.upkeep_transfers[2]
+  check(fetch.action == "extract" and fetch.amount == 10 and fetch.requested == 10
+    and fetch.source.name == "chest" and fetch.source.position.x == 4
+    and fetch.source.surface == "nauvis" and fetch.destination.kind == "body"
+    and delivery.action == "insert" and delivery.amount == 3 and delivery.requested == 10
+    and delivery.destination.name == "furnace" and delivery.destination.position.x == 8
+    and delivery.status == "partial" and delivery.step == 2,
+    "upkeep receipts retain nested acquisition and partial delivery with actual quantities and locations")
+  for _ = 1, 129 do activity.record("insert", { transfers = { { item = "coal", inserted = 1 } } }) end
+  check(#plan.upkeep_transfers == 128 and plan.upkeep_transfers_omitted == 3,
+    "upkeep receipts stay bounded and count omitted actual transfers")
+end
 os.exit(failures == 0 and 0 or 1)

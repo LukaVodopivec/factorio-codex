@@ -349,9 +349,12 @@ end
 -- plan that did not complete, the reason in full as detail.
 local function upkeep_readback(plan)
   if plan.source ~= "upkeep" then return nil end
-  local targets, by_step = {}, {}
+  local targets, by_step, transfers = {}, {}, {}
   -- Outcomes by step: a walk back after an early end skips steps.
   for _, outcome in ipairs(plan.outcomes) do by_step[outcome.step] = outcome end
+  -- Immutable physical receipts, including nested auto-supply and partial
+  -- inserts committed before a cancellation. Snapshot the bounded list.
+  for i, row in ipairs(plan.upkeep_transfers or {}) do transfers[i] = row end
   local first = plan.completed_steps + 1
   local stop = math.min(#plan.steps, first + 15)
   for index = first, stop do
@@ -368,6 +371,7 @@ local function upkeep_readback(plan)
       outcome = outcome }
   end
   return { selection_tick = plan.upkeep_selection and plan.upkeep_selection.tick,
+    transfers = transfers, omitted_transfers = plan.upkeep_transfers_omitted,
     completed_steps = plan.completed_steps, unfinished_targets = targets,
     omitted_targets = math.max(0, #plan.steps - stop), preempted = plan.preempted or nil,
     active = plan.current_task and { step = plan.current_step, context = supply.diagnostics(plan.current_task) } or nil }
@@ -2404,6 +2408,43 @@ end
 local MAX_STEP_TILES, CRAFT_WAIT_TICKS = 2, 30
 local PHASED_STATES = { pilot = true, package = true, upkeep = true, traveling = true }
 local AWAY_STATES = { aboard_platform = true, in_transit = true }
+-- One packed state/phase sample per simulation tick, at most an hour.
+-- Sliding totals make both writes and reads independent of history length;
+-- no scan or interval list can grow with the number of state transitions.
+local BODY_STATES = { "idle", "pilot", "package", "upkeep", "traveling", "crafting", "hold", "dead", "waiting" }
+local BODY_PHASES = { "walk", "mine", "smelt_wait", "craft_wait", "other", "upkeep", "aboard" }
+local STATE_ID, PHASE_ID = {}, {}
+for id, name in ipairs(BODY_STATES) do STATE_ID[name] = id end
+for id, name in ipairs(BODY_PHASES) do PHASE_ID[name] = id end
+local BODY_SHORT, BODY_LONG = 36000, 216000
+local function body_sample(total, code, amount)
+  if not code then return end
+  local state, phase = math.floor(code / 16), code % 16
+  total.states[state] = (total.states[state] or 0) + amount
+  if phase > 0 then total.phases[phase] = (total.phases[phase] or 0) + amount end
+end
+local function account_body_window(time)
+  if not time then return end
+  local rolling = time.rolling
+  if rolling and rolling.last_tick == game.tick then return end
+  -- Missing history is unknown, never backfilled as idle. Ordinary reloads
+  -- keep the persisted tick and ring; a discontinuous clock starts coverage anew.
+  if not rolling or rolling.last_tick ~= game.tick - 1 then
+    rolling = { since_tick = game.tick - 1, last_tick = game.tick - 1, next = 1, count = 0,
+      samples = {}, short = { states = {}, phases = {} }, long = { states = {}, phases = {} } }
+    time.rolling = rolling
+  end
+  local code = STATE_ID[time.state] * 16 + (PHASE_ID[time.sample_phase] or 0)
+  if rolling.count >= BODY_SHORT then
+    body_sample(rolling.short, rolling.samples[(rolling.next - 1 - BODY_SHORT) % BODY_LONG + 1], -1)
+  end
+  if rolling.count >= BODY_LONG then body_sample(rolling.long, rolling.samples[rolling.next], -1) end
+  rolling.samples[rolling.next] = code
+  body_sample(rolling.short, code, 1)
+  body_sample(rolling.long, code, 1)
+  rolling.next, rolling.count, rolling.last_tick = rolling.next % BODY_LONG + 1,
+    math.min(BODY_LONG, rolling.count + 1), game.tick
+end
 local function supply_frame(task)
   local stack = type(task._stack) == "table" and task._stack
     or type(task._supply) == "table" and type(task._supply._stack) == "table" and task._supply._stack or nil
@@ -2411,6 +2452,7 @@ local function supply_frame(task)
 end
 local function account_phase(tasks)
   local time = tasks.body_time
+  if time then time.sample_phase = nil end
   if not (time and time.phases) then return end
   if not PHASED_STATES[time.state] then time.last_position = nil; return end
   local c = companion.get()
@@ -2419,7 +2461,10 @@ local function account_phase(tasks)
     -- Aboard or in a pod there is no character on a surface: the tick is
     -- the trip's.
     local ok, body = pcall(companion.body)
-    if ok and AWAY_STATES[body.state] then time.phases.aboard = (time.phases.aboard or 0) + 1 end
+    if ok and AWAY_STATES[body.state] then
+      time.phases.aboard = (time.phases.aboard or 0) + 1
+      time.sample_phase = "aboard"
+    end
     return
   end
   local p, last = c.position, time.last_position
@@ -2455,6 +2500,26 @@ local function account_phase(tasks)
   if time.state == "upkeep" then phase = "upkeep"
   elseif phase == "walk" then time.tiles = (time.tiles or 0) + moved end
   time.phases[phase] = (time.phases[phase] or 0) + 1
+  time.sample_phase = phase
+end
+-- Shares of all covered simulation ticks (60/s), including holds, idle,
+-- upkeep and travel. Phase shares use the same denominator; phases exist
+-- only while a task holds the body. Fresh/upgraded saves report only sampled
+-- coverage, never an invented hour. Reads copy fixed-size totals, not the ring.
+function M.body_shares()
+  local time = storage.tasks and storage.tasks.body_time
+  local rolling = time and time.rolling
+  if not rolling then return nil end
+  local function window(total, ticks)
+    local covered = math.min(rolling.count, ticks)
+    local out = { states = {}, phases = {}, window_seconds = ticks / 60,
+      covered_seconds = covered / 60, denominator_ticks = covered,
+      since_tick = rolling.last_tick - covered, through_tick = rolling.last_tick }
+    for id, name in ipairs(BODY_STATES) do out.states[name] = covered > 0 and (total.states[id] or 0) / covered or 0 end
+    for id, name in ipairs(BODY_PHASES) do out.phases[name] = covered > 0 and (total.phases[id] or 0) / covered or 0 end
+    return out
+  end
+  return { share_10m = window(rolling.short, BODY_SHORT), share_60m = window(rolling.long, BODY_LONG) }
 end
 -- The run recorder's baseline (run_snapshot {window = true}) marks its
 -- window start: the idle gap open now counts from here when it closes.
@@ -2509,6 +2574,7 @@ function M.on_tick()
   local tasks = storage.tasks
   account_body_time(tasks)
   account_phase(tasks)
+  account_body_window(tasks.body_time)
   local current = tasks.active and tasks.active.current_task
   local runner = current and runners[current.type]
   -- Pure bounded cargo observation continues through holds; native robots

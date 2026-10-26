@@ -489,7 +489,7 @@ local research_stub = { research_trigger = function(tech) return tech == trigger
 package.loaded["scripts.research"] = research_stub
 force.current_research, force.research_progress, force.research_queue = { name = "automation" }, 0.25, { { name = "automation" } }
 local active_plan = { id = 4, type = "plan", status = "running", current_step = 2, steps = { {}, { action = "walk_to" } }, source = "package:p1" }
-package.loaded["scripts.tasks"] = { queue_length = function() return 1 end,
+package.loaded["scripts.tasks"] = { body_shares = function() return nil end, queue_length = function() return 1 end,
   active_summary = function() return { id = 4, type = "plan", current_step = 2, total_steps = 2, action = "walk_to", source = "package:p1" } end }
 body.get_main_inventory = function() return { get_contents = function() return { { name = "coal", count = 5 }, { name = "iron-plate", count = 9 } } end,
   count_empty_stacks = function() return 78 end } end

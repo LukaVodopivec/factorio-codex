@@ -162,7 +162,7 @@ describe("public MCP to Lua DTO mappings", () => {
       ["craft_items", /fails MISSING_INGREDIENTS \(missing lists them\) or NOT_HAND_CRAFTABLE/],
       ["extract_items", /fails INVENTORY_FULL \(no room for any of it\) or NOTHING_TO_TAKE \(it held none\)/],
       ["build_ghosts", /fails AREA_INVALID/], ["deconstruct_area", /fails AREA_INVALID/], ["upgrade_area", /fails AREA_INVALID/],
-      ["factory_status", /unread_sections: wanted sections left out once the read spent its share of the tick budget \(read just those next\)/],
+      ["factory_status", /unread_sections: sections deferred by the tick budget; read those next/],
     ];
     // Facts and arithmetic only: no remedy, recommendation or count to build.
     const remedy = /\b(should|must build|you need|consider|recommend\w*|build more|add more|instead build|it is best|try to)\b/i;
@@ -216,7 +216,7 @@ describe("public MCP to Lua DTO mappings", () => {
     for (const name of ["place_entity", "build_layout", "blueprint_place"]) {
       expect(descriptions[name], name).toMatch(/lying on a footprint are taken into the inventory first \(picked_up: item, count, x, y\); GROUND_ITEMS_NO_ROOM/);
     }
-    expect(descriptions.build_layout).toMatch(/ground_items lists the item stacks lying on footprints/);
+    expect(descriptions.build_layout).toMatch(/ground_items: footprint stacks picked up first/);
     expect(descriptions.pickup_items).toMatch(/surplus/);
     expect(descriptions.pickup_items).toMatch(/GROUND_STACK_CHANGED.*PICKUP_COUNT_MISMATCH/);
     for (const code of ["MOVE_SOURCE_MISSING", "MOVE_SOURCE_MISMATCH", "MOVE_NOT_PLACEABLE", "MOVE_ALREADY_THERE", "MOVE_TARGET_BLOCKED"]) {

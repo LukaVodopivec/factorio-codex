@@ -46,6 +46,9 @@ check(storage.tasks.active == active and #storage.tasks.queue == 1 and storage.t
   "in-flight plans survive the upgrade")
 check(storage.tasks.human_hold and storage.tasks.human_hold.since == 499000,
   "a hold in progress survives the upgrade, so its ticks are credited when it ends")
+local rolling = storage.tasks.body_time.rolling
+check(rolling.count == 0 and rolling.last_tick == game.tick and next(rolling.samples) == nil,
+  "an older save starts rolling coverage at the upgrade, without inventing past activity")
 check(storage.tasks.holds.count == 0 and storage.tasks.holds.total_ticks == 0 and #storage.tasks.holds.recent == 0,
   "an older save gains an empty hold episode ring; the hold in progress is not invented as an episode")
 check(type(storage.jobs) == "table" and storage.jobs.next_id == 1 and #storage.jobs.order == 0,
@@ -97,6 +100,7 @@ storage.world_policy.errors[1] = { tick = 2, surface = "nauvis", write = "peacef
 storage.blueprints.by_name.smelter = { slot = 1 }
 storage.jobs.next_id = 9
 state.init()
+check(storage.tasks.body_time.rolling == rolling, "a later configuration change retains rolling body history")
 check(storage.patch_caches[1] == cache and #cache.charted == 5, "state.init keeps an existing charted list")
 check(#created_inventories == 1 and storage.blueprints.inventory == blueprint_inventory
   and storage.blueprints.by_name.smelter ~= nil and storage.jobs.next_id == 9,

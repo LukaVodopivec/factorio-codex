@@ -96,6 +96,19 @@ describe("orders attached to tool results", () => {
 });
 
 describe("package auto-queue", () => {
+  it("keeps normalized supply estimates with the package step that produced each dry run", async () => {
+    const dir = runDir();
+    writeLedger(dir, 1, [furnaces("supply-evidence")]);
+    const estimate = { source_tick: 10, basis: "shared_initial_supply_straight_line_lower_bound",
+      assumptions: {}, steps: [{ step: 1, distance_tiles_lower_bound: 3, seconds_lower_bound: 1 / 3,
+        items: {}, unavailable: {} }] };
+    const { bridge } = fakeBridge({ build_layout: () => ({ failed: {}, placed: {}, supply_route_estimate: estimate }) });
+    await createPackageQueue(() => dir, bridge).tick();
+    expect(readPackageQueue(dir)?.packages["supply-evidence"]?.supply_route_estimates).toEqual([
+      { step: 2, action: "build_layout", estimate: { ...estimate, assumptions: [],
+        steps: [{ ...estimate.steps[0], items: [], unavailable: [] }] } },
+    ]);
+  });
   it("queues each new package once, in ledger order, after its check, with source package:<id>", async () => {
     const dir = runDir();
     writeLedger(dir, 3, [furnaces("iron-a"), furnaces("iron-b")]);
@@ -882,6 +895,11 @@ describe("package auto-queue", () => {
     await createPackageQueue(() => dir, held.bridge).tick();
     expect(held.call.mock.calls.some(([method]) => method === "start_research")).toBe(false);
     writeLedger(dir, 3, [], "research", { mode: "replace", technologies: [] });
+    // This branch requires a ledger written after the recorded stop. A
+    // synchronous rewrite may share its wall-clock millisecond; set the
+    // fixture's ordering explicitly rather than relying on elapsed time.
+    const afterStop = new Date(Date.parse(readPackageQueue(dir)!.cancel_all!.observed_at) + 1);
+    fs.utimesSync(path.join(dir, "operations.json"), afterStop, afterStop);
     const rejected = fakeBridge({ start_research: () => { throw new ModError("replacement refused"); } });
     await createPackageQueue(() => dir, rejected.bridge).tick();
     expect(readPackageQueue(dir)?.research).toMatchObject({ revision: 3, status: "failed", mode: "replace" });

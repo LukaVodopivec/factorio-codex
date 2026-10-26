@@ -18,8 +18,8 @@ machine stays headless.
 ## Headless live smoke suite
 
 `npm run test:live` (or `scripts/agent-app verify --profile live`) checks the
-real mod against the real engine with no client and no body, in about a
-minute. It is opt-in and never part of `npm test` or CI. It needs Node 22 and a
+real mod against the real engine with no client and no body, in several
+minutes. It is opt-in and never part of `npm test` or CI. It needs Node 22 and a
 Factorio 2.0.x executable, found through `FACTORIO_BIN` or a standard Linux
 Steam install; without one it skips with a message (the agent-app profile sets
 `FACTORIO_LIVE_REQUIRED=1`, which turns the skip into a failure).
@@ -40,9 +40,9 @@ entities with `create_entity` and call the mod's modules and RPCs:
 - `items.move` keeping durability and quality;
 - `inspect` `area` refusing uncharted land, then listing own entities as
   compact rows;
-- `run_snapshot` and `production_requirements` on a mid-game state (red and
-  green research, 60 machines), each answered pending and read through
-  `get_job`, with every tick of their work within 8 ms;
+- `run_snapshot` jobs and cached `production_requirements` on a mid-game state
+  (red and green research, 60 machines), accepting inline results or reading
+  pending results through `get_job`, with every tick of their work within 8 ms;
 - mirrored and plain oil refineries and chemical plants whose live pipe
   connections match `fluid_connections.ports` at every direction;
 - the physical scenarios on a real character (ground stacks taken up by
@@ -311,6 +311,47 @@ observable checks:
   `craft_wait`, `other`), `tiles` and the `waiting` state, the recorder's
   strict schema accepts them, and the manifest's `telemetry.body` gives their
   window deltas; `waiting` time is a state share, never a gap.
+- `factory_status.body` carries `share_10m` and `share_60m`: `states`
+  and `phases` are fractions of `denominator_ticks`, all covered simulation
+  ticks at 60 ticks/s, including idle, holds, upkeep, crafting and travel.
+  Each window names `window_seconds`, `covered_seconds`, `since_tick` and
+  `through_tick`. Coverage starts when the rolling sampler was installed;
+  young and upgraded saves never invent missing history. State fractions
+  sum to one when coverage is nonzero; phases use the same denominator and
+  exist only while a task holds the body. Upkeep is its own phase and
+  platform/pod ticks use `aboard`. The sampler reuses the task state/phase
+  classification at the start of each tick, with one packed sample per tick
+  (at most 216000), sliding totals and constant work per write/read.
+  Reads report the last sampled tick. `running_speed` is the current native
+  `character_running_speed` multiplied by 60, in `running_speed_units:
+  "tiles_per_second"`; it is absent when no character is available.
+  Verify young coverage, exact 36000/216000-tick cutoffs, holds, upkeep,
+  standalone and task-held crafting, travel and surface transitions in an
+  isolated save. A reload preserves coverage; a discontinuous clock starts
+  a new observed interval.
+- Resolved hand-layout and hand-blueprint `check_only` replies include
+  `supply_route_estimate`, using the existing resolved placement order and
+  shared material bill. Each row identifies its resolved `step`, position,
+  `layout_source`, required items, `distance_tiles_lower_bound` and, when
+  running speed is known, `seconds_lower_bound`. Distances use the nearest
+  permitted cached stock holder from the read's `origin`, less physical
+  reach, and time uses current running speed. These are partial straight-line
+  bounds on initial supply travel, not a predicted completion time or a
+  placement itinerary. Repeated items share the initial fetch; different
+  item bounds overlap and must not be summed. `assumptions`, `unavailable`,
+  `source_tick` and `surface` make missing route, crafting, gathering,
+  obstacle, capacity and extra-holder evidence explicit. A zero known bound
+  with unavailable evidence never claims zero actual travel. The arithmetic
+  yields after at most 32 steps per job tick and performs no new stock scan,
+  path request, reservation or physical action. The package bridge retains
+  these replies in its existing record as `supply_route_estimates`, with the
+  package's step number and action; nested `step` is the resolved layout step.
+  A blueprint whose footprint cannot be resolved from permitted charted state
+  has no resolved estimate; its existing collisions/free-reason fields explain
+  the missing evidence. Ghosts and remote platform construction have no
+  character supply route.
+  Verify the actual material bill and position order, shared fetch handling,
+  unavailable evidence, empty-list normalization and unchanged inventory.
 - `explore` without `direction` for a resource the force has charted within
   `max_distance` ends `PATCH_FOUND` at once (`walked` 0, `charted_before:
   true`, `distance` to the patch's bbox, 0 inside); with `direction` it
@@ -360,6 +401,19 @@ checks:
 - A failed plan's `activity_log` row keeps `summary` short and carries
   `detail`, the full reason up to about 800 bytes, cut at a character
   boundary.
+- Upkeep rows also carry `upkeep.transfers` for completed and partial
+  physical attempts, including nested stock acquisition and movement committed
+  before cancellation/recovery: tick, step, action (`insert` or `extract`),
+  per-transfer status, item, quality when non-normal, per-attempt `requested`
+  and observed `amount`, plus `source` and `destination` identities with
+  positions and surfaces where known. An insert moves from the body to
+  its target; an extract reverses them. Requested items alone never imply
+  movement. Receipts come from the existing activity recorder when movement
+  happens, with locations frozen then. At most 128 transfer rows are retained per plan, with
+  `omitted_transfers` counting the rest; unfinished-target diagnostics,
+  preemption and walk-back remain visible. Verify successful and partial
+  actual inventory changes against these rows, including a completed plan
+  with no unfinished targets.
 - `tool_outcomes.jsonl` rows carry `ok`, `next_event`'s `event`, and a
   `summary` of at most 200 characters on failed calls and statuses other than
   `ok`, `completed` or `running`; a failed dry run is `not_ok` with its code or
@@ -384,8 +438,14 @@ checks:
 
 - No tick's RPC and job work together goes over 8 ms: `run_snapshot` runs in
   phases and its result arrives through `get_job`, `production_requirements`
-  is a job whose recipe index spreads across ticks (its resource catalogue
-  and recipe facts are read into storage at init, never in a tick), and
+  is a job whose expansion remains budgeted (its resource catalogue,
+  product-to-recipe membership and recipe facts are read into storage at
+  initialization/configuration change). Requests read only their candidate
+  recipes from the live force, so research changes availability without a
+  cache rebuild; a reload retains the index and a mod upgrade rebuilds it.
+  Repeated requests must not enumerate the full recipe catalogue. Record
+  timing/allocation evidence before and after research and an isolated
+  configuration change, keeping the 8 ms assertion unchanged, and
   large dry runs yield. Profiler RPC lines carry the tick.
 - `factory_status` lines carry `line_counts` (with `by_state`) for every line
   of the surface beside the ten worst rows; an output-full drill or inserter
@@ -962,16 +1022,43 @@ configuration loads, and a partial override of one field is rejected there.
 ```sh
 codex --model gpt-6-luna -c model_reasoning_effort=low -c service_tier=fast -c features.fast_mode=true \
   -c model_reasoning_summary=detailed \
+  -c 'model_provider="factorio-openai"' \
+  -c 'model_providers.factorio-openai={name="OpenAI",wire_api="responses",requires_openai_auth=true,stream_idle_timeout_ms=180000,stream_max_retries=0}' \
   -c 'web_search="disabled"' -c agents.enabled=false -c features.memories=false \
   -c features.multi_agent_v2=false \
   -c 'mcp_servers.factorio={command="./scripts/start-factorio-mcp",args=["--role","pilot"],enabled=true,required=true,startup_timeout_sec=180,tool_timeout_sec=600}'
 codex --model gpt-6.1-sol -c model_reasoning_effort=medium \
+  -c 'service_tier="default"' \
   -c model_reasoning_summary=detailed \
+  -c 'model_provider="factorio-openai"' \
+  -c 'model_providers.factorio-openai={name="OpenAI",wire_api="responses",requires_openai_auth=true,stream_idle_timeout_ms=180000,stream_max_retries=0}' \
   -c 'web_search="disabled"' -c agents.enabled=false -c features.memories=false \
   -c features.multi_agent_v2=false \
   -c 'mcp_servers.factorio={command="./scripts/start-factorio-mcp",args=[],enabled=false}' \
   -c 'mcp_servers.factorio-readonly={command="./scripts/start-factorio-mcp",args=["--surface","read-only","--role","strategist"],enabled_tools=["connect_status","map_summary","progression_status","production_requirements","describe_prototype","observe_local","inspect_entity","plan_status","can_place","find_placement","factory_status","activity_log","next_event","build_layout","connect_entities","blueprint_list","blueprint_describe","blueprint_export","blueprint_place","place_tiles","platform_status","set_watch","clear_watch"],enabled=true,required=false,startup_timeout_sec=180,tool_timeout_sec=600}'
 ```
+
+The named native provider retains the existing OpenAI ChatGPT authentication
+and auth-aware default endpoint; it adds no provider client or credentials.
+Codex reserves the built-in `openai` provider ID, so overriding
+`model_providers.openai` is invalid. Both role launches select `factorio-openai`
+with `stream_idle_timeout_ms=180000` (milliseconds: three minutes without a
+stream event) and `stream_max_retries=0`. Three minutes permits long reasoning
+pauses while reporting a dead stream before an entire debug checkpoint passes;
+disabling native stream retries makes the first idle failure visible instead
+of repeating that silence. This is a per-stream idle limit, not a whole-turn
+deadline. It is separate from the MCP `startup_timeout_sec=180` and
+`tool_timeout_sec=600`, which remain unchanged.
+
+Before `GO`, read the exact role launch's effective native `config/read` and
+record the selected provider, `model_reasoning_summary=detailed`, idle timeout
+and stream retry count alongside the role-profile evidence below. Config
+readback establishes launch configuration; it does not replace each role's
+fresh native `execution_settings({})` report. After a provider failure, use the
+existing session/Goal recovery and structured game reads to reconcile accepted
+plans and ledger receipts before deciding any further action. A failed model
+stream neither cancels an accepted plan nor authorizes replaying a physical
+mutation, restarting a gameplay session, or sending a duplicate package.
 
 The isolation overrides remove the built-in web search, multi-agent and
 memory routes: `web_search="disabled"` removes the web tool (it wins over
@@ -990,7 +1077,8 @@ instruction rules. Recheck these keys when the Codex runtime changes.
 
 Fast mode is `service_tier=fast` (read back as the `priority` tier) with
 `features.fast_mode` enabled;
-the strategist keeps the default (normal) tier. `--role` names the session in
+the strategist explicitly selects `service_tier="default"` (normal), so an
+inherited Fast preference cannot select its service tier. `--role` names the session in
 the `origin` of every cancel its MCP process makes. The supervisor starts its
 own factorio MCP server using the [README supervisor launch](../README.md#5-start-the-supervisor-in-the-repository):
 `-c 'mcp_servers.factorio={command="./scripts/start-factorio-mcp",args=["--role","supervisor"],enabled=true,required=true,startup_timeout_sec=180,tool_timeout_sec=600}'`
@@ -1008,6 +1096,32 @@ reasoning items without a summary (trial 0011: the strategist summarized 108
 of 1424); the shown role's own messages are then most of the feed. The
 manifest's `telemetry.roles.<role>.reasoning_summarized` against
 `reasoning_items` shows the share.
+
+Disposable native check, 2026-10-26 (Codex 0.159.2, binary SHA-256
+`c65f92b2649aa41a9738214ac71c2dd9b34497fe294152b25a372dfc7875494b`):
+strict configuration accepted the named provider and rejected overriding the
+reserved `openai` ID. Minimal native account reads confirmed the built-in and
+named routes used the same existing ChatGPT account; no login or credential
+copy was involved. Both intended models completed disposable turns with
+`detailed` requested, without Factorio tools. A pilot rollout had zero reasoning
+items and one assistant message; a strategist rollout had one reasoning item
+with an empty summary and one assistant message. The existing thought-feed
+reader and forwarding callback recorded and acknowledged both real assistant
+messages. That check exercised feed extraction/forwarding, not the in-game
+panel. These omissions are observed model behavior, not evidence that detailed
+summaries were misconfigured, and no summary coverage threshold was imposed.
+
+A separate loopback SSE fixture exercised the installed native client with a
+500 ms idle limit and zero stream/request retries: one silent request failed
+with `idle timeout waiting for SSE` after 700 ms. A subsequent healthy fixture
+turn on the same disposable thread completed in 83 ms with one request. The
+short fixture limit verifies the failure/recovery mechanism; effective native
+configuration separately verifies the production 180000 ms value for each
+role. Fixture text is synthetic timeout evidence, never model-summary evidence.
+All disposable threads were archived and their app servers and fixture stopped.
+No `GO`, gameplay action, accepted-plan cancellation or replay occurred. Fresh
+role-session `execution_settings` evidence remains required before every real
+`GO`; these disposable/configuration checks do not stand in for it.
 
 Start each session with its checked-in role goal; the pilot takes no physical
 action before `GO`. Confirm the strategist lists exactly the twenty-one
@@ -1563,6 +1677,82 @@ spectator camera follow the sole Codex body automatically. Codex itself still
 walks physically; only the characterless viewer camera follows. Confirm the
 viewer identity has no body or inventory and remains aligned with Codex
 during a physical `walk_to` action.
+
+## Trial-observability candidate validation (2026-10-26)
+
+The isolated checks used the official headless Factorio 2.0.77 distribution
+with matching `base`, `elevated-rails`, `quality` and `space-age` mods. The
+headless archive SHA-256 was
+`c4efc11529f74d37c96933e291e0db73fd9f5aa4738913d9301b24680b3e947f`,
+verified against the official release checksums. The candidate mod package
+SHA-256 was
+`021bbdf96e7311c78519a73c726fe4c95f324ced41e12e3ecfd19fb2190c4b24`;
+all 63 archived files matched the mod files installed in the disposable run.
+The initial peaceful seed-747930220 save SHA-256 was
+`81839f0d18fd16e2991bd90ac1555bf49df76cb5015b0d940896ddff769d3054`.
+No active gameplay installation or save was changed.
+
+A separate native save-lifecycle probe made six recipe requests before saving,
+six after loading that save unchanged, and six after changing only the
+isolated mod's metadata version from 0.38.1 to 0.38.2 and loading the same save.
+The latter exercised the actual `on_configuration_changed` owner; it was a
+test trigger, not a 0.38.2 release or deployment. Persisted recipe-index identity
+survived ordinary reload and changed on configuration rebuild while product
+membership stayed equal. The saved body ring had 40 samples; reads after
+reload and configuration rebuild had 68 and 108 samples, respectively. The
+saved fixture SHA-256 was
+`83d28262be2f79489163871fccd7282bd915c7cbc86898b25994eb84f4185016`.
+The maximum recipe RPC times were 0.603 ms before save, 0.562 ms after reload,
+and 0.583 ms after upgrade, across 18 requests total. These are observed
+handler timings, not a guarantee for arbitrary expansion trees.
+
+The first complete live-suite attempt found one obsolete test assumption:
+every recipe request had previously yielded while rebuilding its index.
+Cached small requests now returned inline (observed 1.827 ms). The test now
+accepts either a valid inline result or the existing pending/get-job path;
+all result and 8 ms timing assertions remain. That first attempt passed its
+remaining API scenarios and timing checks: 132 RPCs, 142 job ticks, slowest
+combined tick 3.45 ms, and worst 600-tick average 0.293 ms/tick. Its overall
+result was failed because of the obsolete pending-shape assertion; it is not
+recorded as a passed suite.
+
+The second full attempt passed the new native speed, rolling denominator,
+live research/cache and completed 10/10 plus partial 3/10 upkeep inventory
+checks. Its new blueprint-estimate assertion incorrectly expected a resolved
+route for a footprint the engine correctly reported uncharted in a no-player
+server. The test now retains that refusal and separately supplies a scoped
+chart-cache view of only the known fixture footprint for the successful
+read-only RPC path; the view is restored before any physical action. Focused
+reverification passed, with 15 RPCs, 27 job ticks, slowest combined tick
+1.80 ms and worst 600-tick average 0.106 ms/tick. This verifies the native
+API/wiring with the documented chart stand-in, not real client charting.
+The second full attempt's global timing checks also passed (147 RPCs,
+142 job ticks, slowest combined tick 3.96 ms, worst window 0.323 ms/tick);
+its overall result remained failed because of that fixture assertion.
+
+The final complete `npm run test:live` run passed every scenario and all
+unchanged timing checks: 154 RPCs, 144 job ticks, 275 measured combined ticks,
+slowest RPC/combined tick 4.19 ms (a factory-status tick in which the GC freed
+memory), 32 profiler windows and worst average 0.330 ms/tick. Repeated recipe
+requests reached 3.24 ms at most. Eight additional live cached-index reads
+recorded heap-count deltas of 125.8, 121.2, 102.5, 144.3, 1017.2, 106.0,
+118.1 and 122.0 KiB. Those deltas include returned structures and concurrent
+mod work, so they are observations, not isolated allocation measurements or
+an invented improvement percentage.
+
+The full offline profile passed all ten checks, including 565 companion tests
+in 21 files, all Lua tests and the extract contract, 16 Python contract tests,
+dependency validation, typecheck, build, all three MCP smoke surfaces and
+packaging. It used an isolated native Git root with the exact candidate source
+and installed dependency tree because the mounted owning checkout had older
+dependency descriptors; that checkout was left untouched. The verifier now
+copies the installed tree while preserving its native relative links, avoiding
+npm interpreting every package as an independent linked development project.
+Fresh independent read-only review and focused re-reviews resolved all validated
+findings. Semgrep was not run: no matching tool or executable was exposed, and
+the documented workspace discovery route failed its managed-key lookup. These
+results establish candidate readiness and isolated API behavior, not deployment,
+real client charting or in-game panel verification.
 
 ## Historical live evidence
 

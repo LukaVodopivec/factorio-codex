@@ -1223,6 +1223,29 @@ check(stone.gatherable.stone == 3 and stone.needs_machine == nil and uranium.nee
   and uranium.gatherable == nil, "nature's items are gatherable; one that needs a fluid to mine needs a machine")
 check(plate.walk_s_lower_bound == 0.5 and gear.walk_s_lower_bound == nil and stone.walk_s_lower_bound == nil,
   "walk_s_lower_bound: straight line to the nearest holder at running speed, only for an item to fetch from stock")
+;(function()
+  local old_reach = body.reach_distance
+  body.reach_distance = 2
+  local steps = {
+    { item = "iron-plate", position = { x = 10, y = 0 }, _source = { index = 3 } },
+    { item = "iron-plate", position = { x = 11, y = 0 } },
+    { item = "stone", position = { x = 12, y = 0 } },
+  }
+  local state = supply.route_estimate_start(body, steps, bill)
+  local budget = { left = 4 }
+  check(supply.route_estimate_step(state, budget) == nil and state.cursor == 2 and budget.left == 0,
+    "supply estimate yields after its work budget without scanning stock again")
+  local estimate = supply.route_estimate_step(state, { left = 100 })
+  check(#calls == 0 and estimate.steps[1].step == 1 and estimate.steps[1].layout_source.index == 3
+    and estimate.steps[1].distance_tiles_lower_bound == 3
+    and math.abs(estimate.steps[1].seconds_lower_bound - 1 / 3) < 0.00001,
+    "the first stock use estimates straight-line travel less physical reach at current speed")
+  check(estimate.steps[2].items[1].shared_initial_supply and estimate.steps[2].distance_tiles_lower_bound == 0,
+    "repeated items share the initial fetch instead of counting an independent route twice")
+  check(#estimate.steps[3].unavailable > 0 and estimate.steps[3].distance_tiles_lower_bound == 0,
+    "unknown acquisition routes are explicit; a zero known bound does not claim zero actual travel")
+  body.reach_distance = old_reach
+end)()
 local covered = supply.bill(body, { { name = "iron-gear-wheel", count = 1 } })[1]
 check(covered.short == 0 and covered.hand_craftable == nil and covered.needs_machine == nil,
   "a carried item is no short")

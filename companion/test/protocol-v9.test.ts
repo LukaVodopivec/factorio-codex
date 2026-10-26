@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Bridge } from "../src/bridge.js";
 import { MCP_SERVER_VERSION, registerMcpTools } from "../src/mcp/server.js";
-import { normalizeActivityLog, normalizeCanPlace, normalizeFactoryStatus, normalizeInspection, normalizeMapSummary, normalizePhysicalRoute, normalizePlacementSearch, normalizePlanDiagnostics, normalizePlatformStatus, normalizeProductionRequirements, planStatusSummary, queuedPlanSummary, toolPayloads } from "../src/mcp/toolPayloads.js";
+import { normalizeBeltJoins, normalizeActivityLog, normalizeCanPlace, normalizeFactoryStatus, normalizeInspection, normalizeMapSummary, normalizePhysicalRoute, normalizePlacementSearch, normalizePlanDiagnostics, normalizePlatformStatus, normalizeProductionRequirements, planStatusSummary, queuedPlanSummary, toolPayloads } from "../src/mcp/toolPayloads.js";
 import { PROTOCOL_VERSION, RPC_METHODS } from "../src/protocol/contract.js";
 import { packageStepSchema } from "../src/mcp/runPlan.js";
 
@@ -608,7 +608,7 @@ describe("protocol v29 DTO and tool registry", () => {
     expect(described.build_layout).toMatch(/materials is the bill: .*in_stock .*short .*made_per_min .*minutes_at_rate .*hand_craftable with hand_craft_s .*gatherable .*needs_machine .*walk_s_lower_bound/);
     expect(described.connect_entities).toMatch(/A dry run's materials bills the pieces/);
     expect(described.queue_plan).toMatch(/It returns needs: .*queued_demand .*short_by .*nothing is reserved or ordered/);
-    expect(described.factory_status).toMatch(/stock \(what queued plans take against it: the fifo block's queued_demand and short_by, see queue_plan\)/);
+    expect(described.factory_status).toMatch(/stock: see fifo queued_demand and short_by in queue_plan/);
     expect(described.queue_plan).not.toMatch(/build_block/);
     expect(described.run_plan).not.toMatch(/build_block/);
   });
@@ -791,7 +791,24 @@ describe("protocol v29 DTO and tool registry", () => {
     expect(normalizePlanDiagnostics({ upkeep_selection: selection }).upkeep_selection.refuel.selected).toEqual([]);
     expect(normalizeActivityLog({ entries: [{ source: "upkeep", upkeep: { unfinished_targets: {} } }] })
       .entries[0].upkeep.unfinished_targets).toEqual([]);
+    const transfer = { step: 1, item: "coal", requested: 10, amount: 3,
+      source: { kind: "body", surface: "nauvis", position: { x: 8, y: 2 } },
+      destination: { kind: "entity", surface: "nauvis", position: { x: 10, y: 2 } } };
+    expect(normalizeActivityLog({ entries: [{ upkeep: { transfers: [transfer], unfinished_targets: {} } }] })
+      .entries[0].upkeep.transfers).toEqual([transfer]);
+    expect(normalizePlanDiagnostics({ upkeep: { transfers: {}, unfinished_targets: {} } }).upkeep.transfers).toEqual([]);
+    const estimate = { source_tick: 100, basis: "shared_initial_supply_straight_line_lower_bound",
+      assumptions: {}, steps: [{ step: 1, position: { x: 10, y: 2 }, distance_tiles_lower_bound: 3,
+        seconds_lower_bound: 1 / 3, items: {}, unavailable: {} }] };
+    expect(normalizeBeltJoins({ supply_route_estimate: estimate }).supply_route_estimate).toEqual({
+      ...estimate, assumptions: [], steps: [{ ...estimate.steps[0], items: [], unavailable: [] }] });
     expect(normalizeFactoryStatus({ body: { upkeep_selection: selection } }).body.upkeep_selection.refuel.candidates).toEqual([]);
+    const bodyTime = { states: { idle: 0.75, upkeep: 0.25 }, phases: { upkeep: 0.25 },
+      denominator_ticks: 120, covered_seconds: 2, window_seconds: 600, since_tick: 100, through_tick: 220 };
+    expect(normalizeFactoryStatus({ body: { running_speed: 9, running_speed_units: "tiles_per_second",
+      share_10m: bodyTime, share_60m: { ...bodyTime, window_seconds: 3600 } } }).body)
+      .toMatchObject({ running_speed: 9, running_speed_units: "tiles_per_second", share_10m: bodyTime,
+        share_60m: { ...bodyTime, window_seconds: 3600 } });
     const audit = normalizePlanDiagnostics({ plan_id: 9, status: "completed", outcomes: [
       { step: 2, action: "inspect_entities", result: { tick: 100, entities: [{ name: "furnace" }], omitted_entities: 0 } },
       { step: 4, action: "inspect_entities", result: { tick: 145, entities: [{ name: "lab" }], omitted_entities: 0 } },

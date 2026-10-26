@@ -13,13 +13,16 @@ import path from "node:path";
 import { ModError, WriterRetiredError, type Bridge } from "../bridge.js";
 import type { PackageVerificationEvent } from "../mcp/events.js";
 import { queuePlanSchema } from "../mcp/runPlan.js";
-import { luaArray, toolPayloads } from "../mcp/toolPayloads.js";
+import { luaArray, normalizeBeltJoins, toolPayloads } from "../mcp/toolPayloads.js";
 import { atomicWriteFile } from "../setup/atomic.js";
 import { operationsLedgerSchema, verifySchema, type OperationsLedger, type VerifyMetric } from "./ledger.js";
 
 export type RunDir = () => string | null;
 type BuildPackage = OperationsLedger["build_packages"][number];
+export interface PackageSupplyEstimate { step: number; action: string; estimate: unknown }
 export interface PackageRecord {
+  /** Read-only dry-run evidence, attributed to the package's own step. */
+  supply_route_estimates?: PackageSupplyEstimate[];
   /** queuing: the queue_plan call was sent without a recorded answer;
    *  waiting_surface: the body is on another surface than the package's, or
    *  for a package whose every step names a platform, a platform it names
@@ -344,8 +347,13 @@ export const CAPTURE_MAX_ENTITIES = 100;
  *  placed rows), which it treats as standing (a place_entity step's through
  *  a one-entity layout dry run), so a later step's placement or route over
  *  an earlier one fails here, not when it runs. */
-export async function checkPackage(bridge: Bridge, entry: BuildPackage, afterPending = false): Promise<string | null> {
+export async function checkPackage(bridge: Bridge, entry: BuildPackage, afterPending = false,
+  estimates?: PackageSupplyEstimate[]): Promise<string | null> {
   try {
+    const keepEstimate = (step: BuildPackage["steps"][number], answer: any) => {
+      if (answer?.supply_route_estimate !== undefined) estimates?.push({ step: entry.steps.indexOf(step) + 1,
+        action: step.action, estimate: normalizeBeltJoins(answer).supply_route_estimate });
+    };
     const cut = entry.steps.findIndex(changesGround);
     const checked = cut < 0 ? entry.steps : entry.steps.slice(0, cut);
     // The only step whose items are checked now.
@@ -381,6 +389,7 @@ export async function checkPackage(bridge: Bridge, entry: BuildPackage, afterPen
           const answer = await bridge.call<{ failed?: unknown }>("build_layout", { anchor: { x: step.x, y: step.y },
             entities: [{ name: step.name, dx: 0, dy: 0, ...(step.direction !== undefined ? { direction: step.direction } : {}) }],
             check_only: true, ...overlay({}) });
+          keepEstimate(step, answer);
           const over = (luaArray(answer?.failed ?? []) as Array<{ reason?: string }>)
             .find((row) => typeof row?.reason === "string" && row.reason.includes(EARLIER_STEP_OVERLAP));
           if (over) return `place_entity ${step.name} at (${step.x}, ${step.y}): ${over.reason}`;
@@ -392,6 +401,7 @@ export async function checkPackage(bridge: Bridge, entry: BuildPackage, afterPen
         const { action, ...params } = step;
         const checked = await bridge.call<{ ok?: boolean; free_position?: { x: number; y: number };
           collisions?: unknown; unobtainable?: unknown; placed?: unknown }>(action, { ...params, check_only: true, ...overlay(params) });
+        keepEstimate(step, checked);
         const collisions = luaArray(checked?.collisions ?? []) as Array<{ reason?: string }>;
         const short = luaArray(checked?.unobtainable ?? []) as Array<{ code?: string; reason?: string }>;
         if (short.length > 0 && step === first) {
@@ -409,6 +419,7 @@ export async function checkPackage(bridge: Bridge, entry: BuildPackage, afterPen
       if (step.action !== "build_layout") continue;
       const { action, ...params } = step;
       const checked = await bridge.call<{ failed?: unknown; placed?: unknown }>(action, { ...params, check_only: true, ...overlay(params) });
+      keepEstimate(step, checked);
       const failed = (luaArray(checked?.failed ?? []) as Array<{ code?: string; reason?: string }>)
         .filter((row) => row?.code !== "ITEM_UNOBTAINABLE" || step === first);
       if (failed.length > 0) return `${action}: ${[failed[0]?.code, failed[0]?.reason].filter(Boolean).join(" ")}`;
@@ -785,7 +796,9 @@ export function createPackageQueue(runDir: RunDir, bridge: () => Promise<Bridge>
       }
       // What each capture returned (a retry keeps the first ones).
       const made: CapturedBlueprint[] = retry ? state.packages[id]?.captured ?? [] : [];
-      const kept = () => made.length > 0 ? { captured: [...made] } : {};
+      const estimates: PackageSupplyEstimate[] = retry ? state.packages[id]?.supply_route_estimates ?? [] : [];
+      const kept = () => ({ ...(made.length > 0 ? { captured: [...made] } : {}),
+        ...(estimates.length > 0 ? { supply_route_estimates: [...estimates] } : {}) });
       if (!retry) {
         // Captures come first: the package's own steps may place what they capture.
         let capturing: string | undefined;
@@ -805,7 +818,7 @@ export function createPackageQueue(runDir: RunDir, bridge: () => Promise<Bridge>
           record(id, { status: "failed", reason: `capture ${capturing} failed: ${message(error)}${before}`, ...kept() });
           continue;
         }
-        const problem = await checkPackage(b, entry, afterPlanId !== undefined);
+        const problem = await checkPackage(b, entry, afterPlanId !== undefined, estimates);
         if (problem) { record(id, { status: "failed", reason: `check failed: ${problem}`, ...kept() }); continue; }
       }
       // What changed in its footprint since the strategist read it: a fact

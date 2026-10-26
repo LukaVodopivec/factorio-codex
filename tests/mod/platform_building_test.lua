@@ -594,7 +594,7 @@ check(back.collector.filters[1] == "metallic-asteroid-chunk" and back.collector.
   "a blueprint's chunk filters read back as collector settings in slot order")
 
 -- A route's underground ends keep their end (input/output) in a hand build.
-local steps_out = layout._plan_steps({ placements = {}, routes = { { route = { kind = "belt", index = 0 },
+local steps_out = layout.plan_steps({ placements = {}, routes = { { route = { kind = "belt", index = 0 },
   steps = { { name = "underground-belt", x = 1.5, y = 0.5, direction = 4, belt_to_ground_type = "input" },
     { name = "underground-belt", x = 4.5, y = 0.5, direction = 4, belt_to_ground_type = "output" } } } } })
 check(steps_out[1].belt_to_ground_type == "input" and steps_out[2].belt_to_ground_type == "output",

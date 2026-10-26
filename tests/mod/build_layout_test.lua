@@ -457,12 +457,12 @@ local turned_layout = layout._rotated({ entities = { { name = "assembling-machin
 local turned_entity = turned_layout.entities[1]
 check(turned_entity.mirror == true and turned_entity.settings.inserter.stack_size == 2 and turned_entity.belt_to_ground_type == "output"
   and turned_entity.direction == 4, "a turned layout keeps mirror, settings and the underground end")
-local carried_steps = layout._plan_steps({ routes = {}, placements = { { position = { x = 1.5, y = 1.5 },
+local carried_steps = layout.plan_steps({ routes = {}, placements = { { position = { x = 1.5, y = 1.5 },
   entity = { index = 0, item = "assembling-machine-1", proto = entities["assembling-machine-1"], direction = 0, mirror = true,
     settings = { chest = { slots = 1 } } } } } })
 check(carried_steps[1].mirror == true and carried_steps[1].settings.chest.slots == 1,
   "each placement step carries its mirror and settings")
-local saved_steps = layout._plan_steps({ routes = {}, placements = { { position = { x = 0.5, y = 0.5 },
+local saved_steps = layout.plan_steps({ routes = {}, placements = { { position = { x = 0.5, y = 0.5 },
   entity = { index = 0, item = "underground-belt", proto = { type = "underground-belt" }, direction = 0,
     settings = { type = "output" } } } } })
 check(saved_steps[1].belt_to_ground_type == "output", "a layout search saved by 0.21.1 keeps its underground end")
@@ -585,6 +585,11 @@ do
       { name = "transport-belt", dx = 1.5, dy = -0.5, direction = 12 }, { name = "transport-belt", dx = 2.5, dy = -0.5, direction = 12 } } })
   end
   local north, south = feeder(0), feeder(8)
+  check(north.supply_route_estimate and #north.supply_route_estimate.steps == #north.placed
+    and north.supply_route_estimate.steps[1].step == 1
+    and north.supply_route_estimate.steps[1].position.x == north.placed[1].x
+    and north.supply_route_estimate.source_tick == game.tick,
+    "check_only returns a supply estimate for each resolved step in execution order without building")
   local fed, unfed = north.inserters and north.inserters[1], south.inserters and south.inserters[1]
   check(north.ok and fed and fed.x == 900.5 and fed.y == 898.5 and fed.picks_from == "wooden-chest" and fed.drops_into == "stone-furnace",
     "a dry run names what an inserter picks from (an existing chest) and drops into (a planned furnace)")

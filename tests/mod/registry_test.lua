@@ -237,7 +237,7 @@ check(#registry.machines({ "furnace" }) == 1, "an entity gone without an event i
 package.loaded["scripts.research"] = { research_trigger = function() return nil end, unit_time_s = function() return nil end }
 force.technologies = {}
 local queued = {}
-package.loaded["scripts.tasks"] = { queue_length = function() return 0 end, active_summary = function() return nil end,
+package.loaded["scripts.tasks"] = { body_shares = function() return nil end, queue_length = function() return 0 end, active_summary = function() return nil end,
   queued_demand = function() return nil end, upkeep_room = function() return "idle" end, queue_plan = function(params) queued[#queued + 1] = params; return { plan_id = #queued } end }
 storage.tasks.last_finished_tick = 1
 local autonomy = require("scripts.autonomy")

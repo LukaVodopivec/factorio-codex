@@ -89,7 +89,10 @@ force.get_item_production_statistics = function(surface)
 end
 force.get_fluid_production_statistics = function() error("no fluid in these plans") end
 _G.storage = _G.storage or {}
+prototypes.recipe = {}
+for name, r in pairs(force.recipes) do prototypes.recipe[name] = r end
 local production = require("scripts.production_requirements")
+production.init()
 
 local function close(a, b) return a ~= nil and math.abs(a - b) < 0.011 end
 local plan = production.production_requirements({ targets = { ["iron-plate"] = 30 }, per_minute = true }).rates

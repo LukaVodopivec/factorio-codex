@@ -1324,4 +1324,51 @@ end)()
   body.crafting_queue, body.crafting_queue_size, body.crafting_queue_progress = {}, 0, 0
   craft.tick = old_tick
 end)()
+-- Completed and partial physical transfers remain in upkeep's bounded
+-- activity row after the plan's unfinished-target list becomes empty.
+;(function()
+  anchor_ref = "nauvis"
+  local amount = 10
+  local insert = package.loaded["scripts.actions.transfer"].insert
+  local old_tick = insert.tick
+  insert.tick = function(task)
+      local moved = task.items.coal == 10 and amount or 0
+      return { status = moved == 10 and "done" or moved > 0 and "partial" or "failed", outcome = {
+        code = moved == 0 and "ZERO_PROGRESS" or moved < 10 and "PARTIAL_INSERT" or nil,
+        total_inserted = moved,
+        target = { name = "stone-furnace", position = task.target },
+        transfers = { { item = "coal", requested = task.items.coal, inserted = moved, remainder = task.items.coal - moved,
+          reason = moved < task.items.coal and "TARGET_CAPACITY" or nil } } } }
+  end
+  for _, moved in ipairs({ 10, 3 }) do
+    amount = moved
+    local queued = tasks.queue_plan({ source = "upkeep", steps = {
+      { action = "insert_items", x = 10, y = 2, items = { coal = 10 } } } })
+    game.tick = game.tick + 1; tasks.on_tick()
+    for _ = 1, 90 do game.tick = game.tick + 1; tasks.on_tick() end
+    local status = tasks.plan_status({ plan_id = queued.plan_id })
+    local entries = tasks.activity_log({ limit = 64 }).entries
+    local row = entries[#entries].upkeep.transfers[1]
+    check(row and row.item == "coal" and row.amount == moved and row.requested == 10
+      and row.step == 1 and row.source.kind == "body" and row.source.surface == "nauvis"
+      and row.source.position.x == body.position.x and row.destination.surface == "nauvis"
+      and row.destination.position.x == 10 and row.status == (moved == 10 and "completed" or "partial")
+      and status.upkeep.transfers[1].amount == moved,
+      "upkeep activity and plan readback preserve actual " .. moved .. "/10 transfer and both locations")
+    if moved == 10 then check(#status.upkeep.unfinished_targets == 0,
+      "successful completed upkeep transfers remain visible with no unfinished targets") end
+  end
+  amount = 3
+  local interrupted = tasks.queue_plan({ source = "upkeep", steps = {
+    { action = "insert_items", x = 10, y = 2, items = { coal = 10 } } } })
+  game.tick = game.tick + 1; tasks.on_tick()
+  check(storage.tasks.active and storage.tasks.active._recovery,
+    "the partial upkeep insert has committed and is waiting for its retry")
+  tasks.cancel({ all = true, origin = "test/owner-stop" })
+  local stopped = tasks.plan_status({ plan_id = interrupted.plan_id })
+  check(stopped.status == "cancelled" and stopped.upkeep.transfers[1].amount == 3
+    and stopped.upkeep.transfers[1].requested == 10,
+    "owner stop during recovery retains the actual first partial upkeep transfer")
+  insert.tick = old_tick
+end)()
 os.exit(failures == 0 and 0 or 1)

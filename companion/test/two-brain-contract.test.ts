@@ -29,6 +29,19 @@ describe("persistent two-brain coordination contract", () => {
     expect(live).not.toContain("The pilot needs no MCP override");
   });
 
+  it("keeps detailed summaries and finite native stream settings in both role launches", () => {
+    const provider = 'model_providers.factorio-openai={name="OpenAI",wire_api="responses",requires_openai_auth=true,stream_idle_timeout_ms=180000,stream_max_retries=0}';
+    for (const relative of ["README.md", "docs/LIVE-VALIDATION.md"]) {
+      const text = read(relative);
+      expect(text.split(provider)).toHaveLength(3);
+      expect(text.match(/-c 'model_provider="factorio-openai"'/g)).toHaveLength(2);
+      expect(text).toContain('service_tier="default"');
+      expect(text.match(/^  -c (?:'model_reasoning_summary="detailed"'|model_reasoning_summary=detailed)/gm)).toHaveLength(2);
+    }
+    expect(live).toContain("A failed model stream neither cancels an accepted plan nor authorizes replaying a physical mutation");
+    expect(live).toContain("Config readback establishes launch configuration; it does not replace each role's fresh native `execution_settings({})` report");
+  });
+
   it("keeps the instructions short, with shared rules only in SKILL.md", () => {
     // Per-role budgets, not one summed cap: what matters is how much each role
     // must attend to at once (instruction-following falls as rules pile up, and
@@ -120,8 +133,8 @@ describe("persistent two-brain coordination contract", () => {
   });
   it("points the ledger writer to the generated package contract and reads fast_mode_enabled as availability", () => {
     const benchmarkGoal = read(".agents/skills/factorio-player/GOAL-BENCHMARK-v1.md");
-    expect(flat(benchmarkGoal)).toMatch(/`ledger-apply --schema` once for every package and step field/);
-    // Read literally as once per package in trial 0013 (#66): once per session, again after a compaction or refusal.
+    expect(flat(benchmarkGoal)).toMatch(/`ledger-apply --schema` for every package and step field once per session, and again after a compaction or a refused update/);
+    // Both strategist goals use the same session-scoped schema-reading rule.
     expect(flat(strategist)).toMatch(/Read `ledger-apply --schema` for every package and step field once per session, and again after a compaction or a refused update/);
     for (const text of [pilot, strategist, benchmarkGoal]) expect(flat(text)).toMatch(/fast_mode_enabled`? \(copy it verbatim: availability, not your tier\)/);
   });
@@ -250,7 +263,7 @@ describe("persistent two-brain coordination contract", () => {
     expect(agents).toMatch(/spawned with `-c model_reasoning_summary=detailed`/);
     expect(agents).toMatch(/game chat never controls the bot, and the panel never triggers a takeover hold/);
     expect(live).toMatch(/codex --model gpt-6-luna -c model_reasoning_effort=low -c service_tier=fast -c features\.fast_mode=true \\? ?-c model_reasoning_summary=detailed/);
-    expect(live).toMatch(/codex --model gpt-6\.1-sol -c model_reasoning_effort=medium \\? ?-c model_reasoning_summary=detailed/);
+    expect(live).toMatch(/codex --model gpt-6\.1-sol -c model_reasoning_effort=medium \\? ?-c 'service_tier="default"' \\? ?-c model_reasoning_summary=detailed/);
     expect(live).not.toMatch(/session-launcher|session-status|codex-real|relay_steer/);
     expect(live).toMatch(/mcp_servers\.factorio-readonly=\{command=[^}]*args=\["--surface","read-only"[^\]]*\][^}]*enabled_tools=/);
     expect(live).not.toMatch(/mcp_servers\.[a-z-]+\.enabled=/);

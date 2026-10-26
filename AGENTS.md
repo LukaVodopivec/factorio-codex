@@ -8,7 +8,7 @@
 - Human developers: Luka only
 - Engineering mode: agent-only
 - Human code review: never
-- Human decision scope: product outcomes and hard-authority approvals only
+- Human decision scope: hard-authority approvals only; agents decide product outcomes
 - Project goal: Show how Codex bots think about and architect a Factorio
   factory: two reasoning sessions plan and direct one physically embodied
   character through text-only tools, the mod does every deterministic chore,

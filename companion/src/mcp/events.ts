@@ -127,8 +127,9 @@ export async function waitForEvent(bridge: Bridge, input: NextEventInput, source
   const started = clock.now();
   let previous = await read();
   watchSince ??= previous.tick;
-  // Space events after since_tick, or (without it) after the call started.
-  const spaceSeen = since ?? previous.last_space_event_tick ?? -1;
+  // An RCON read at tick T precedes that tick's update: game events stamped
+  // since_tick count. Without a cursor, events present at the first read are history.
+  const spaceSeen = since !== undefined ? since - 1 : previous.last_space_event_tick ?? -1;
   const newSpace = (state: EventState) => (luaArray(state.space_events ?? []) as SpaceEvent[]).filter((row) => row.tick > spaceSeen);
   // Own losses after since_tick, or (without it) after the call started; a
   // merged row comes again with its new count.
@@ -225,10 +226,10 @@ export async function waitForEvent(bridge: Bridge, input: NextEventInput, source
   };
   if (since !== undefined) {
     const last = previous.last_plan_ended;
-    const research = (previous.last_research_finished?.tick ?? -1) > since ? previous.last_research_finished : undefined;
-    if (last && last.tick > since) return ended(previous, last, research);
-    if ((previous.last_research_finished?.tick ?? -1) > since) return researched(previous);
-    if ((previous.last_problem_tick ?? -1) > since) return problems(since, previous);
+    const research = (previous.last_research_finished?.tick ?? -1) >= since ? previous.last_research_finished : undefined;
+    if (last && last.tick >= since) return ended(previous, last, research);
+    if (research) return researched(previous);
+    if ((previous.last_problem_tick ?? -1) >= since) return problems(since, previous);
     const fired = watched(previous);
     if (fired) return fired;
     if ((previous.last_loss_tick ?? -1) >= since) return lost(previous);

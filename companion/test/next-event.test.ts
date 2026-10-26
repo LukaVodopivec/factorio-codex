@@ -36,6 +36,32 @@ describe("next_event timeout bound", () => {
   });
 });
 
+describe.each(["plan_ended", "research_finished", "new_problem"])("next_event %s cursor boundary", (event) => {
+  function state(tick?: number): EventState {
+    const base = { ...busy, last_plan_ended: undefined };
+    if (event === "plan_ended") return { ...base, last_plan_ended: { plan_id: 5, status: "completed", tick } as EventState["last_plan_ended"] };
+    if (event === "research_finished") return { ...base, last_research_finished: { technology: "automation", tick } as EventState["last_research_finished"] };
+    return { ...base, last_problem_tick: tick };
+  }
+
+  it.each([
+    { since: 100, tick: 99, expected: "timeout" },
+    { since: 100, tick: 100, expected: event },
+    { since: 100, tick: 101, expected: event },
+    { since: 100, tick: undefined, expected: "timeout" },
+    { since: 0, tick: undefined, expected: "timeout" },
+    { since: 0, tick: 0, expected: event },
+  ])("with since_tick=$since and timestamp=$tick returns $expected", async ({ since, tick, expected }) => {
+    expect(await waitForEvent(game([state(tick)]).bridge, { timeout_seconds: 1, since_tick: since }, quiet(), undefined, fakeClock()))
+      .toMatchObject({ event: expected });
+  });
+
+  it("treats an event present on the initial read as history without a cursor", async () => {
+    expect(await waitForEvent(game([state(100)]).bridge, { timeout_seconds: 1 }, quiet(), undefined, fakeClock()))
+      .toMatchObject({ event: "timeout" });
+  });
+});
+
 describe.each(["full", "read-only"] as McpSurface[])("next_event MCP readback (%s)", (surface) => {
   function handler(bridge: Bridge) {
     const handlers: Record<string, (args: any, extra?: any) => Promise<any>> = {};
@@ -167,7 +193,7 @@ describe("next_event research beside a plan end", () => {
     const polled = await waitForEvent(game([busy, both]).bridge, input(), quiet(), undefined, fakeClock());
     expect(polled).toMatchObject({ event: "plan_ended", plan_id: 5, research_finished: { technology: "automation", research_tick: 150 } });
     expect(eventSummary(polled)).toBe(`plan 5 ended completed; research automation finished; ${IDLE_NOW}`);
-    const since = await waitForEvent(game([both]).bridge, input({ since_tick: 140 }), quiet(), undefined, fakeClock());
+    const since = await waitForEvent(game([both]).bridge, input({ since_tick: 150 }), quiet(), undefined, fakeClock());
     expect(since).toMatchObject({ event: "plan_ended", research_finished: { technology: "automation", research_tick: 150 } });
     const older = await waitForEvent(game([both]).bridge, input({ since_tick: 155 }), quiet(), undefined, fakeClock());
     expect(older).toMatchObject({ event: "plan_ended" });
@@ -256,9 +282,9 @@ describe("next_event rocket and platform events", () => {
     expect(await waitForEvent(game([before]).bridge, { timeout_seconds: 2 }, quiet(), undefined, clock)).toMatchObject({ event: "timeout" });
   });
 
-  it("returns an event after since_tick at once, oldest first, with the later ones alongside", async () => {
+  it("returns an event at since_tick at once, oldest first, with the later ones alongside", async () => {
     const state = { ...busy, tick: 240, last_space_event_tick: 230, space_events: [ready, launched, landed] };
-    const event = await waitForEvent(game([state]).bridge, input({ since_tick: 200 }), quiet(), undefined, fakeClock());
+    const event = await waitForEvent(game([state]).bridge, input({ since_tick: 210 }), quiet(), undefined, fakeClock());
     expect(event).toMatchObject({ event: "rocket_launched", event_tick: 210, space_events: [launched, landed] });
     const last = await waitForEvent(game([state]).bridge, input({ since_tick: 215 }), quiet(), undefined, fakeClock());
     expect(last).toMatchObject({ event: "cargo_delivered", platform: { name: "Orbit" } });
@@ -269,6 +295,15 @@ describe("next_event rocket and platform events", () => {
       undefined, fakeClock()))).toBe("platform Orbit: starter_pack_on_the_way -> waiting_at_station");
     expect(eventSummary({ event: "cargo_delivered", surface: "nauvis" })).toBe("a cargo pod landed on nauvis");
     expect(eventSummary({ event: "rocket_ready", silo: { x: 1.5, y: 2.5 } })).toBe("a rocket is ready in the silo at (1.5, 2.5)");
+  });
+
+  it("requires a space timestamp even at cursor zero, and includes an event stamped zero", async () => {
+    const unstamped = { kind: "rocket_ready" } as typeof ready;
+    const state = { ...busy, last_plan_ended: undefined, space_events: [unstamped] };
+    expect(await waitForEvent(game([state]).bridge, { timeout_seconds: 1, since_tick: 0 }, quiet(), undefined, fakeClock()))
+      .toMatchObject({ event: "timeout" });
+    expect(await waitForEvent(game([{ ...state, space_events: [{ ...ready, tick: 0 }] }]).bridge,
+      input({ since_tick: 0 }), quiet(), undefined, fakeClock())).toMatchObject({ event: "rocket_ready", event_tick: 0 });
   });
 
   it("tells a launch order from the launch itself", async () => {
@@ -289,6 +324,8 @@ describe("next_event rocket and platform events", () => {
     const event = await waitForEvent(game([busy, ended]).bridge, input(), quiet(), undefined, fakeClock());
     expect(event).toMatchObject({ event: "plan_ended", plan_id: 5, space_events: [launched, landed] });
     expect(eventSummary(event)).toBe(`plan 5 ended completed; 2 rocket, platform or travel events in space_events; ${IDLE_NOW}`);
+    const atCursor = await waitForEvent(game([ended]).bridge, input({ since_tick: 210 }), quiet(), undefined, fakeClock());
+    expect(atCursor).toMatchObject({ event: "plan_ended", space_events: [launched, landed] });
     // An empty Lua ring arrives as {} and is no event.
     const empty = { ...busy, last_space_event_tick: 120, space_events: {} as never };
     expect(await waitForEvent(game([empty]).bridge, { timeout_seconds: 1, since_tick: 100 }, quiet(), undefined, fakeClock()))
@@ -491,11 +528,11 @@ describe("next_event watch firings", () => {
 
   it("asks for no firings without a role, and Lua's empty table is no firing", async () => {
     const { bridge, call } = game([busy, { ...busy, watch_fired: {} as unknown as WatchFiring[] }]);
-    expect(await waitForEvent(bridge, { timeout_seconds: 1, since_tick: 90 }, sources(), undefined, fakeClock()))
+    expect(await waitForEvent(bridge, { timeout_seconds: 1, since_tick: 91 }, sources(), undefined, fakeClock()))
       .toMatchObject({ event: "timeout" });
     expect(call.mock.calls.every((args) => args.length === 1)).toBe(true);
     const empty = game([{ ...busy, watch_fired: {} as unknown as WatchFiring[] }]);
-    expect(await waitForEvent(empty.bridge, { timeout_seconds: 1, since_tick: 90 }, sources("pilot"), undefined, fakeClock()))
+    expect(await waitForEvent(empty.bridge, { timeout_seconds: 1, since_tick: 91 }, sources("pilot"), undefined, fakeClock()))
       .toMatchObject({ event: "timeout" });
   });
 
@@ -631,7 +668,7 @@ describe("next_event idle interval, open packages and planet cargo", () => {
     expect(clock.slept).toBe(2_000);
     expect(eventSummary(quietDrop)).toBe("nothing happened in 2 s; 1 rocket, platform or travel event in space_events");
     // With since_tick it rides along on the next event, never returning on its own.
-    expect(await waitForEvent(game([dropped]).bridge, { timeout_seconds: 1, since_tick: 205 }, quiet(), undefined, fakeClock()))
+    expect(await waitForEvent(game([dropped]).bridge, { timeout_seconds: 1, since_tick: 210 }, quiet(), undefined, fakeClock()))
       .toMatchObject({ event: "timeout", space_events: [drop] });
     const onPlatform = { tick: 212, kind: "cargo_delivered" as const, platform: { index: 3, name: "Orbit" } };
     const both = { ...dropped, tick: 220, last_space_event_tick: 212, space_events: [drop, onPlatform] };

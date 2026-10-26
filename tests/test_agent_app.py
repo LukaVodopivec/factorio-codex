@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import socket
 import subprocess
 import sys
 import tempfile
@@ -151,7 +153,7 @@ class AgentAppContractTests(unittest.TestCase):
         with (
             mock.patch.object(app, "resolve_native_root", return_value=ROOT),
             mock.patch.object(app, "resolve_npm_command", return_value=npm),
-            mock.patch.object(app, "prepare_workspace", return_value=prepared),
+            mock.patch.object(app, "prepare_workspace", return_value=prepared) as prepare,
             mock.patch.object(app, "execute_command", return_value=0) as execute,
         ):
             payload, code = app.verify_payload("quick", None)
@@ -168,7 +170,55 @@ class AgentAppContractTests(unittest.TestCase):
             self.assertEqual(environment["npm_config_offline"], "true")
             self.assertEqual(environment["MCP_SMOKE_OFFLINE"], "1")
             self.assertEqual(environment["PYTHONDONTWRITEBYTECODE"], "1")
-            self.assertTrue(Path(environment["HOME"]).is_relative_to(Path(environment["TMPDIR"]).parent))
+            self.assertEqual(Path(environment["HOME"]).parent, prepare.call_args.args[0])
+
+    def test_long_scratch_uses_unique_socket_alias_and_cleans_up_after_commands(self) -> None:
+        app = load_agent_app()
+        aliases: list[Path] = []
+        scratch_roots: list[Path] = []
+        with tempfile.TemporaryDirectory(prefix="factorio-long-" + "x" * 140) as caller_name:
+            caller = Path(caller_name)
+            unrelated = caller / "unrelated"
+            unrelated.write_text("preserve")
+            for exit_code in (0, 7, 130, 143):
+                with self.subTest(exit_code=exit_code):
+                    def execute(_command, environment, _cwd):
+                        scratch = prepare.call_args.args[0]
+                        short_tmp = Path(environment["TMPDIR"])
+                        self.assertEqual(scratch.parent, caller)
+                        self.assertEqual(short_tmp.resolve(), scratch.resolve() / "tmp")
+                        self.assertEqual(short_tmp.parent.stat().st_mode & 0o777, 0o700)
+                        for name in ("HOME", "XDG_CACHE_HOME", "npm_config_cache"):
+                            self.assertEqual(Path(environment[name]).parent, scratch)
+                        if short_tmp not in aliases:
+                            aliases.append(short_tmp)
+                            scratch_roots.append(scratch)
+                            pipe = short_tmp / f"tsx-{os.getuid()}" / "12345.pipe"
+                            pipe.parent.mkdir()
+                            with socket.socket(socket.AF_UNIX) as ipc:
+                                with self.assertRaises(OSError):
+                                    ipc.bind(str(pipe.resolve()))
+                                ipc.bind(str(pipe))
+                            (short_tmp / "marker").write_text("invocation only")
+                            self.assertEqual((scratch / "tmp" / "marker").read_text(), "invocation only")
+                        return exit_code
+
+                    with (
+                        mock.patch.object(app.tempfile, "tempdir", caller_name),
+                        mock.patch.object(app, "resolve_native_root", return_value=ROOT),
+                        mock.patch.object(app, "resolve_npm_command", return_value=(["/npm"], Path("/bin"))),
+                        mock.patch.object(app, "prepare_workspace", return_value=ROOT) as prepare,
+                        mock.patch.object(app, "execute_command", side_effect=execute),
+                    ):
+                        payload, code = app.verify_payload("full", None)
+                    self.assertEqual(code, exit_code if exit_code in (130, 143) else int(exit_code != 0))
+                    self.assertEqual(payload["status"], "pass" if exit_code == 0 else "fail")
+                    self.assertFalse(aliases[-1].parent.exists())
+                    self.assertFalse(scratch_roots[-1].exists())
+                    self.assertEqual(unrelated.read_text(), "preserve")
+            self.assertEqual(len(set(aliases)), 4)
+            self.assertEqual(len(set(scratch_roots)), 4)
+            self.assertEqual(list(caller.iterdir()), [unrelated])
 
     def test_full_routes_checkout_checks_and_propagates_failures(self) -> None:
         app = load_agent_app()

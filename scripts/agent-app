@@ -576,7 +576,10 @@ def verify_payload(profile: str, target: str | None) -> tuple[dict[str, object],
     failures: list[str] = []
     execution_root = ROOT
     npm_command: list[str] | None = None
-    with tempfile.TemporaryDirectory(prefix="factorio-agent-app-") as temporary_name:
+    with (
+        tempfile.TemporaryDirectory(prefix="factorio-agent-app-") as temporary_name,
+        tempfile.TemporaryDirectory(prefix="factorio-ipc-", dir="/tmp") as alias_name,
+    ):
         temporary = Path(temporary_name)
         npm_bin: Path | None = None
         if profile in ("quick", "full", "live"):
@@ -612,6 +615,11 @@ def verify_payload(profile: str, target: str | None) -> tuple[dict[str, object],
                     1,
                 )
         environment = verification_environment(temporary, npm_bin)
+        # tsx binds Unix sockets below TMPDIR. Keep that name short without
+        # moving scratch data off the caller-selected storage.
+        short_tmp = Path(alias_name) / "tmp"
+        short_tmp.symlink_to(temporary / "tmp", target_is_directory=True)
+        environment["TMPDIR"] = str(short_tmp)
         if profile == "live":
             # A missing executable fails the profile instead of skipping.
             environment["FACTORIO_LIVE_REQUIRED"] = "1"

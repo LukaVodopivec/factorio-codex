@@ -576,7 +576,7 @@ function M.connect()
   if (body.state == "aboard_platform" or body.state == "in_transit") and body.position then
     return { position = body.position, body = M.body_summary() }
   end
-  error("native player 'Codex' is not connected with a living character")
+  error("native player 'Codex' is not connected with a living character", 0)
 end
 
 -- Kept for old control.lua/save rollback compatibility. Despite the legacy

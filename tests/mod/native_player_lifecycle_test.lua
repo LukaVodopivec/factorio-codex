@@ -28,9 +28,28 @@ _G.rendering = { draw_text = function() return { valid = true, destroy = functio
 _G.storage = {}
 
 local companion = require("scripts.companion")
-local ok, err = pcall(companion.connect)
-check(not ok and tostring(err):match("native player 'Codex' is not connected") ~= nil,
-  "absent native Codex reports a deterministic connection error")
+local rpc = require("scripts.rpc")
+rpc.register("spawn_companion", companion.connect)
+local reply, logs = nil, {}
+_G.helpers = { table_to_json = dofile(here .. "/table_to_json.lua") }
+_G.rcon = { print = function(text) reply = text end }
+_G.log = function(line) logs[#logs + 1] = line end
+game.tick = 1
+storage.rpc_outbox = { next_id = 1, by_id = {} }
+local prior_fault = { tick = 0, where = "rpc:earlier", error = "earlier fault" }
+storage.handler_errors = { count = 7, recent = { prior_fault } }
+for attempt = 1, 3 do
+  rpc.dispatch("spawn_companion", "")
+  check(reply == helpers.table_to_json({ ok = false,
+      error = "native player 'Codex' is not connected with a living character" }),
+    "pre-join RPC attempt " .. attempt .. " returns the existing refusal")
+end
+check(storage.handler_errors.count == 7 and #storage.handler_errors.recent == 1
+  and storage.handler_errors.recent[1] == prior_fault and prior_fault.tick == 0
+  and prior_fault.where == "rpc:earlier" and prior_fault.error == "earlier fault",
+  "repeated pre-join refusals preserve the existing error ring")
+check(#logs == 0, "pre-join refusals emit no handler-fault logs")
+_G.log = nil
 
 local viewer_body = { valid = true }
 viewer_body.destroy = function() viewer_body.valid = false end
@@ -95,7 +114,7 @@ codex.character = nil
 companion.on_player_died({ player_index = 1 })
 check(companion.get() == nil and storage.companion.dead == true and storage.companion.entity == nil,
   "death records the absent body without standalone respawn")
-ok, err = pcall(companion.connect)
+local ok, err = pcall(companion.connect)
 check(not ok and tostring(err):match("native player 'Codex' is not connected") ~= nil,
   "connect cannot create or respawn a body after death")
 local respawn_body = {

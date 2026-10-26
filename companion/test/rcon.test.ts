@@ -28,7 +28,14 @@ class FakeRconServer {
   password = "secret";
   respondToAuth = true;
   responseDelayMs = 0;
-  activeConnections = 0;
+  readonly connections = new Map<net.Socket, Set<NodeJS.Timeout>>();
+  private unexpectedErrors: Error[] = [];
+  /** Only tests that deliberately cut off a reply expect peer-disconnect errors. */
+  expectDisconnect = false;
+
+  get activeConnections(): number {
+    return this.connections.size;
+  }
   /** Sentinels go unanswered (a reply cut off before its end). */
   answerSentinel = true;
   /** Close the connection after a command's first reply packet. */
@@ -37,8 +44,17 @@ class FakeRconServer {
 
   constructor() {
     this.server = net.createServer((socket) => {
-      this.activeConnections++;
-      socket.once("close", () => this.activeConnections--);
+      const timers = new Set<NodeJS.Timeout>();
+      this.connections.set(socket, timers);
+      socket.on("error", (error: NodeJS.ErrnoException) => {
+        if (this.expectDisconnect && (error.code === "ECONNRESET" || error.code === "EPIPE")) return;
+        this.unexpectedErrors.push(error);
+      });
+      socket.once("close", () => {
+        for (const timer of timers) clearTimeout(timer);
+        timers.clear();
+        this.connections.delete(socket);
+      });
       let buf = Buffer.alloc(0);
       socket.on("data", (data) => {
         buf = Buffer.concat([buf, data]);
@@ -59,13 +75,19 @@ class FakeRconServer {
             if (body === " " && !this.answerSentinel) continue;
             const parts = body === " " ? [""] : this.handler(body);
             const respond = () => {
+              if (socket.destroyed) return;
               for (const part of parts) {
                 socket.write(packet(id, RESPONSE_VALUE, part));
                 if (this.closeMidReply) { socket.destroy(); return; }
               }
             };
-            if (body !== " " && this.responseDelayMs > 0) setTimeout(respond, this.responseDelayMs);
-            else respond();
+            if (body !== " " && this.responseDelayMs > 0) {
+              const timer = setTimeout(() => {
+                timers.delete(timer);
+                respond();
+              }, this.responseDelayMs);
+              timers.add(timer);
+            } else respond();
           }
         }
       });
@@ -81,8 +103,16 @@ class FakeRconServer {
     });
   }
 
-  close(): Promise<void> {
-    return new Promise((resolve) => this.server.close(() => resolve()));
+  async close(): Promise<void> {
+    const closed = [...this.connections.keys()].map((socket) => new Promise<void>((resolve) => {
+      socket.once("close", resolve);
+      socket.destroy();
+    }));
+    await Promise.all([
+      ...closed,
+      new Promise<void>((resolve, reject) => this.server.close((error) => error ? reject(error) : resolve())),
+    ]);
+    if (this.unexpectedErrors.length) throw new AggregateError(this.unexpectedErrors, "Fake RCON socket errors");
   }
 }
 
@@ -193,11 +223,30 @@ describe("RconClient", () => {
   it("closes the connection when one reply exceeds the byte cap", async () => {
     client = new RconClient({ host: "127.0.0.1", port: server.port, password: "secret" });
     await client.connect();
+    server.expectDisconnect = true;
     const piece = "z".repeat(1024 * 1024);
     server.handler = () => [piece, piece, piece];
     const error = await client.exec("huge").catch((e) => e);
     expect(error).toBeInstanceOf(RconReplyLostError);
     expect(error.message).toBe(`RCON reply exceeded ${MAX_REPLY_BYTES} bytes`);
+    expect(client.connected).toBe(false);
+  });
+
+  it("settles an expected connection reset with a delayed response still pending", async () => {
+    client = new RconClient({ host: "127.0.0.1", port: server.port, password: "secret" });
+    await client.connect();
+    server.expectDisconnect = true;
+    server.responseDelayMs = 60_000;
+    server.handler = vi.fn(() => ["late response"]);
+    const reply = expect(client.exec("delayed")).rejects.toThrow(RconReplyLostError);
+    await vi.waitFor(() => expect(server.handler).toHaveBeenCalledWith("delayed"));
+    const [socket, timers] = [...server.connections.entries()][0];
+    expect(timers.size).toBe(1);
+    // Force the server-side error event without relying on the OS's reset timing.
+    socket.destroy(Object.assign(new Error("peer reset during reply"), { code: "ECONNRESET" }));
+    await reply;
+    await vi.waitFor(() => expect(server.activeConnections).toBe(0));
+    expect(timers.size).toBe(0);
     expect(client.connected).toBe(false);
   });
 

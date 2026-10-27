@@ -93,37 +93,36 @@ retried after the hold.
 
 ## Tools
 
-Each tool's description holds its fields and codes; these are the rules.
+Tool descriptions hold fields and codes.
 
 **Reads (both roles).**
 
-- `factory_status` is the single routine read. Line `state` is `running`,
+- `factory_status` is the single routine read. Line `state`: `running`,
   `starved`, `output_full`, `depleted`, `no_fuel`, `no_power`, `no_heat`, `frozen`,
-  `disabled`, or `idle`, with its cause (a fluid, no recipe, spent fuel full);
-  `lines` lists the 10 worst, `line_counts` with `by_state` counts all; rows
-  past a cap are counted in `omitted_*`. A `research_idle` problem means
-  no research runs and labs are idle. It details the body's surface; `elsewhere`
-  has one line per other planet or platform with buildings, and `surface`
-  reads another one from anywhere. The power row (the largest network)
-  gives `sustained_w` (solar at this planet's day average); when
-  short, `add_to_cover` lists both ways to cover demand, `steam` (engines,
-  boilers, pumps) and `solar` (panels, accumulators): you choose. `sections: ['logistics']` shows robot networks.
+  `disabled`, `idle`, with causes. `lines` lists the 10 worst, `line_counts`
+  with `by_state` counts all; `omitted_*` counts capped rows.
+  A `research_idle` problem means no research runs and labs are idle. It details the body's surface;
+  `elsewhere` lists other built surfaces; `surface` reads one.
+  The largest power network reports `sustained_w` (solar at the planet's day
+  average) and `add_to_cover` steam and solar alternatives: you choose.
+  `sections: ['logistics']` shows robot networks.
 - `next_event` returns `plan_ended`, `research_finished`, `queue_empty`,
   `new_problem`, `package_failed`, `orders_changed`, `human_hold_started`,
-  `human_hold_ended`, or `timeout`. Pass the last `tick` you saw as
-  `since_tick`; never poll in a loop. Plain backpressure (an output full,
+  `human_hold_ended`, watches, space events or timeout. Use returned `next_action` arguments, including `since_tick`,
+  or the last `tick` seen; never poll in a loop. Timeout cancels no physical
+  work: reuse that cursor. Plain backpressure (an output full,
   waiting for a slower consumer) never wakes `new_problem`: it shows in
   `factory_status` and rides along on other problem wakes. `plan_ended`
-  carries each step's outcome and the inventory change. Whenever
-  a result's `body.fifo_empty` is true, the body is free for work (it may still
-  craft): the pilot queues work (its own if no package is pending) before
-  waiting again.
-- `activity_log` shows each plan's `source` (`pilot`, `upkeep`,
-  `package:<id>`) and who cancelled what; `plan_status` reads one exact
-  `plan_id`; `build_layout`, `connect_entities`, and `blueprint_place` with
-  `check_only: true` are dry runs that return the site or a definite answer.
-  A layout or blueprint dry run also lists `on_ore`, `mixed_ore`,
-  `open_fluid_ports`, `belt_joins` and `port_fluids` as data.
+  carries each step's outcome and the inventory change. When `body.fifo_empty`
+  is true, the body is free (it may still craft): the pilot queues work
+  before waiting again; open packages may be waiting, not working.
+- `set_watch` wakes `next_event` on a rate threshold crossing. Already-breached
+  watches are unarmed until safe; they do not alert on an existing shortage.
+- `activity_log` shows plan `source` (`pilot`, `upkeep`, `package:<id>`) and
+  cancellations; `plan_status` reads one exact `plan_id`. `check_only: true`
+  on `build_layout`, `connect_entities`, or `blueprint_place` dry-runs the
+  design; layout/blueprint reports include `on_ore`, `mixed_ore`, `open_fluid_ports`,
+  `belt_joins`, `port_fluids`.
 - `inspect_entity`: belt lanes, inserter `holding`, `trace`; `area`: your
   buildings in a charted area.
 - `platform_status` is your platform screen; `detail: "full"` adds
@@ -133,48 +132,48 @@ Each tool's description holds its fields and codes; these are the rules.
 `blueprint_place` do the legwork (fetch, craft, smelt, clear, walk, build);
 you choose what, where, and how many. `place_entity`, `insert_items`, and
 `build_plan` fetch missing items (`auto_supply`, on by default); placements
-clear trees and rocks. These actions walk to their own targets: never queue a
+clear trees and rocks. For a decided delivery, use `insert_items` directly;
+a separate `get_items` needs its own acquisition purpose. These actions walk to their own targets: never queue a
 `walk_to` before them. `wait_for_item` does not walk and reads within 30 tiles
-or charted own machines: put it after an action there or a `walk_to`. A
+or charted own machines: put it after an action there or a `walk_to`. It waits
+for `count` of `item` in the named `inventory` (`input`, `output`, `fuel`, or
+`main`), not the body's stock. A
 `STEP_STALLED` or `START_COLLISION` step means the body could not move:
 re-read `factory_status` body position and choose a reachable target. `cancel_plan` cancels one of the pilot's own plans;
 `stop` stays the supervisor's.
 
 **Building tools.**
 
-- Blueprints: when a build works, store it once (`blueprint_capture` of your
-  buildings, or `blueprint_create` from a layout) and stamp it again with
-  `blueprint_place`, never piece by piece. Blueprints belong to this run;
-  `blueprint_export` is a string for notes, never imported.
-- `move_entity` picks up one of your buildings with its contents and places
-  it elsewhere, settings kept.
-- `configure_entity` sets what a building's window sets and changes
-  only what you name. Give
-  `build_layout` entities `settings` (and `mirror`, and
-  `belt_to_ground_type: input|output` for an underground belt) instead to
-  build a sorter or a mall already configured.
-- `place_tiles` lays landfill and other tiles from your inventory, nearest
-  tiles first, walking along; `check_only` counts the items an area needs.
-- `set_requests` sets what a requester or buffer chest asks robots for. Only
-  robots deliver.
+- Store a working build once with `blueprint_capture` or `blueprint_create`
+  from your layout; reuse it with `blueprint_place`, never piece by piece.
+  Blueprints belong to this run; `blueprint_export` is for notes, never import.
+- `move_entity` relocates your building with contents and settings.
+- `configure_entity` changes only named settings. `build_layout` entities
+  take `settings`, `mirror`, and underground `belt_to_ground_type: input|output`
+  to build already configured.
+- `place_tiles` walks and lays carried tiles nearest first; `check_only`
+  counts an area's items.
+- `set_requests` sets requester/buffer chest requests; only robots deliver.
 - `extract_items` and `insert_items` take an `inventory`. Plan
   steps only: `equip` wears armor and fits equipment you carry;
   `flush_fluid` empties a pipe or tank system (the fluid is lost).
 - To find a resource or land, use `explore`: it walks, charts, and stops when
   a patch is in view. Never scout with chains of walks.
-- `connect_entities` lays one belt, pipe, or pole route of up to 200 pieces:
-  a long route is one call.
+- `build_plan.steps` are absolute `x,y` placements, not action steps.
+  `build_layout.entities` and `connections.from/to` use `dx,dy` offsets;
+  connections take `kind`, `prototype`, and optional `underground`.
+  Direct `connect_entities` uses absolute `from/to: {x,y}` and its own
+  options: one belt, pipe, or pole route of up to 200 pieces, in one call.
+  Use each tool's own schema.
 - `deconstruct_area`, `upgrade_area`, `copy_settings`, `build_ghosts`, and
   `insert_items` with `targets` each handle many buildings in one step.
 
 **To space.**
 
-- A rocket silo needs power and stacks 50 rocket parts (each a processing
-  unit, low density structure, and rocket fuel) into a rocket; `next_event`
-  says `rocket_ready`.
-- `create_platform` registers a platform over the body's planet at once.
-  It waits until a rocket brings its starter pack: launching the pack
-  creates the platform.
+- A powered silo makes a rocket from 50 parts (processing unit, low density
+  structure, rocket fuel each); `next_event` says `rocket_ready`.
+- `create_platform` registers over the body's planet; launching its starter
+  pack creates it.
 - `launch_rocket` loads a ready rocket with the cargo you name and launches
   it; with no rocket ready it fails at once with the part count.
 - Platforms are built only from ghosts the hub fulfils from its own items:
@@ -193,15 +192,13 @@ re-read `factory_status` body position and choose a reachable target. `cancel_pl
 
 **Other planets.**
 
-- Each planet adds a science pack and one constraint. Vulcanus (foundries
-  make molten metal from lava; tungsten needs the big mining drill) has no
-  water: steam comes from sulfuric acid and calcite, or build solar. Fulgora
-  has only scrap to recycle, on islands in a walkable, unbuildable oil ocean;
-  power comes from lightning or heavy oil. Gleba grows fruit
-  that spoils, as do nutrients and eggs (`spoils_in_s` in stock); spoiled
-  eggs hatch enemies, and the first pentapod eggs come from a destroyed
-  Gleba spawner's loot. Aquilo freezes unheated machines (`frozen`); heating
-  towers warm them through heat pipes.
+- Each planet adds science and constraints. Vulcanus: foundries make molten
+  metal from lava; tungsten needs big drills; no water, but acid and calcite
+  make steam, or use solar. Fulgora: recycled scrap on islands in a walkable,
+  unbuildable oil ocean; lightning or heavy-oil power. Gleba: fruit, nutrients
+  and eggs spoil (`spoils_in_s`); spoiled eggs hatch enemies. First pentapod
+  eggs are destroyed spawner loot. Aquilo: heating towers and heat pipes
+  warm machines, else `frozen`.
 - `set_platform_route` sets a platform's stops (unlocked locations, each with
   the game's wait conditions) at once, without the body.
 - `travel {to: "platform:<n>"}` rides the next ready rocket up to that
@@ -222,18 +219,17 @@ re-read `factory_status` body position and choose a reachable target. `cancel_pl
 - You land with only what you carry. A cargo landing pad's requests pull
   items from platforms in orbit, and leaving a planet takes a rocket from a
   silo there. After a death, `mine` your corpse (`target_kind: "owned"`).
-- `production_requirements` gives each raw material its `roots` (planet and
-  how it is gathered); with `planet` it names recipes that planet forbids
-  (`surface_limited`).
-- Offshore pumps pump their tile's liquid (water, lava, heavy oil, ammoniacal
-  solution). A boiler needs water. `find_placement` lists free spots nearest
-  first; a drill's carries its `resource_coverage`.
-  `SURFACE_CONDITION`: that building or recipe needs another planet's
-  pressure, gravity, or magnetic field.
+- `production_requirements` gives raw material `roots` (planet, gathering);
+  `planet` adds forbidden recipes (`surface_limited`).
+- Offshore pumps take their tile's liquid; a boiler needs water.
+  `find_placement` lists free spots nearest first, drills' `resource_coverage`.
+  `SURFACE_CONDITION`: wrong planetary pressure, gravity or magnetic field.
 
 **Plans.** `queue_plan` returns at once; `run_plan`
 blocks until the plan ends. Plans are not transactional: finished steps stay.
-Keep the current plan plus one grounded queued successor and avoid micro-packet
+Use partial results and named deficits to repair only unfinished work.
+`GHOSTS_PLACED` with `construction_complete: false` means orders, not built
+machines. Keep the current plan plus one grounded queued successor and avoid micro-packet
 idle gaps.
 
 **Other facts.** Crafting runs in the background: `craft_items` returns at
@@ -241,8 +237,8 @@ once, the body keeps working, and a later step that needs the item waits for
 it. Any item may be used anywhere,
 crafted or machine-made. `mine` count means physical mining cycles; judge item
 ceilings from the in-game learned per-cycle yield and actual inventory deltas.
-An invalid schema, wrong machine, or unknown recipe
-is terminal: change the request. An `MCP_GAP` blocks only its branch.
+Invalid schemas, wrong machines and unknown recipes need a changed request.
+`MCP_GAP` blocks only its branch.
 
 ## Orders and packages
 

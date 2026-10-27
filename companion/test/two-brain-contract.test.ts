@@ -140,7 +140,7 @@ describe("persistent two-brain coordination contract", () => {
     expect(flat(pilot)).toMatch(/Key this to the live `next_event` body \(`fifo_empty`, `packages_open`\), never to `orders`, a snapshot of each ledger revision/);
     expect(flat(pilot)).toMatch(/a full body \(`free_slots`, `inventory_full`\) fails fetches, pickups and upkeep, and carried items are out of the factory/);
     expect(pilot).not.toMatch(/Before the first package arrives/);
-    expect(flat(skill)).toMatch(/the pilot queues work \(its own if no package is pending\) before waiting again/);
+    expect(flat(skill)).toMatch(/the pilot queues work before waiting again; open packages may be waiting, not working/);
   });
   it("points the ledger writer to the generated package contract and reads fast_mode_enabled as availability", () => {
     const benchmarkGoal = read(".agents/skills/factorio-player/GOAL-BENCHMARK-v1.md");
@@ -211,11 +211,11 @@ describe("persistent two-brain coordination contract", () => {
 
   it("teaches the 0.21.1 building tools in plain words", () => {
     const flatSkill = flat(skill);
-    expect(flatSkill).toMatch(/when a build works, store it once \(`blueprint_capture`[\s\S]*stamp it again with `blueprint_place`, never piece by piece/);
-    expect(flatSkill).toMatch(/Blueprints belong to this run; `blueprint_export` is a string for notes, never imported/);
-    expect(flatSkill).toMatch(/`move_entity` picks up one of your buildings with its contents/);
+    expect(flatSkill).toMatch(/Store a working build once with `blueprint_capture` or `blueprint_create`[\s\S]*reuse it with `blueprint_place`, never piece by piece/);
+    expect(flatSkill).toMatch(/Blueprints belong to this run; `blueprint_export` is for notes, never import/);
+    expect(flatSkill).toMatch(/`move_entity` relocates your building with contents and settings/);
     expect(flatSkill).toMatch(/use `explore`[\s\S]*Never scout with chains of walks/);
-    expect(flatSkill).toMatch(/`connect_entities` lays one belt, pipe, or pole route of up to 200 pieces[\s\S]*a long route is one call/);
+    expect(flatSkill).toMatch(/Direct `connect_entities` uses absolute `from\/to: \{x,y\}`[\s\S]*one belt, pipe, or pole route of up to 200 pieces, in one call/);
     expect(flatSkill).toMatch(/Crafting runs in the background: `craft_items` returns at once/);
     expect(flatSkill).toMatch(/The ledger writer picks research: the bridge queues the ledger's `research` list once per revision \(`activity_log` shows it\)/);
     expect(flatSkill).not.toMatch(/`start_research` takes a list/);
@@ -377,12 +377,12 @@ describe("persistent two-brain coordination contract", () => {
 
   it("teaches the 0.22.0 tools, power model and build-time settings in plain words", () => {
     const flatSkill = flat(skill);
-    expect(flatSkill).toMatch(/`add_to_cover` lists both ways to cover demand, `steam` \(engines, boilers, pumps\) and `solar` \(panels, accumulators\): you choose/);
+    expect(flatSkill).toMatch(/`add_to_cover` steam and solar alternatives: you choose/);
     expect(flatSkill).toMatch(/`sections: \['logistics'\]` shows robot networks/);
-    expect(flatSkill).toMatch(/`configure_entity` sets what a building's window sets[\s\S]*changes only what you name/);
-    expect(flatSkill).toMatch(/Give `build_layout` entities `settings` \(and `mirror`, and `belt_to_ground_type: input\|output` for an underground belt\) instead to build a sorter or a mall already configured/);
-    expect(flatSkill).toMatch(/`place_tiles` lays landfill[\s\S]*nearest tiles first, walking along[\s\S]*`check_only` counts the items/);
-    expect(flatSkill).toMatch(/`set_requests` sets what a requester or buffer chest asks robots for\. Only robots deliver/);
+    expect(flatSkill).toMatch(/`configure_entity` changes only named settings/);
+    expect(flatSkill).toMatch(/`build_layout` entities take `settings`, `mirror`, and underground `belt_to_ground_type: input\|output` to build already configured/);
+    expect(flatSkill).toMatch(/`place_tiles` walks and lays carried tiles nearest first; `check_only` counts an area's items/);
+    expect(flatSkill).toMatch(/`set_requests` sets requester\/buffer chest requests; only robots deliver/);
     expect(flatSkill).toMatch(/`extract_items` and `insert_items` take an `inventory`/);
     expect(flatSkill).toMatch(/Plan steps only: `equip` wears armor[\s\S]*`flush_fluid` empties a pipe or tank system/);
     for (const tool of ["configure_entity", "place_tiles", "set_requests"]) expect(registered).toContain(tool);
@@ -396,8 +396,8 @@ describe("persistent two-brain coordination contract", () => {
   it("teaches the 0.22.2 rocket and platform tools and the remote rule in plain words", () => {
     const flatSkill = flat(skill);
     expect(flatSkill).toMatch(/\*\*To space\.\*\*/);
-    expect(flatSkill).toMatch(/A rocket silo needs power and stacks 50 rocket parts \(each a processing unit, low density structure, and rocket fuel\)/);
-    expect(flatSkill).toMatch(/`create_platform` registers a platform over the body's planet at once\. It waits until a rocket brings its starter pack: launching the pack creates the platform/);
+    expect(flatSkill).toMatch(/A powered silo makes a rocket from 50 parts \(processing unit, low density structure, rocket fuel each\)/);
+    expect(flatSkill).toMatch(/`create_platform` registers over the body's planet; launching its starter pack creates it/);
     expect(flatSkill).toMatch(/`launch_rocket` loads a ready rocket with the cargo you name[\s\S]*with no rocket ready it fails at once with the part count/);
     expect(flatSkill).toMatch(/`platform_status` is your platform screen[\s\S]*`ghosts\.missing`: what must still go up/);
     expect(flatSkill).toMatch(/Platforms are built only from ghosts the hub fulfils from its own items/);
@@ -416,7 +416,7 @@ describe("persistent two-brain coordination contract", () => {
   it("teaches the 0.22.3 planets, travel, surfaces and the win in plain words", () => {
     const flatSkill = flat(skill);
     expect(flatSkill).toMatch(/\*\*Other planets\.\*\*/);
-    for (const planet of ["Vulcanus", "Fulgora", "Gleba", "Aquilo"]) expect(flatSkill).toMatch(new RegExp(`- Each planet adds a science pack and one constraint\\.[\\s\\S]*${planet}`));
+    for (const planet of ["Vulcanus", "Fulgora", "Gleba", "Aquilo"]) expect(flatSkill).toMatch(new RegExp(`- Each planet adds science and constraints\\.[\\s\\S]*${planet}`));
     expect(flatSkill).toMatch(/`set_platform_route` sets a platform's stops \(unlocked locations, each with the game's wait conditions\) at once, without the body/);
     expect(flatSkill).toMatch(/`travel \{to: "platform:<n>"\}` rides the next ready rocket[\s\S]*`travel \{to: "<planet>"\}` waits aboard until the platform reaches the planet, then lands you by pod/);
     expect(flatSkill).toMatch(/Queue the destination's work in the same plan after the `travel` step/);

@@ -3,6 +3,7 @@ import { cancelAndReadback, DEFAULT_TASK_TIMEOUT_MS, holdAwareDeadline, monitori
 import type { Bridge } from "../bridge.js";
 import { normalizeObservation } from "./observation.js";
 import { NEXT_EVENT_MAX_SECONDS } from "./events.js";
+import { fieldLine, stepLines } from "./schemaContract.js";
 
 const position = { x: z.number(), y: z.number() };
 const point = z.object(position).strict();
@@ -352,6 +353,32 @@ export const queuePlanSchema = z.object({
   });
 });
 export const runPlanSchema = queuePlanSchema;
+
+/** These checks are enforced by refinements, not JSON Schema conversion. */
+export const STEP_REFINEMENTS = [
+  "Additional validation (not represented by the structural JSON Schema conversion):",
+  "walk_to: exact arrival requires arrival_radius 1 (fixed 1-tile tolerance); a wider radius needs vicinity.",
+  "Area steps (build_ghosts, deconstruct_area, upgrade_area): give area or center with radius, never both; center and radius go together.",
+  "insert_items: give items or per_target, never both; give x and y or targets, never both; per_target requires targets.",
+  "equip: give armor, put or take; each put entry gives x and y together or neither.",
+  "Settings: configure_entity and each supplied layout entity settings object name at least one group; every supplied settings group names at least one field.",
+  `build_layout: exactly one of anchor or site; needs entities, or connections or platform tiles from an anchor. tiles and tile_rects require platform; their expanded total is at most ${MAX_LAYOUT_TILES}. A platform requires an anchor relative to its hub, never site or mode hand. Ghost/platform entities cannot have insert. blueprint_place on a platform cannot use mode hand; deconstruct_area on a platform uses robots or cancel, never hand.`,
+  "place_tiles: exactly one of area or positions.",
+  'set_requests: give nonempty requests, remove, request_from_buffers, trash, trash_unrequested or mode set. import_from and minimum_delivery_count require target {platform}; request_from_buffers requires a chest target; trash and trash_unrequested require target "character". Each max is at least min. requests plus trash name at most 60 items together, with no duplicate item across either list.',
+  "set_platform_route: give stops, go_to or paused; when stops and go_to are both supplied, go_to selects one of those stops (1-based).",
+  "launch_rocket: a cargo record names 1-20 items (or cargo is the literal requests).",
+].join("\n");
+
+/** Action membership and fields come only from the validated plan schema. */
+export function planContract(): string {
+  return [
+    `Plan input (required | optional; strict objects reject unknown fields): ${fieldLine(queuePlanSchema, ["steps"])}`,
+    `steps: 1-${MAX_PLAN_STEPS}; each strict object has action plus the fields below (? marks optional nested fields).`,
+    "steps (action: required | optional):",
+    ...stepLines(planStepSchema.options),
+    STEP_REFINEMENTS,
+  ].join("\n");
+}
 export const planStatusSchema = z.object({
   plan_id: z.number().int().positive(),
   wait_until: z.enum(["current", "progress", "terminal"]).default("current"),

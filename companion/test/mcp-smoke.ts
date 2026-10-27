@@ -1,3 +1,4 @@
+import { planContract, planStepSchema } from "../src/mcp/runPlan.js";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -114,8 +115,24 @@ try {
   if (runPlanSchema.properties?.steps?.maxItems !== 200 || runPlanSchema.properties?.steps?.minItems !== 1) throw new Error("run_plan must accept 1-200 steps");
   if (runPlanSchema.properties?.final_observation_radius?.default !== 15 || runPlanSchema.properties?.observation_radius) throw new Error("run_plan must expose only final_observation_radius");
   const serializedSteps = JSON.stringify(runPlanSchema.properties?.steps);
-  for (const action of ["wait_for_research", "get_items", "build_layout", "explore", "move_entity", "blueprint_place",
-    "build_ghosts", "deconstruct_area", "upgrade_area", "copy_settings", "configure_entity", "flush_fluid", "place_tiles", "set_requests", "equip", "create_platform", "launch_rocket", "set_platform_route", "travel"]) if (!serializedSteps.includes(`\"const\":\"${action}\"`)) throw new Error(`run_plan must expose ${action}`);
+  const queuedTool = tools.find((tool: any) => tool.name === "queue_plan");
+  const runningTool = tools.find((tool: any) => tool.name === "run_plan");
+  if (JSON.stringify(queuedTool.inputSchema) !== JSON.stringify(runningTool.inputSchema)) throw new Error("plan input schemas diverge");
+  const variants = runPlanSchema.properties.steps.items.anyOf ?? runPlanSchema.properties.steps.items.oneOf;
+  if (variants.length !== planStepSchema.options.length) throw new Error("wrong plan variant count");
+  for (const tool of [queuedTool, runningTool]) {
+    if (!tool.description.includes(planContract()) || tool.description.includes("blueprint_capture")) throw new Error("missing or incorrect plan description contract");
+    for (const option of planStepSchema.options) {
+      const action = option.shape.action.value;
+      const variant = variants.find((entry: any) => entry.properties.action.const === action);
+      if (!variant || variant.additionalProperties !== false || !variant.required.includes("action")) throw new Error(`missing strict variant ${action}`);
+      if (!tool.description.includes(`  ${action}: `)) throw new Error(`missing description for ${action}`);
+    }
+    const invalid = await request("tools/call", { name: tool.name, arguments: { steps: [{ action: "walk_to", x: 0, y: 0, arrival_radius: 2 }] } });
+    if (!invalid.result?.isError || /Offline:|configuration is missing/.test(JSON.stringify(invalid.result))) throw new Error("invalid plan reached offline runtime");
+    const valid = await request("tools/call", { name: tool.name, arguments: { steps: [{ action: "walk_to", x: 0, y: 0 }] } });
+    if (!/configuration is missing; run/.test(JSON.stringify(valid.result))) throw new Error("valid plan did not reach the expected missing-configuration boundary");
+  }
   if (serializedSteps.includes('"const":"blueprint_capture"')) throw new Error("blueprint_capture is a package step, never a plan step");
   if (serializedSteps.includes('"const":"build_block"') || names.includes("build_block")) throw new Error("build_block is gone: the bots design their own layouts");
   const craftSchema = tools.find((tool: any) => tool.name === "craft_items")?.inputSchema?.properties ?? {};

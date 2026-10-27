@@ -86,18 +86,24 @@ describe("compact strategist operations ledger", () => {
       if (action === "travel") { expect(line).toBeUndefined(); continue; }
       expect(line, action).toBeDefined();
     }
-    expect(contract).toContain("  pickup_items: x: number; y: number; item: string; count: integer 1-10000 | optional: -");
-    // The envelope and update fields, numeric caps and the notes path rule.
-    expect(contract).toContain("envelope (required | optional): run_id: string; save_identity: string; source_tick: integer | optional: -;");
+    expect(contract).toContain("  pickup_items: x: number; y: number; item: string (length >=1); count: integer (>=1, <=10000) | optional: -");
+    // The repaired shared formatter retains nested types, bounds, defaults and strictness.
+    expect(contract).toContain("run_id: string (length >=1, length <=160)");
+    expect(contract).toContain("source_tick: integer (>=0, <=9007199254740991)");
     expect(contract).toContain("source_tick must exceed the ledger's");
-    expect(contract).toContain("latest_measured_capacity: [{stage: string, measure: string, value: number, unit: string, observed_tick: integer}] (0-12)");
-    expect(contract).toMatch(/update \(required \| optional\): phase: string; bottleneck: string;.*task_list: \{NOW: \{objective,.*assumptions: /);
-    expect(contract).toContain("  wait_for_item: x: number; y: number; inventory: input|output|fuel|main; item: string; count: integer | optional: timeout_seconds: number 1-300");
-    expect(contract).toContain("radius: number <=32");
+    expect(contract).toContain("latest_measured_capacity: [{stage: string (length >=1, length <=120)");
+    expect(contract).toContain("observed_tick: integer (>=0, <=9007199254740991)} (strict)] (items <=12)");
+    expect(contract).toContain("task_list: {NOW: {objective: string (length >=1, length <=240)");
+    expect(contract).toContain('inventory: "input"|"output"|"fuel"|"main"; item: string; count: integer (<=9007199254740991, >0)');
+    expect(contract).toContain("timeout_seconds: number (>=1, <=300) default 120");
+    expect(contract).toContain("radius: number (<=32, >0)");
     expect(contract).toContain(`  ${NOTES_RULE}`);
-    expect(contract).toContain("  blueprint_place: name: string matching");
-    expect(contract).toMatch(/flip: horizontal\|vertical; mode: hand\|ghosts/);
-    expect(contract).toContain("package_id: string matching ^[a-z0-9-]{1,32}$; serves: NOW|NEXT;");
+    expect(contract).toContain("blueprint_place: name: string (length >=1, length <=64, matching");
+    expect(contract).toContain('flip: "horizontal"|"vertical"; mode: "hand"|"ghosts"');
+    expect(contract).toContain('package_id: string (matching ^[a-z0-9-]{1,32}$); serves: "NOW"|"NEXT";');
+    expect(contract).toContain("default null");
+    expect(contract).toContain("blueprint_capture steps come first");
+    expect(contract).toContain("strict objects reject unknown fields");
     expect(contract).toContain("at most 8192 bytes");
     expect(contract).toContain(AFTER_PACKAGE_ID_RULE);
     expect(contract).toContain(VERIFY_RULE);

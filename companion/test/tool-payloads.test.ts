@@ -4,7 +4,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_TASK_TIMEOUT_MS, ModError, type Bridge } from "../src/bridge.js";
 import { connectStatus, MAP_SUMMARY_SECTIONS, normalizeObservation, READ_ONLY_TOOLS, registerMcpTools, result, toolPayloads, type SessionRole } from "../src/mcp/server.js";
-import { queuePlanSchema } from "../src/mcp/runPlan.js";
+import { planContract, planStepSchema, queuePlanSchema } from "../src/mcp/runPlan.js";
 import { FIFO_HUMAN_HINT, FIFO_IDLE_HINT, normalizeBeltJoins, normalizeFifo, normalizePhysicalRoute, normalizePlanDiagnostics, normalizeProductionRequirements, normalizePlacementSearch, planStatusSummary, queuedPlanSummary } from "../src/mcp/toolPayloads.js";
 const validConfig = () => ({ ok: true, config: { factorioUserDir: "/factorio", rcon: { host: "127.0.0.1", port: 19015, password: "secret" } } } as const);
 describe("public MCP to Lua DTO mappings", () => {
@@ -912,5 +912,77 @@ describe("dry-run belt_joins rows", () => {
     const route = normalizePhysicalRoute({ steps: {}, belt_joins: [{ ...row, lanes: [{ lane: "left", items: {}, adds: ["coal"], mixes: true }] }] });
     expect(route.steps).toEqual([]);
     expect(route.belt_joins[0].lanes[0]).toEqual({ lane: "left", items: [], adds: ["coal"], mixes: true });
+  });
+});
+
+
+describe("registered plan contract", () => {
+  it("delivers every strict action and the same generated contract for queue_plan and run_plan", async () => {
+    const call = vi.fn(async (method: string) => method === "queue_plan" ? { plan_id: 1, tick: 1 }
+      : { plan_id: 1, status: "completed", outcomes: [], completed_steps: 1 });
+    const bridge = vi.fn(async () => ({ call } as unknown as Bridge));
+    const server = new McpServer({ name: "contract-test", version: "1" });
+    registerMcpTools(server, bridge, validConfig);
+    const client = new Client({ name: "contract-test", version: "1" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    try {
+      const listed = (await client.listTools()).tools;
+      const queue = listed.find((tool) => tool.name === "queue_plan")!;
+      const run = listed.find((tool) => tool.name === "run_plan")!;
+      expect(queue.inputSchema).toEqual(run.inputSchema);
+      expect(queue.description).toContain(planContract());
+      expect(run.description).toContain(planContract());
+      const stepSchema = (queue.inputSchema.properties!.steps as any);
+      const variants = stepSchema.items.anyOf ?? stepSchema.items.oneOf;
+      expect(stepSchema).toMatchObject({ minItems: 1, maxItems: 200 });
+      expect(variants).toHaveLength(planStepSchema.options.length);
+      for (const option of planStepSchema.options) {
+        const action = option.shape.action.value;
+        const variant = variants.find((entry: any) => entry.properties.action.const === action);
+        expect(variant, action).toMatchObject({ type: "object", additionalProperties: false });
+        expect(variant.required).toContain("action");
+        const line = queue.description!.split("\n").find((row) => row.startsWith(`  ${action}: `))!;
+        expect(line, action).toBeDefined();
+        for (const key of Object.keys(option.shape).filter((key) => key !== "action")) expect(line).toContain(`${key}:`);
+      }
+      expect(queue.description).not.toContain("blueprint_capture");
+      expect(queue.description).toContain('condition?: {[key: string]: unknown (any JSON value)}');
+      expect(queue.description).toContain('stack_size?: integer (>=0, <=9007199254740991)');
+      // Exercise structural constraints and each family of non-JSON-Schema refinement at the real boundary.
+      const invalidSteps = [
+        { action: "walk_to", x: 0, y: 0, arrival_radius: 2 },
+        { action: "build_ghosts", center: { x: 0, y: 0 } },
+        { action: "insert_items", targets: [{ x: 0, y: 0 }], items: { coal: 1 }, per_target: { coal: 1 } },
+        { action: "equip", put: [{ name: "battery-equipment", x: 0 }] },
+        { action: "configure_entity", x: 0, y: 0, chest: {} },
+        { action: "build_layout", anchor: { x: 0, y: 0 }, platform: "ship", mode: "hand", entities: [] },
+        { action: "build_layout", anchor: { x: 0, y: 0 }, entities: [{ name: "inserter", dx: 0, dy: 0, settings: { inserter: { filters: [4] } } }] },
+        { action: "blueprint_place", name: "test", position: { x: 0, y: 0 }, direction: 2 },
+        { action: "place_tiles", item: "landfill" },
+        { action: "set_requests", target: "character", request_from_buffers: true },
+        { action: "set_requests", target: "character", requests: [{ item: "coal", min: 2, max: 1 }] },
+        { action: "set_requests", target: "character", requests: [{ item: "coal", min: 1 }], trash: ["coal"] },
+        { action: "set_platform_route", platform: "ship", stops: [{ location: "nauvis" }], go_to: 2 },
+        { action: "launch_rocket", platform: "ship", silo: { x: 0, y: 0 }, cargo: {} },
+        { action: "walk_to", x: 0, y: 0, extra: true },
+      ];
+      for (const name of ["queue_plan", "run_plan"]) {
+        for (const step of invalidSteps) {
+          expect((await client.callTool({ name, arguments: { steps: [step] } })).isError, JSON.stringify(step)).toBe(true);
+        }
+      }
+      expect(bridge).not.toHaveBeenCalled();
+      for (const name of ["queue_plan", "run_plan"]) {
+        const steps = [
+          { action: "configure_entity", x: 0, y: 0, chest: { slots: null } },
+          { action: "build_layout", anchor: { x: 0, y: 0 }, entities: [{ name: "inserter", dx: 1, dy: 2, settings: { inserter: { filters: ["coal"] } } }] },
+          { action: "set_platform_route", platform: "ship", stops: [{ location: "nauvis", wait: [{ type: "time", ticks: 60 }] }], go_to: 1 },
+        ];
+        expect((await client.callTool({ name, arguments: { steps } })).isError).not.toBe(true);
+        expect(call).toHaveBeenCalledWith("queue_plan", expect.objectContaining({ steps: queuePlanSchema.parse({ steps }).steps }));
+      }
+    } finally { await client.close(); await server.close(); }
   });
 });

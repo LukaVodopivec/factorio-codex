@@ -3,7 +3,8 @@ import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import { atomicWriteFile } from "../setup/atomic.js";
-import { MAX_PLAN_STEPS, packageStepSchema, stepIssue } from "../mcp/runPlan.js";
+import { MAX_PLAN_STEPS, packageStepSchema, STEP_REFINEMENTS, stepIssue } from "../mcp/runPlan.js";
+import { fieldLine, stepLines } from "../mcp/schemaContract.js";
 import { runRolesSchema } from "../runs/profiles.js";
 import { dataDir } from "../config.js";
 
@@ -334,47 +335,11 @@ export function applyLedgerFile(file: string, envelopeValue: unknown): LedgerApp
   return reduced.result;
 }
 
-// One field's type in a line, from its JSON Schema: nested objects name
-// their fields one level deep (? marks optional ones).
-type JsonSchema = { [key: string]: any };
-function fieldType(schema: JsonSchema | undefined, depth = 0): string {
-  if (!schema || typeof schema !== "object") return "any";
-  if (schema.const !== undefined) return JSON.stringify(schema.const);
-  if (Array.isArray(schema.enum)) return schema.enum.map((value: unknown) => typeof value === "string" ? value : JSON.stringify(value)).join("|");
-  const options = schema.anyOf ?? schema.oneOf;
-  if (Array.isArray(options)) return options.map((option: JsonSchema) => fieldType(option, depth)).join(" or ");
-  if (schema.type === "array") {
-    const bounds = schema.maxItems !== undefined ? ` (${schema.minItems ?? 0}-${schema.maxItems})` : "";
-    return `[${fieldType(schema.items, depth)}]${bounds}`;
-  }
-  if (schema.type === "object") {
-    if (!schema.properties) return "{name: count}";
-    const required: string[] = schema.required ?? [];
-    return `{${Object.entries(schema.properties).map(([key, value]) => `${key}${required.includes(key) ? "" : "?"}`
-      + (depth >= 1 ? "" : `: ${fieldType(value as JsonSchema, depth + 1)}`)).join(", ")}}`;
-  }
-  const type = Array.isArray(schema.type) ? schema.type.join("|") : schema.type ?? "any";
-  if (schema.pattern) return `${type} matching ${schema.pattern}`;
-  // A numeric cap prints with its floor (an integer's safe-integer limit is no cap).
-  const max = typeof schema.maximum === "number" && schema.maximum < Number.MAX_SAFE_INTEGER ? schema.maximum : undefined;
-  if (max === undefined) return type;
-  return typeof schema.minimum === "number" && schema.minimum > Number.MIN_SAFE_INTEGER ? `${type} ${schema.minimum}-${max}` : `${type} <=${max}`;
-}
-// "required fields | optional fields" of an object schema, leaving out the named keys.
-function fieldLine(schema: z.ZodType, skip: string[]): string {
-  const json = z.toJSONSchema(schema, { io: "input", unrepresentable: "any" }) as JsonSchema;
-  const required: string[] = json.required ?? [];
-  const fields = Object.entries(json.properties ?? {}).filter(([key]) => !skip.includes(key));
-  const list = (want: boolean) => fields.filter(([key]) => required.includes(key) === want)
-    .map(([key, value]) => `${key}: ${fieldType(value as JsonSchema)}`).join("; ");
-  return `${list(true) || "-"} | optional: ${list(false) || "-"}`;
-}
 /** The contract ledger-apply --schema prints, generated from the schemas it
  *  checks: the update envelope, the update's fields, a package's fields and
  *  each step action's fields. */
 export function packageContract(): string {
-  const steps = packageStepSchema.options.filter((option) => option.shape.action.value !== "travel")
-    .map((option) => `  ${option.shape.action.value}: ${fieldLine(option, ["action"])}`);
+  const steps = stepLines(packageStepSchema.options.filter((option) => option.shape.action.value !== "travel"));
   return [
     `envelope (required | optional): ${fieldLine(ledgerEnvelopeSchema, ["update"])}; update: the object below;`
       + " source_tick must exceed the ledger's; an absent ledger takes {init: true, run, source_tick, update} instead",
@@ -386,7 +351,8 @@ export function packageContract(): string {
     `  a package runs as one plan: ${PLAN_BUDGET_RULE}`, `  ${AFTER_PACKAGE_ID_RULE}`, `  ${VERIFY_RULE}`, `  ${NOTES_RULE}, each an existing file beside the ledger`,
     `research: an append list of at most ${MAX_RESEARCH} distinct technologies in queue order (omitted/empty: no-op),`
       + ' or {mode: "replace", technologies: [...]} to replace the whole queue (explicit [] clears it); native progress is retained',
-    "steps (action: required | optional):", ...steps,
+    "steps (action: required | optional; strict objects reject unknown fields; ? marks optional nested fields):", ...steps, STEP_REFINEMENTS,
+    "blueprint_capture: give area or center with radius, never both; center and radius go together.",
   ].join("\n");
 }
 

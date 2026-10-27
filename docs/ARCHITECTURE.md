@@ -128,9 +128,24 @@ bridge never queued names them in `omitted_unqueued` (a fact, not a refusal);
 one whose queue answer was lost, so the mod may hold its plan, is in
 `omitted_possibly_queued`.
 `ledger-apply --schema` prints the update envelope, the update's fields, the
-package and step fields with their numeric caps, and the notes path rule. A
+package and step fields with their types, defaults and constraints, and the notes path rule. A
 ledger holds the run identity, the priorities, at most two build
 packages and up to seven research technologies.
+
+The `queue_plan` and `run_plan` descriptions include the same step contract,
+generated from `planStepSchema` through the ledger's shared formatter
+(`mcp/schemaContract.ts`). Nested types remain explicit; cross-field and custom
+refinements are explained separately because JSON Schema conversion does not
+represent them. Plan actions include `travel` and exclude `blueprint_capture`;
+package help includes leading captures and excludes travel.
+
+At assessed revision `208473033a85d6018c47e1c9bd4807dd4c3833ae`, registered
+MCP `tools/list` already emitted all 30 concrete strict plan variants for both
+tools, but their descriptions lacked a complete step contract. The later
+historical rendering/provider stage that showed unknown variants remains
+unverified. Generated descriptions do not establish historical provider parity,
+fewer malformed calls, or token/time savings. Source publication, deployment,
+and adoption by a fresh MCP session require separate evidence.
 
 The pilot's MCP process runs the package bridge (`coordination/orders.ts`)
 about once a second:

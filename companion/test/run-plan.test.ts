@@ -1,8 +1,10 @@
+import { z } from "zod";
+import { fieldLine, stepLines } from "../src/mcp/schemaContract.js";
 import { describe, expect, it, vi } from "vitest";
 import { Bridge, DEFAULT_TASK_TIMEOUT_MS, ModError, OutcomeUnknownError, WriterRetiredError, type TaskClock } from "../src/bridge.js";
 import { RconError } from "../src/rcon.js";
 import type { RconClient } from "../src/rcon.js";
-import { executeRunPlan, packageStepSchema, planStatusSchema, queuePlanSchema, runPlanSchema, waitForPlanStatus } from "../src/mcp/runPlan.js";
+import { executeRunPlan, packageStepSchema, planStepSchema, planContract, planStatusSchema, queuePlanSchema, runPlanSchema, waitForPlanStatus } from "../src/mcp/runPlan.js";
 import { registerMcpTools } from "../src/mcp/server.js";
 
 const validConfig = () => ({ ok: true, config: { factorioUserDir: "/factorio", rcon: { host: "127.0.0.1", port: 19015, password: "secret" } } } as const);
@@ -530,5 +532,45 @@ describe("run_plan and direct tools under a human hold", () => {
       expect(ran.content[0].text).toContain("nothing was cancelled");
       expect(methods).not.toContain("cancel");
     } finally { vi.useRealTimers(); }
+  });
+});
+
+
+describe("schema-derived plan contracts", () => {
+  it("retains deep settings, offsets, equipment unions, route records and honest unconstrained values", () => {
+    const contract = planContract();
+    expect(contract).toContain('arrival_mode: "exact"|"vicinity" default "exact"');
+    expect(contract).toContain("arrival_radius: number (>=0.5, <=6) default 1");
+    expect(contract).toContain("final_observation_radius: integer (>=5, <=30) default 15");
+    expect(contract).toContain('settings?: {inserter?: {filters?: [string (length >=1)] (items <=5), mode?: "whitelist"|"blacklist"');
+    expect(contract).toContain("from: {dx: number, dy: number} (strict), to: {dx: number, dy: number} (strict)");
+    expect(contract).toContain("take: [({name: string (length >=1)} (strict) or {x: integer (>=0, <=9007199254740991), y: integer (>=0, <=9007199254740991)} (strict))] (items >=1, items <=20)");
+    expect(contract).toContain('wait?: [{type: "time"|"full"');
+    expect(contract).toContain("condition?: {[key: string]: unknown (any JSON value)}");
+    expect(contract).toContain("direction: integer (>=0, <=12, multiple of 4)");
+    expect(contract).toContain("Additional validation (not represented by the structural JSON Schema conversion)");
+    expect(contract).not.toContain("blueprint_capture");
+    expect(contract).toContain("  travel: to:");
+    expect(contract).not.toContain("{name: count}");
+    // A plain recipe string has no name/length constraint added by the formatter.
+    expect(contract).toContain("craft_items: recipe: string; crafts: integer (>=1, <=100)");
+  });
+
+  it("propagates new actions, fields and changed constraints without an action/type definition list", () => {
+    const changed = planStepSchema.options[0].extend({
+      arrival_radius: z.number().min(2).max(9).default(3),
+      detail: z.object({ nested: z.object({ label: z.string().min(2).max(7).regex(/^ok/),
+        flags: z.record(z.string().min(3), z.boolean()), open: z.looseObject({ value: z.unknown() }) }).strict() }).strict().optional(),
+    });
+    const added = z.object({ action: z.literal("new_action"), entries: z.array(z.string()).min(2),
+      scale: z.number().gt(0).lt(5).multipleOf(0.5) }).strict();
+    const lines = stepLines([changed, added]);
+    expect(lines[0]).toContain("arrival_radius: number (>=2, <=9) default 3");
+    expect(lines[0]).toContain("label: string (length >=2, length <=7, matching ^ok)");
+    expect(lines[0]).toContain("flags: {[key: string (length >=3)]: boolean}");
+    expect(lines[0]).toContain("open: {value: unknown (any JSON value), [key: string]: unknown (any JSON value)}");
+    expect(lines[1]).toBe("  new_action: entries: [string] (items >=2); scale: number (>0, <5, multiple of 0.5) | optional: -");
+    expect(fieldLine(z.object({ literal: z.literal(false), values: z.array(z.number()).length(2).default([1, 2]) }).strict()))
+      .toBe("literal: false | optional: values: [number] (items >=2, items <=2) default [1,2]");
   });
 });

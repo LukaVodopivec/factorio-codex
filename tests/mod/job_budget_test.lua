@@ -67,7 +67,16 @@ local surface = object({
   end,
   find_tiles_filtered = function() return {} end,
   get_tile = function() return object({ collides_with = function() return false end }) end,
-  get_chunks = function() error("a seeded patch cache lists the charted chunks") end,
+  get_chunks = function()
+    -- Full summaries discover the current force chart as budgeted work;
+    -- aggregate summaries retain the seeded patch index below.
+    local x, y = -3, -2
+    return function()
+      x = x + 1
+      if x > 6 then x, y = -2, y + 1 end
+      if y <= 6 then return { x = x, y = y } end
+    end
+  end,
 })
 local body_position = { x = 0.5, y = 0.5 }
 local body = object({ valid = true, name = "character", type = "character", force = force, surface = surface,

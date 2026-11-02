@@ -1100,12 +1100,11 @@ surface.find_tiles_filtered = function(filter)
   tile_queries = tile_queries + 1
   local x0, y0 = filter.area[1][1], filter.area[1][2]
   assert(fixture_charted(math.floor(x0 / 32), math.floor(y0 / 32)), "uncharted query")
-  -- A chunk is read in four strips of eight rows, so no tick reads more
-  -- than 256 tiles.
-  assert(filter.area[2][1] == x0 + 32 and filter.area[2][2] == y0 + 8 and y0 % 8 == 0, "chunk strip query extent")
+  assert(filter.area[2][1] == x0 + 32 and filter.area[2][2] == y0 + 32
+    and x0 % 32 == 0 and y0 % 32 == 0, "exact charted chunk query extent")
   local names, tiles = {}, {}
   for _, name in ipairs(filter.name) do names[name] = true end
-  for y = y0, y0 + 7 do
+  for y = y0, y0 + 31 do
     for x = x0, x0 + 31 do
       if names[tile_name(x, y)] then tiles[#tiles + 1] = { position = { x = x, y = y } } end
     end
@@ -1152,10 +1151,10 @@ local function equivalence_case(name, chunks, terrain)
   local expected, omitted = predecessor_edges()
   check(canonical(actual.water_edges) == canonical(expected) and actual.omitted_water_edges == omitted,
     name .. " matches predecessor coordinates, ordering, cap and omissions")
-  check(tile_queries == 4 * #chunks, name .. " uses exactly four strip tile queries per charted chunk")
+  check(tile_queries == #chunks, name .. " uses exactly one tile query per charted chunk")
   reverse_results, tile_queries = true, 0
   local shuffled = summarize({ detail = "full" })
-  check(canonical(actual) == canonical(shuffled) and tile_queries == 4 * #chunks,
+  check(canonical(actual) == canonical(shuffled) and tile_queries == #chunks,
     name .. " has byte-identical complete output with shuffled tile results")
   tile_queries = 0
   local compact = summarize({ detail = "aggregate" })
@@ -1184,6 +1183,60 @@ local saved_prototypes = prototypes.tile
 prototypes.tile = { land = saved_prototypes.land }
 equivalence_case("empty matching name list", adjacent, function() return "land" end)
 prototypes.tile = saved_prototypes
+-- A seeded patch index is an independent background reader, not the force's
+-- current chart. Full detail must not inherit its stale membership or order.
+do
+  local old_index, old_caches = surface.index, storage.patch_caches
+  tile_queries = 0
+  local expected = summarize({ detail = "full" })
+  surface.index = 1
+  storage.patch_caches = { [1] = { seeded = true,
+    charted = { { x = 9, y = 9 } }, charted_set = { ["9,9"] = true } } }
+  tile_queries = 0
+  local actual = summarize({ detail = "full" })
+  check(canonical(actual) == canonical(expected) and tile_queries == #fixture_chunks,
+    "full detail reads the current force chart independently of a stale seeded patch index")
+  surface.index, storage.patch_caches = old_index, old_caches
+end
+do
+  local previous_chunks, previous_charted = surface.get_chunks, force.is_chunk_charted
+  local chart_reads = 0
+  surface.get_chunks = function()
+    local i = -1
+    return function() i = i + 1; if i < 1000 then return { x = i, y = 0 } end end
+  end
+  force.is_chunk_charted = function(_, chunk)
+    chart_reads = chart_reads + 1
+    return chunk.x == 0 and chunk.y == 0
+  end
+  tile_queries = 0
+  local job = require("scripts.map_summary").summary_job
+  local state = job.start({ detail = "full" })
+  check(chart_reads == 0 and tile_queries == 0, "full request startup does not traverse generated chunks")
+  local result = job.step(state, { left = 8 })
+  check(result == nil and chart_reads > 0 and chart_reads <= 8 and tile_queries == 0,
+    "large generated terrain discovery yields within its work budget before querying tiles")
+  surface.get_chunks, force.is_chunk_charted = previous_chunks, previous_charted
+end
+do
+  local old_chunks, old_terrain = fixture_chunks, tile_name
+  fixture_chunks = { { x = 0, y = 0 } }
+  tile_name = function(_, y) return y >= 8 and "water" or "land" end
+  local expected = summarize({ detail = "full" })
+  local job = require("scripts.map_summary").summary_job
+  local state = job.start({ detail = "full" })
+  -- A pre-upgrade save just after its first eight all-land rows, with
+  -- resources and entities still queued. The remaining rows are all water.
+  state.stage, state.chunk_iterator, state.ci = "scan", nil, 1
+  state.chunks, state.chunk_set, state.chunk_total = fixture_chunks, { ["0,0"] = true }, 1
+  state.water_strip, state.queue, state.rqueue = 1, {}, {}
+  local actual
+  repeat actual = job.step(state, { left = 600 }) until actual
+  check(canonical(actual.water_edges) == canonical(expected.water_edges)
+    and actual.omitted_water_edges == expected.omitted_water_edges,
+    "a saved partial strip scan resumes through the whole-chunk reader without missing shoreline")
+  fixture_chunks, tile_name = old_chunks, old_terrain
+end
 local source_file = assert(io.open(here .. "/../../mod/agentic-companion/scripts/map_summary.lua", "r"))
 local source = source_file:read("*a"); source_file:close()
 check(not source:find("get_tile", 1, true) and not source:find("collides_with", 1, true),

@@ -2057,9 +2057,10 @@ end
 -- ------------------------------------------------------- map_summary job
 -- map_summary reads every own entity in the charted chunks, so it is a job
 -- (jobs.lua): the RPC returns at once and on_tick advances it a budget of
--- work items per tick through these stages, its state S plain data in
--- storage between ticks:
---   scan         a chunk at a time from the patch cache's charted list: its
+-- work items per tick through these stages, its state S saved in storage
+-- between ticks:
+--   chunks       (full) current force chart and boundary lookup, then sort
+--   scan         a chunk at a time from the request's chunk source: its
 --                own entities (and, for full, resources and water tiles),
 --                each read once into flow nodes and the requested sections
 --   water_edges  (full) land/water edges a tile row at a time, pure Lua
@@ -2072,12 +2073,16 @@ end
 --                its cap here, so this tick's work does not grow with the factory
 -- Work items: one per engine call or so, plus the Lua work around it.
 local SCAN_CHUNK_COST, SCAN_ENTITY_COST, SCAN_FLUID_COST, SCAN_RESOURCE_COST = 4, 30, 16, 6
-local WATER_STRIP = 8 -- tile rows per water query (a chunk is 4 strips)
 
--- Charted chunks of the summary's surface: its patch cache's list once it
--- is seeded (no engine call), else listed here once (a new game's first
--- ticks, or a platform, whose chunks all count as charted).
+-- Full detail builds its own chart lookup in budgeted job steps. The native
+-- chunk iterator, like queued LuaEntities, can live in the saved job state.
+-- Aggregate retains the patch cache's seeded list.
 local function chunk_source(S, c)
+  if S.detail == "full" then
+    S.chunks, S.chunk_set, S.chunk_total = {}, {}, 0
+    S.chunk_iterator, S.stage = c.surface.get_chunks(), "chunks"
+    return
+  end
   local cache = storage.patch_caches and storage.patch_caches[S.surface_index]
   if cache and cache.seeded and cache.charted then
     S.from_cache, S.chunk_total = true, #cache.charted
@@ -2093,6 +2098,26 @@ local function chunk_source(S, c)
   end
   table.sort(chunks, function(a, b) return a.y == b.y and a.x < b.x or a.y < b.y end)
   S.chunks, S.chunk_total = chunks, #chunks
+end
+
+local function full_chunks(S, c, budget)
+  while S.chunk_iterator and budget.left > 0 do
+    budget.left = budget.left - SCAN_CHUNK_COST
+    local chunk = S.chunk_iterator()
+    if not chunk then
+      S.chunk_iterator = nil
+    elseif surfaces.charted(c.force, c.surface, chunk.x, chunk.y, c.platform) then
+      S.chunks[#S.chunks + 1] = { x = chunk.x, y = chunk.y }
+      S.chunk_set[chunk.x .. "," .. chunk.y] = true
+    end
+  end
+  if S.chunk_iterator then return false end
+  local chunks = sort_step(S, "_chunk_sort", S.chunks, function(a, b)
+    return a.y == b.y and a.x < b.x or a.y < b.y
+  end, budget)
+  if not chunks then return false end
+  S.chunks, S.chunk_total = chunks, #chunks
+  return true
 end
 
 local function summary_cache(S) return storage.patch_caches and storage.patch_caches[S.surface_index] end
@@ -2252,26 +2277,11 @@ local function scan_resource(S, entity, c)
   end
 end
 
--- Reads the next chunk: queues its entities (and, for full, its resources
--- and water) for the scan.
-local function fetch_chunk(S, chunk, c, budget)
-  budget.left = budget.left - SCAN_CHUNK_COST
-  local ok_visible, visible = pcall(c.force.is_chunk_visible, c.surface, chunk)
-  if ok_visible and visible then S.visible_chunks = S.visible_chunks + 1 end
-  local x0, y0 = chunk.x * 32, chunk.y * 32
-  local area = { { x0, y0 }, { x0 + 32, y0 + 32 } }
-  if S.detail == "full" then
-    S.water_strip = 0
-    S.rqueue, S.ri = c.surface.find_entities_filtered({ area = area, type = "resource" }), 1
-  end
-  S.queue, S.qi = c.surface.find_entities_filtered({ area = area, force = c.force }), 1
-end
-
--- Water tiles of one strip of the current chunk (full detail).
+-- One bounded native query per charted chunk; at most 1024 tile results.
+-- Classification is request-local and independent of native result order.
 local function fetch_water(S, chunk, c, budget)
-  local x0, y0 = chunk.x * 32, chunk.y * 32 + S.water_strip * WATER_STRIP
-  S.water_strip = S.water_strip + 1
-  local tiles = c.surface.find_tiles_filtered({ area = { { x0, y0 }, { x0 + 32, y0 + WATER_STRIP } }, name = S.water_names })
+  local x0, y0 = chunk.x * 32, chunk.y * 32
+  local tiles = c.surface.find_tiles_filtered({ area = { { x0, y0 }, { x0 + 32, y0 + 32 } }, name = S.water_names })
   budget.left = budget.left - 1 - #tiles
   for _, tile in ipairs(tiles) do
     local position = tile.position
@@ -2281,11 +2291,28 @@ local function fetch_water(S, chunk, c, budget)
   end
 end
 
+-- Reads the next chunk: queues its entities (and, for full, its resources
+-- and water) for the scan.
+local function fetch_chunk(S, chunk, c, budget)
+  budget.left = budget.left - SCAN_CHUNK_COST
+  local ok_visible, visible = pcall(c.force.is_chunk_visible, c.surface, chunk)
+  if ok_visible and visible then S.visible_chunks = S.visible_chunks + 1 end
+  local x0, y0 = chunk.x * 32, chunk.y * 32
+  local area = { { x0, y0 }, { x0 + 32, y0 + 32 } }
+  if S.detail == "full" then
+    S.rqueue, S.ri = c.surface.find_entities_filtered({ area = area, type = "resource" }), 1
+    fetch_water(S, chunk, c, budget)
+  end
+  S.queue, S.qi = c.surface.find_entities_filtered({ area = area, force = c.force }), 1
+end
+
 local function scan(S, budget, c)
   while budget.left > 0 do
-    local chunk = S.ci and chunk_at(S, S.ci)
-    if chunk and S.water_strip and S.water_strip < 32 / WATER_STRIP then
-      fetch_water(S, chunk, c, budget)
+    if S.water_strip ~= nil then
+      -- A retained pre-upgrade job may have read only part of this chunk.
+      -- Replace that partial classification with the current whole-chunk read.
+      if S.water_strip < 4 then fetch_water(S, chunk_at(S, S.ci), c, budget) end
+      S.water_strip = nil
     elseif S.rqueue and S.rqueue[S.ri] then
       budget.left = budget.left - SCAN_RESOURCE_COST
       scan_resource(S, S.rqueue[S.ri], c)
@@ -2295,9 +2322,9 @@ local function scan(S, budget, c)
       scan_entity(S, S.queue[S.qi], c, budget)
       S.qi = S.qi + 1
     else
-      S.queue, S.rqueue, S.water_strip = nil, nil, nil
+      S.queue, S.rqueue = nil, nil
       S.ci = (S.ci or 0) + 1
-      chunk = chunk_at(S, S.ci)
+      local chunk = chunk_at(S, S.ci)
       if not chunk then return true end
       fetch_chunk(S, chunk, c, budget)
     end
@@ -2677,7 +2704,7 @@ local function summary_start(params)
   return S
 end
 
-local NEXT_STAGE = { scan = "water_edges", water_edges = "flow", flow = "flows_all", flows_all = "sections",
+local NEXT_STAGE = { chunks = "scan", scan = "water_edges", water_edges = "flow", flow = "flows_all", flows_all = "sections",
   sections = "force_flows", force_flows = "finish" }
 
 local function summary_step(S, budget)
@@ -2685,7 +2712,8 @@ local function summary_step(S, budget)
   while budget.left > 0 do
     local stage = S.stage
     local done
-    if stage == "scan" then done = scan(S, budget, c)
+    if stage == "chunks" then done = full_chunks(S, c, budget)
+    elseif stage == "scan" then done = scan(S, budget, c)
     elseif stage == "water_edges" then done = S.detail ~= "full" or water_edges(S, budget)
     elseif stage == "flow" then done = flow_step(S.flow, budget)
     elseif stage == "flows_all" then done = not S.want.flows_all or flows_all(S, budget, c)

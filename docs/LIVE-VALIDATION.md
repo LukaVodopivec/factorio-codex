@@ -2517,3 +2517,104 @@ ten checks; its results and exact candidate are recorded in the completion
 receipt. This source work does not establish the cause of the earlier recorder
 disappearance, install a companion, change a live factory, or provide live-game
 validation. Those effects and their observed receipts remain separate.
+
+### One-query shoreline scan — isolated native evidence (2026-11-02)
+
+The shoreline implementation in `b52c6b4364ba30694c995bfb59006cadb002757e`
+uses one native `find_tiles_filtered` query per charted chunk, with request-local
+classification and chart membership. Discovery and sorting yield through the
+existing job budget. Aggregate retains zero tile queries. Retained partial-strip
+jobs complete their current chunk through the whole-chunk reader before
+continuing their saved resource/entity queues.
+
+An isolated **Factorio 2.0.77 headless** experiment used a disposable copy of a
+[public benchmark save](https://drive.google.com/file/d/1bmtT49FExdl0wYg-wiF0RiSBq6uUlBwn/view)
+from [mulark's test 000068](https://mulark.github.io/tests/test-000068/test-000068.html).
+Its Nauvis surface had 17,270 generated chunks, of which 15,876 were genuinely
+force-charted. Test setup retained 196 already-charted chunks (200,704 tiles)
+using native `unchart_chunk` outside that selection. It generated or charted
+no terrain and used **no chart adapter**. A test-only body adapter allowed the
+read-only summaries without a connected Codex player. A checkerboard of
+player-colliding and land tiles in one charted chunk exercised native edge
+truncation. Earlier generated-terrain fixtures separately exercised water-only,
+player-only, both and unrelated collision layers through custom tile prototypes.
+These setup interventions are engineering fixtures, not gameplay progress.
+
+The experiment reused the live harness's disposable config, copied mod,
+loopback RCON and cleanup. Its server mod set enabled base, elevated-rails,
+quality, space-age and companion; the copied companion additionally loaded the
+base revision's summary and test tile prototypes. No gameplay server,
+installed user mod or client was upgraded or restarted. No client was connected,
+so graphical frame time, latency-254 behavior and client mod agreement remain
+unmeasured; this is native server/simulation evidence, not a gameplay deployment.
+
+All 200,704 classifications matched the original collision helper. The
+reconstructed original east/south algorithm matched the candidate's shoreline,
+ordering and truncation: 256 retained edges and 1,792 omitted edges. Three
+fixed-tick pairs against base `72b96ce14cac2178244b9e2686ddfb7a5763432b`
+produced byte-identical complete production `rpc.to_json` output: 79,155 bytes
+at tick 27,535,154, SHA-256
+`87c8b730ccca11115b48976bbabb29005ca44c8250bed2d848125e7084f6f57b`.
+Identical source state/tick is the comparison condition; changed scheduling
+does not promise an identical completion tick in play.
+
+| Native measurement | Observed result |
+| --- | --- |
+| Original synchronous shoreline algorithm, three calls | 4,520.288 / 4,585.023 / 4,594.025 ms |
+| Base four-strip job, total manually stepped work | 1,236.159 / 1,270.504 / 1,311.739 ms |
+| Candidate one-query job, total manually stepped work | 1,248.899 / 1,460.013 / 1,488.639 ms |
+| Base start, three calls | 70.834 / 28.882 / 93.319 ms |
+| Candidate start, three calls | 0.227 / 0.197 / 0.253 ms |
+| Candidate asynchronous end-to-end calls | 30,630.569 / 30,481.156 / 30,430.054 ms |
+| Simulation ticks advanced during those calls | 1,823 / 1,807 / 1,812 |
+
+Profiler logging is included in total work. The large factory's unchanged flow
+analysis dominates total work; request-local chart discovery also adds work.
+Fewer tile queries therefore do not establish lower overall CPU time than the
+already-budgeted four-strip base. End-to-end latency includes yielding, polling
+and encoding; the candidate calls allowed simulation to advance at roughly
+59.3–59.5 ticks per second instead of holding one tick for several seconds.
+
+The approximately 8 ms target is **not a universal timing pass** on this large
+factory. The first asynchronous series measured 5,412 job ticks: three exceeded
+8 ms, with a maximum of 11.464 ms. A phase-instrumented repeat measured a base
+maximum of 7.310 ms across 1,696 ticks and a candidate maximum of 8.830 ms across
+1,806 ticks, with one candidate sample above 8 ms. Manual phase samples reached
+17.924 ms in the candidate and 8.336 ms in the base. High samples entered
+existing flow preparation, graph component/adjacency and component-summary
+stages, whose source is unchanged; entry-phase labels can include later work
+in the same slice. The manual comparison always ran base first, so it does not
+isolate implementation effects from order/state effects. No specific cause,
+including garbage collection, was established. The multi-second shoreline
+stall is reproduced and removed; occasional general job-budget overruns remain
+an observed limitation, not a clean timing result.
+
+The native chunk iterator survived save/reload, remained valid and returned its
+next chunk. Reproduction identities:
+
+- Official headless distribution archive SHA-256:
+  `c4efc11529f74d37c96933e291e0db73fd9f5aa4738913d9301b24680b3e947f`.
+- Public input save SHA-256:
+  `15dbb1679dfc9ce565cb8cc9b560ac3d8d8e61f1b957fe1ca3a06b1c814989e2`.
+- Prepared native-chart fixture save SHA-256:
+  `61dbd0e3ec4af85122372d96503c6f87f896cb348f858ae332859b85b76a466d`.
+- Instrumented run-local companion archive SHA-256:
+  `180b4ecbd49f0e25abe661b5777e6501963b062ac9d3a777cd5e4ae9e7a3fa9e`.
+
+These identify isolated engineering artifacts, not an installed gameplay
+release. The same source implementation is preserved in the candidate commit;
+test-only prototypes and the predecessor module are excluded from production.
+
+Offline unit, Lua, packaging, typecheck, dependency and MCP checks passed
+individually, including 636 unit tests in 22 files. Independent read-only review
+found unbudgeted discovery and incomplete retained-strip resumption in initial
+candidates; both were fixed and re-reviewed. The worker's initial unchanged
+full-profile invocation stopped at its unsupported Node 22 npm/npx projection;
+doctor also reported canonical-checkout dependency descriptor mismatch.
+The verification route supplies the official pinned Node 22.23.2/npm 10.9.8 pair
+inside the worker and uses a clean exact-candidate clone with matching admitted
+dependencies, following the existing isolated full-profile route. No repository
+check is weakened and the unrelated canonical checkout is unchanged. The final
+candidate's full-profile result belongs to its completion receipt; an initial
+prerequisite failure is not a pass. Source publication and gameplay deployment
+remain separate from these experiments.

@@ -3317,7 +3317,7 @@ Final revised native receipt identities:
 
 ### Union-root continuation (2026-11-06)
 
-The reassessment for VK-12495 uses baseline
+The retained union-root walk reassessment uses baseline
 `5e3d90f93f218440be98d5c14cd6ba458dc2d353`. Generator marking and generator-list
 iteration already yield after the earlier generator correction above. The
 remaining indivisible work was the parent-chain walk in both material-component

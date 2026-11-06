@@ -1423,6 +1423,51 @@ do
   generator.force = old_force
   gl[1], pl[1] = {}, {}
   check(#summarize({}).factory.material_flow.edges == 2, "disconnected pipe targets never become edges through proximity")
+
+  -- Independent electrical networks, duplicate consumers, an undelivering
+  -- network and disconnected fluid components must survive any slicing.
+  local electrical = {}
+  for i = 1, 16 do
+    local e = entity("generator", i, { { production_type = "input", filter = { name = "vapor" } } },
+      { burns_fluid = false, effectivity = 1, maximum_temperature = 165 })
+    e.electric_network_id = math.ceil(i / 4)
+    electrical[#electrical + 1] = e
+  end
+  for i, network in ipairs({ 1, 1, 2, 3 }) do
+    electrical[#electrical + 1] = mock.entity({ valid = true, name = "assembler", type = "assembling-machine",
+      force = force, surface = surface, position = { x = i, y = 12 }, unit_number = 100 + i,
+      status = 1, crafting_speed = 1, energy = 0, electric_network_id = network,
+      prototype = { electric_energy_source_prototype = { usage_priority = "secondary-input" } },
+      get_recipe = machine.get_recipe })
+  end
+  surface.find_entities_filtered = function(filter) return filter.type == "resource" and {} or electrical end
+  for _, detail in ipairs({ "aggregate", "full" }) do
+    local outputs = {}
+    for _, work in ipairs({ 1, 7, 600 }) do
+      storage = {}
+      local job = require("scripts.map_summary").summary_job
+      local state, result, steps = job.start({ detail = detail }), nil, 0
+      repeat
+        result = job.step(state, { left = work })
+        steps = steps + 1
+        assert(steps < 20000, "electrical summary did not finish")
+      until result
+      local delivered, undelivered, dependencies = 0, 0, 0
+      for _, node in ipairs(state.flow.nodes) do
+        if node.type == "generator" then
+          if node._power_delivery then delivered = delivered + 1 else undelivered = undelivered + 1 end
+        end
+      end
+      for _, edge in ipairs(state.flow.edges) do
+        if edge.kind == "electrical_dependency" then dependencies = dependencies + 1 end
+      end
+      check(delivered == 12 and undelivered == 4 and dependencies == 4 and #state.flow.components == 8,
+        "electrical " .. detail .. " work " .. work .. " preserves delivery, dependencies and disconnected components")
+      outputs[#outputs + 1] = require("scripts.rpc").to_json(result)
+    end
+    check(outputs[1] == outputs[2] and outputs[2] == outputs[3],
+      "complete electrical " .. detail .. " JSON is identical at work 1, 7 and 600")
+  end
   surface.find_entities_filtered, prototypes.fluid = previous_find, previous_fluids
 end
 

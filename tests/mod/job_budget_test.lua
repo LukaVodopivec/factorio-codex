@@ -159,12 +159,12 @@ local function measure(definition, params)
   local start_calls = calls
   local ticks, worst, total, result, most_instructions = 0, start_calls, start_calls, nil, 0
   local stages = {}
-  while result == nil and ticks < 5000 do
+  while result == nil and ticks < (params.max_ticks or 5000) do
     calls = 0
     local stage = state.stage .. (state.flow and state.stage == "flow" and tostring(state.flow.stage) or "")
     local counted = 0
     debug.sethook(function() counted = counted + 1 end, "", INSTRUCTION_STEP)
-    result = definition.step(state, { left = jobs.WORK_PER_TICK })
+    result = definition.step(state, { left = params.work or jobs.WORK_PER_TICK })
     debug.sethook()
     ticks, worst, total = ticks + 1, math.max(worst, calls), total + calls
     most_instructions = math.max(most_instructions, counted * INSTRUCTION_STEP)
@@ -283,6 +283,94 @@ do
       and large_ticks >= 9 * small_ticks,
       string.format("flow pass %d bounds each slice as its graph grows (small %d, large %d instructions)",
         stage, small_lua, large_lua))
+  end
+end
+
+-- Isolate the two generator fan-outs through their existing stage functions.
+-- No production export or test-only execution path is needed.
+do
+  local function upvalue(fn, wanted)
+    for i = 1, 100 do
+      local name, value = debug.getupvalue(fn, i)
+      if name == wanted then return value end
+      if not name then break end
+    end
+    error("missing upvalue " .. wanted)
+  end
+  local stages = upvalue(upvalue(map_summary.summary_job.step, "flow_step"), "FLOW_STAGES")
+  local function fixture(stage, n, networks, edges)
+    local F = { nodes = {}, edges = {}, generators = {}, parent = {}, touches = {},
+      retained = {}, seen_edges = {}, diagnostics = {} }
+    for i = 1, n do
+      local network = (i - 1) % networks + 1
+      local node = { id = "generator-" .. i, type = "generator" }
+      node._entity = object({ valid = true, name = "steam-engine", type = "generator", position = { x = i, y = 0 } })
+      local list = F.generators[network] or {}
+      F.generators[network] = list
+      list[#list + 1], F.parent[node.id] = node, node.id
+    end
+    if stage == 5 then
+      -- Duplicate consumers must not restart or repeat a network's marking.
+      for i = 1, networks + 2 do
+        F.nodes[i] = { id = "consumer-" .. i, type = "assembling-machine", role = "processor",
+          _entity = object({ valid = true, electric_network_id = (i - 1) % networks + 1,
+            prototype = { electric_energy_source_prototype = { usage_priority = "primary-input" } },
+            name = "assembler", type = "assembling-machine", position = { x = i, y = 1 } }) }
+      end
+    end
+    if edges then F.edges[1] = { from = "generator-1", to = "generator-1", kind = "fluid_connection" } end
+    return F
+  end
+  local function run(stage, n, networks, work, edges)
+    local definition = {
+      start = function() return { stage = "generator-" .. stage, F = fixture(stage, n, networks, edges) } end,
+      step = function(state, budget) if stages[stage](state.F, budget) then return state.F end end,
+    }
+    return measure(definition, { work = work, max_ticks = 200000 })
+  end
+  for _, stage in ipairs({ 5, 13 }) do
+    for _, shape in ipairs({ "shared", "pairs", "singletons" }) do
+      for _, work in ipairs({ 7, jobs.WORK_PER_TICK }) do
+        local values = {}
+        for _, n in ipairs({ 2400, 24000 }) do
+          local networks = shape == "shared" and 1 or shape == "pairs" and n / 2 or n
+          local F, ticks, engine, _, instructions = run(stage, n, networks, work, true)
+          local exact = F ~= nil
+          if F then
+            for network, list in pairs(F.generators) do
+              for _, node in ipairs(list) do
+                exact = exact and (stage == 5 and node._power_delivery == true
+                  or stage == 13 and F.parent[node.id] == list[1].id)
+              end
+              if stage == 5 then exact = exact and F.delivering[network] == true end
+            end
+          end
+          check(exact, string.format("generator stage %d %s %d work %g preserves every identity", stage, shape, n, work))
+          values[#values + 1] = { ticks = ticks, engine = engine, instructions = instructions }
+        end
+        local a, b = values[1], values[2]
+        -- This isolated fixture consists entirely of electrical consumers;
+        -- each three-work consumer reads up to fifteen engine fields.
+        local engine_bound = 5 * work + 30
+        check(flat(a.instructions, b.instructions) and b.instructions <= 1.5 * a.instructions + 1000
+          and a.engine <= engine_bound and b.engine <= engine_bound
+          and b.ticks >= 5 * a.ticks,
+          string.format("generator stage %d %s work %g bounds slices: %d/%d instructions, %d/%d calls, %d/%d steps",
+            stage, shape, work, a.instructions, b.instructions, a.engine, b.engine, a.ticks, b.ticks))
+      end
+    end
+  end
+  -- The edge consumes the entire allowance; generators must wait. Empty-edge
+  -- graphs must also yield before finishing a growing network.
+  for _, edges in ipairs({ false, true }) do
+    local F = fixture(13, 2400, 1, edges)
+    local done = stages[13](F, { left = edges and 0.5 or 1 })
+    local exact = not done and F.parent["generator-2400"] == "generator-2400"
+    if edges then
+      for id, parent in pairs(F.parent) do exact = exact and parent == id end
+    end
+    check(exact,
+      "generator joins yield at transition, edge present=" .. tostring(edges))
   end
 end
 

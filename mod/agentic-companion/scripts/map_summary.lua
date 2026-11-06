@@ -575,30 +575,49 @@ local function flow_consumers(F, budget)
     end) then return false end
     F.touches, F.touch_build = touches, nil
   end
-  return each(F, budget, #F.nodes, 3, function(i)
+  while F.delivery_network or (F.cursor or 1) <= #F.nodes do
+    -- A consumer can name an arbitrarily large network. Keep its unfinished
+    -- marking separate from the next consumer cursor, including across saves.
+    while F.delivery_network do
+      if budget.left <= 0 then return false end
+      local generators = F.generators[F.delivery_network]
+      local index = F.delivery_index
+      budget.left = budget.left - 1
+      generators[index]._power_delivery = true
+      if index == #generators then
+        F.delivery_network, F.delivery_index = nil, nil
+      else F.delivery_index = index + 1 end
+    end
+    local i = F.cursor or 1
+    if i > #F.nodes then break end
+    if budget.left <= 0 then return false end
+    budget.left = budget.left - 3
+    F.cursor = i + 1
     local node = F.nodes[i]
     local entity = node._entity
-    if not entity.valid then return end
-    local ok, energy_source = pcall(function() return entity.prototype.electric_energy_source_prototype end)
-    local network = number_property(entity, "electric_network_id")
-    local material_relevant = node.role == "source" or node.role == "processor" or node.type == "pump"
-      or (F.touches[node.id] and (node.role == "transport" or node.role == "sink"))
-    if ok and energy_source and node.type ~= "generator" and F.generators[network] and material_relevant then
-      node._power_network = network
-      node._power_consumer = true
-      if energy_source.usage_priority ~= "primary-input" and energy_source.usage_priority ~= "secondary-input" then
-        diagnostic(F, node, "electrical_consumer_usage_unproven", "unsupported")
-      end
-      local generators = F.generators[network]
-      add_edge(F, generators[1]._entity, entity, "electrical_dependency")
-      F.delivering = F.delivering or {}
-      if not F.delivering[network] then
-        F.delivering[network] = true
-        budget.left = budget.left - #generators
-        for _, generator in ipairs(generators) do generator._power_delivery = true end
+    if entity.valid then
+      local ok, energy_source = pcall(function() return entity.prototype.electric_energy_source_prototype end)
+      local network = number_property(entity, "electric_network_id")
+      local material_relevant = node.role == "source" or node.role == "processor" or node.type == "pump"
+        or (F.touches[node.id] and (node.role == "transport" or node.role == "sink"))
+      if ok and energy_source and node.type ~= "generator" and F.generators[network] and material_relevant then
+        node._power_network = network
+        node._power_consumer = true
+        if energy_source.usage_priority ~= "primary-input" and energy_source.usage_priority ~= "secondary-input" then
+          diagnostic(F, node, "electrical_consumer_usage_unproven", "unsupported")
+        end
+        local generators = F.generators[network]
+        add_edge(F, generators[1]._entity, entity, "electrical_dependency")
+        F.delivering = F.delivering or {}
+        if not F.delivering[network] then
+          F.delivering[network] = true
+          F.delivery_network, F.delivery_index = network, 1
+        end
       end
     end
-  end)
+  end
+  F.cursor = nil
+  return true
 end
 
 -- Material demand per network: a consumer that is not idle with a charged
@@ -722,13 +741,33 @@ end
 -- material component and names its network's supply (checked per
 -- component below). Generators sharing a network supply it together.
 local function graph_joins(F, budget)
-  if not each(F, budget, #F.edges, LUA_ITEM, function(i)
-    local edge = F.edges[i]
-    if edge.kind ~= "electrical_dependency" then join(F, edge.from, edge.to) end
-  end) then return false end
-  for _, list in pairs(F.generators) do
-    for index = 2, #list do join(F, list[1].id, list[index].id) end
+  if not F.join_edges_done then
+    if not each(F, budget, #F.edges, LUA_ITEM, function(i)
+      local edge = F.edges[i]
+      if edge.kind ~= "electrical_dependency" then join(F, edge.from, edge.to) end
+    end) then return false end
+    F.join_edges_done = true
   end
+  -- next resumes the existing network traversal without first enumerating
+  -- its keys. Charge the boundary too, so singleton networks also yield.
+  while true do
+    if budget.left <= 0 then return false end
+    if not F.join_generator then
+      budget.left = budget.left - LUA_ITEM
+      F.join_network = next(F.generators, F.join_network)
+      if F.join_network == nil then break end
+      F.join_generator = 2
+    end
+    local list = F.generators[F.join_network]
+    while F.join_generator <= #list do
+      if budget.left <= 0 then return false end
+      budget.left = budget.left - LUA_ITEM
+      join(F, list[1].id, list[F.join_generator].id)
+      F.join_generator = F.join_generator + 1
+    end
+    F.join_generator = nil
+  end
+  F.join_edges_done, F.join_network = nil, nil
   F.by_root, F.component_list = {}, {}
   F.node_by_id, F.incoming, F.outgoing, F.pickup_of, F.edges_of = {}, {}, {}, {}, {}
   return true

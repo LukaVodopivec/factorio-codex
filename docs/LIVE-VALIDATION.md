@@ -2794,3 +2794,207 @@ receipt. They use a clean candidate clone with matching dependencies and the
 native pinned Node 22.23.2 route; no check is weakened to accommodate unrelated
 canonical-checkout dependency residue. Source publication remains the trusted
 host's separate exact-SHA completion step.
+
+### Bounded generator network fan-out — isolated native evidence (2026-11-06)
+
+This experiment isolates two inherited operations at source baseline
+`6cd7f44a799d28d7b1b26506573c5c011ccd1e57`: the first material consumer
+marks its whole generator network inside one stage-5 callback, and stage 13
+joins every generator network after its budgeted edge pass. These experiments
+address those operations directly; they do not identify them as causes of the
+earlier allocation workload's timing excursions.
+
+The extended existing job-budget suite measures VM instructions with
+`debug.sethook` at 100-instruction resolution and counts LuaObject stand-in
+field accesses. It exercises 2,400 and 24,000 generators in one shared network,
+pairs of generators on independent networks, and singleton networks, at work
+allowances 7 and 600. It checks every delivery flag and union parent, increasing
+completion steps, empty edges and an edge pass that consumes the entire
+allowance before generator work. These are isolated stage fixtures, not native
+engine timings or a universal bound for inherited union-root walks.
+
+| Isolated operation, work 600 | Baseline maximum instructions, 2,400 / 24,000 | Candidate maximum instructions, 2,400 / 24,000 | Baseline steps | Candidate steps |
+| --- | ---: | ---: | ---: | ---: |
+| Stage 5, shared network | 5,200 / 50,200 | 11,400 / 11,400 | 2 / 2 | 5 / 41 |
+| Stage 13, shared network | 75,000 / 750,000 | 53,700 / 53,700 | 1 / 1 | 3 / 21 |
+| Stage 13, independent pairs | 45,000 / 450,000 | 41,900 / 41,900 | 1 / 1 | 3 / 21 |
+| Stage 13, singleton networks | 15,000 / 150,000 | 30,000 / 30,000 | 1 / 1 | 3 / 21 |
+
+The shared-network stage-5 fixture makes at most 30 engine field accesses per
+step in both revisions; the stage-13 fixtures make none. Pure-Lua work still
+grows within the baseline call. The corrected stages use saved scalar cursors
+inside the existing stage numbers. Stage 5 finishes a pending network before
+examining its next consumer. Stage 13 remembers completion of its edge pass,
+resumes each generator list and charges each network boundary, including
+singletons. It does not first build a network-key list. Shared job allowances
+and unrelated charges remain unchanged.
+
+Both focused Lua suites pass. The added complete-summary fixture contains
+three delivering networks, an undelivering network, multiple consumers on one
+network and disconnected components. At allowances 1, 7 and 600 it retains
+12 delivered and four undelivered generators, four electrical dependencies and
+eight components, with byte-identical complete aggregate/full results.
+Capturing all 16 complete `rpc.to_json` outputs from the extended offline
+summary suite produces a byte-identical 307,746-byte stream at baseline and
+candidate, SHA-256
+`18b99896ea98fed865d0d8350eabd93a5b3ff0286fbfefcdd068df30e24e8509`.
+The offline encoder's native JSON helper is a stand-in; this is separate from
+the required native production-encoder proof.
+
+Node 22.22.1 with npm 10.9.2 passes type checking, build, the full offline
+suite and source/built MCP smoke checks. Five independent read-only lens
+reviews cover correctness, compatibility/persistence/wiring, security/privacy/
+authorization, scope/simplicity and tests/evidence. Scope review found one
+low-severity test gap: the exhausted-edge assertion inspected only the last
+parent and could miss an early partial union after budget exhaustion. Three
+skeptic checks retained it. The existing assertion now checks every parent
+remains unchanged for that case, while preserving the distinct empty-edge
+case. The budget suite passes after the fix; independent tests review confirms
+the fix and reruns both Lua suites successfully. No introduced production defect
+was found. The tests reviewer also independently compared the twelve native
+JSON artifacts and their documented hashes.
+The community Semgrep security-audit scan returned no findings or errors and
+listed all three changed Lua files as scanned; its generic rules do not prove
+Lua-specific security coverage.
+
+The official Factorio 2.0.77 headless archive and executable match the
+previously recorded hashes above. The isolated repository live suite passes
+all 24 reported checks: 154 RPCs, 144 job ticks, 275 measured ticks, a 5.15 ms
+maximum, zero nominal-budget excursions and 32 complete on_tick windows with
+a worst average of 0.270 ms/tick. This suite is separate from the required
+growing generator-network timing trials.
+
+Six additional isolated native stage-state reload cases match uninterrupted
+baseline results at frozen tick 32: partially completed marking (next generator
+index 2), marking at a completed network boundary, partially completed joining
+(next generator index 3), joining at a completed network boundary, and saved
+baseline stage-5/stage-13 states without the new fields. The fixture saves plain
+flow state through Factorio, restarts the disposable server and compares every
+delivery flag or resolved union representative through native production
+`rpc.to_json`. Its eight networks have sparse numeric IDs and cross-network
+material edges, so network order can affect representatives. Fixture-only
+exports in disposable mod copies expose the existing stage functions; no such
+export is in production source. An initial setup attempt failed because the
+disposable saves directory did not exist; creating that directory repaired the
+harness. A preliminary run did not actually stop mid-marking or at the intended
+marking boundary; the final six cases use the verified cursor positions above.
+
+A separate native fixture uses 16 actual steam engines, four actual assemblers
+and four independent electrical networks on a disposable surface. Three
+networks deliver material dependencies; one has two consumers, and the fourth
+has none. Every run asserts all 12 delivered and four undelivered generators,
+four dependency edges and eight components before comparing the complete
+production `rpc.to_json` result. At frozen tick 32, baseline and candidate are
+byte-identical at allowances 1, 7 and 600 in both detail modes:
+
+| Detail | Bytes | SHA-256 |
+| --- | ---: | --- |
+| aggregate | 15,663 | `883eeb423f7c3897d4a473c3117ae17dc89a71ee7967033d22fbdf498bee7094` |
+| full | 36,967 | `beb2c642c9bd479d825be4a7922ab158d426dbaad5fb4edaa5706b30ffed8262` |
+
+The same physical fixture also passes six complete registered `map_summary`
+job reloads. It saves the native job, restarts the disposable server, and lets
+`jobs.get` resume and encode it through the candidate definition. Every result
+matches the uninterrupted baseline's complete full-detail bytes. Stage 5 saves
+mid-marking at next-generator index 2, at a completed-network boundary, and
+from baseline code with consumer cursor 2 and no new fields. Stage 13 saves
+mid-joining at next-generator index 3, at a completed-network boundary, and
+from baseline code with edge cursor 2 and no new fields. All preserve frozen
+tick 32. Candidate continuation takes 70 `jobs.get` slices for each stage-5
+case and 68 for each stage-13 case, encoding included.
+
+Initial complete-summary attempts read an empty seeded chart cache on the
+fresh disconnected surface. A tick between adapter setup and freezing could
+recreate it. Freezing before setup and clearing that fixture-only cache makes
+the production scanner use the generated chunks consistently. The adapter
+answers chart visibility only inside the disposable server; it neither changes
+production source nor charts an active game. The failed attempts are setup
+failures, not equivalence passes.
+
+Native complete-summary/persistence harness SHA-256:
+`ce6439964671cc4affe779b10398184fc0bd3f875aed351b94d5ddaa32bbee1b`.
+Physical fixture identity record SHA-256:
+`cf0d54692735229a4d60233fe6dd4750de2dd3963c74de0724b9f3f3228f65b8`.
+
+Native growth timing uses the same registered job scheduler, RPC encoder,
+per-tick job profiler and unchanged `evaluateTiming` policy as the existing
+live harness. The growing fixtures are plain-data flow-stage states; the
+physical-world equivalence and persistence proof is the separate 16-engine
+fixture above. Fixture construction, input serialization and post-run identity
+inspection are setup/analysis console work. The measured RPC starts only the
+prepared job; subsequent slices and result encoding run through the native
+scheduler. Large physical-factory timing remains unmeasured.
+
+One disposable server ran 72 trials: both stages, three shapes, two generator
+populations, both revisions and three repetitions of every case, ordered
+baseline/candidate, candidate/baseline, baseline/candidate. Every case verified
+all delivery flags or resolved union representatives after completion. All
+repetitions have byte-identical serialized input within each of the twelve
+fixture identities, including across the later candidate-only server.
+
+The table gives each repetition's slowest measured tick in milliseconds,
+including combined job/RPC time; step counts exclude encoding-only slices.
+Independent pairs use half as many networks as generators; singleton networks
+use one each. Work allowance is the unchanged 600.
+
+| Stage / shape | Generators | Baseline trial maxima (ms) | Candidate trial maxima (ms) | Baseline / candidate steps |
+| --- | ---: | --- | --- | --- |
+| 5 / shared | 2,400 | 0.559, 0.485, 0.413 | 0.311, 0.309, 0.380 | 2 / 5 |
+| 5 / shared | 24,000 | 5.193, 2.413, 2.506 | 0.482, 0.485, 0.469 | 2 / 41 |
+| 5 / pairs | 2,400 | 1.103, 1.501, 1.507 | 1.221, 1.262, 1.332 | 11 / 11 |
+| 5 / pairs | 24,000 | 2.699, 1.965, 3.861 | 1.780, 1.546, 2.066 | 101 / 101 |
+| 5 / singletons | 2,400 | 2.108, 2.041, 1.663 | 1.492, 1.877, 2.180 | 17 / 17 |
+| 5 / singletons | 24,000 | 3.206, 2.607, 6.485 | 3.624, 2.428, 2.422 | 161 / 161 |
+| 13 / shared | 2,400 | 1.246, 1.007, 0.915 | 1.008, 0.882, 0.945 | 1 / 3 |
+| 13 / shared | 24,000 | 13.095, 8.999, 8.421 | 1.072, 0.959, 0.984 | 1 / 21 |
+| 13 / pairs | 2,400 | 0.962, 1.148, 1.071 | 0.704, 0.723, 0.828 | 1 / 3 |
+| 13 / pairs | 24,000 | 8.213, 9.710, 8.614 | 1.160, 0.852, 0.842 | 1 / 21 |
+| 13 / singletons | 2,400 | 0.773, 0.805, 0.621 | 0.595, 0.567, 0.720 | 1 / 3 |
+| 13 / singletons | 24,000 | 5.247, 5.933, 5.035 | 0.555, 0.703, 0.716 | 1 / 21 |
+
+The complete mixed-server log **fails** timing policy: 229 RPCs, 2,052 job ticks,
+2,143 measured ticks, six ticks above 8 ms, and a 13.094779 ms maximum above the
+10 ms ceiling. All six excursions are baseline stage-13 start RPCs at 24,000
+generators: shared-network repetitions reach 13.095, 8.999 and 8.421 ms;
+independent-pair repetitions reach 8.213, 9.710 and 8.614 ms. The slowest tick
+includes an observed GC heap decrease. Its 53 complete windows have a worst
+average of 0.442 ms/tick. No tick or GC interval is exempted. This is direct
+evidence about the isolated generator fixture, not an attribution of earlier
+allocation-workload excursions.
+
+A separate disposable candidate-only server repeats all 36 candidate cases and
+passes the same policy on its complete log prefix: 124 RPCs, 1,188 job ticks,
+1,225 measured ticks, zero excursions above 8 ms, and eight complete windows
+with a worst average of 0.709 ms/tick. Its maximum is **6.953309 ms**, during a
+stage-5 independent-pair job slice at 24,000 generators with an observed GC heap
+decrease. It uses the same twelve input identities. The candidate-only policy
+is not derived by filtering the mixed-server log or resetting its excursion
+allowance. Both complete policy receipts were independently recomputed through
+the unchanged evaluator, including the mixed-server failure.
+
+An initial timing collection stopped after six small shared-network trials
+because exporting the next fixture exceeded the existing 2 MiB RCON reply
+limit. It was repaired by reading the native serialized input in bounded
+transport chunks; the client limit stayed unchanged. The mixed collector's
+exit code originally indicated collection success even when policy failed.
+Tests review identified that evidence-helper weakness. The candidate-only
+collector now returns failure for a failed policy, and the owner additionally
+checks the complete policy receipt explicitly. The failed mixed receipt is
+retained as a failure, not a passing process-status result.
+
+Reproduction identities (SHA-256):
+
+- Baseline production `map_summary.lua`: `875c6135c6ed593395620df03fef6a4e6ae58ee94a598bdf548408005440b4b4`.
+- Candidate production `map_summary.lua`: `16578132b051c7f2932c24c30ac303f2a415aaab1e0c7cd4ce89b7ae3e3fc907`.
+- Mixed timing harness: `18edc40a26f37ed1d3bb5a51c89881b1ecd2e7aa73919bded5ff2aecd60164f7`.
+- Candidate-only timing harness: `75301a1bd00cf242f718073c7f3f7ba9a60f153a5df43fca829255bf852de9df`.
+- Twelve-fixture identity manifest: `bdfdda716ae6c9af04e090ea821b732da94903f21e34cc65375e73db001af6d7`.
+
+The measured bounds cover these fixture shapes and populations. Inherited
+union-root/reachability walks, arbitrary graph shapes, larger native factories,
+other hardware and installed gameplay remain outside this proof. Final clean
+candidate offline readiness uses the repository's full isolated profile with
+matching dependencies and Node 22; its exact commit and command receipts belong
+to the completion result. Source publication and deployment are separate:
+no installed mod update, active-game validation, server replacement or gameplay
+deployment was performed.

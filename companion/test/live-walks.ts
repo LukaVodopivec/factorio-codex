@@ -23,7 +23,7 @@ const baselineRef = option("--baseline");
 if (!baselineRef || !/^[a-f0-9]{40}$/.test(baselineRef)) throw new Error("--baseline requires the exact baseline commit SHA");
 const mode = option("--mode", "equivalence")!;
 const version = option("--version", "both")!;
-if (!["equivalence", "reload", "growth"].includes(mode)) throw new Error("--mode must be equivalence, reload or growth");
+if (!["equivalence", "reload", "growth", "unions", "union-reload"].includes(mode)) throw new Error("--mode must be equivalence, reload, growth, unions or union-reload");
 if (!["baseline", "candidate", "both"].includes(version)) throw new Error("--version must be baseline, candidate or both");
 const bin = factorioBinary();
 if (!bin) throw new Error("Factorio 2.0 executable required (set FACTORIO_BIN)");
@@ -42,6 +42,8 @@ const manifest = {
   candidateSource: hash(fs.readFileSync(path.join(root, "mod/agentic-companion/scripts/map_summary.lua"))),
   graphFixture: hash(fs.readFileSync(path.join(root, "tests/mod/flow_walk_fixture.lua"))),
   nativeFixture: hash(fs.readFileSync(path.join(here, "fixtures/summary-walks.lua"))),
+  unionFixture: hash(fs.readFileSync(path.join(root, "tests/mod/union_root_fixture.lua"))),
+  unionNativeFixture: hash(fs.readFileSync(path.join(here, "fixtures/summary-unions.lua"))),
 };
 const record = (row: unknown) => {
   receipts.push(row);
@@ -71,7 +73,9 @@ const prepare = (modDir: string) => {
   fs.writeFileSync(path.join(modDir, "scripts/walk_baseline.lua"), baselineSource.replace(/return M\s*$/, "M.stage_probe=FLOW_STAGES; return M"));
   fs.copyFileSync(path.join(root, "tests/mod/flow_walk_fixture.lua"), path.join(modDir, "scripts/walk_fixture.lua"));
   fs.copyFileSync(path.join(here, "fixtures/summary-walks.lua"), path.join(modDir, "scripts/walk_equivalence.lua"));
-  fs.appendFileSync(path.join(modDir, "control.lua"), '\nrequire("scripts.walk_equivalence")\n');
+  fs.copyFileSync(path.join(root, "tests/mod/union_root_fixture.lua"), path.join(modDir, "scripts/union_fixture.lua"));
+  fs.copyFileSync(path.join(here, "fixtures/summary-unions.lua"), path.join(modDir, "scripts/union_native.lua"));
+  fs.appendFileSync(path.join(modDir, "control.lua"), '\nrequire("scripts.walk_equivalence")\nrequire("scripts.union_native")\n');
 };
 
 try {
@@ -81,7 +85,76 @@ try {
   await lua(`game.tick_paused=true`);
   record({ fixture: await lua(`return mod("walk_equivalence").physical()`) });
 
-  if (mode === "equivalence") {
+  if (mode === "unions" || mode === "union-reload") {
+    const cases = [10, 11, 12, 13, 14, 15, 16, 23].flatMap(stage =>
+      stage === 13 ? [{ stage, generators: false }, { stage, generators: true }] : [{ stage, generators: false }]);
+    if (mode === "unions") {
+      for (const n of [2400, 24000]) for (const {stage, generators} of cases) {
+        await lua(`mod("union_native").union_input(${stage},${n},${generators})`);
+        const inputSha = hash(await readString("storage.union_input"));
+        let expected: string | undefined;
+        for (let rep = 0; rep < 3; rep++) {
+          const versions = version === "both" ? (rep === 1 ? ["candidate", "baseline"] : ["baseline", "candidate"]) : [version];
+          for (const source of versions) {
+            const label = `${source}/${stage}/${generators}/${n}/${rep}`;
+            await lua(`mod("union_native").union_prepare("${source}",${stage},${n},600,"${label}")`);
+            let result: any;
+            for (let batches = 0; batches < 10000; batches++) {
+              result = await lua(`return mod("union_native").union_batch(64,true)`);
+              if (result.done) break;
+            }
+            expect(result.done, "union stage did not finish");
+            const json = await readString("storage.union_json");
+            if (expected === undefined) expected = json;
+            else expect(json === expected, `union result differs: ${label}`);
+            record({ label, inputSha, steps: result.steps, outputBytes: Buffer.byteLength(json), outputSha: hash(json) });
+          }
+        }
+      }
+      const log = fs.readFileSync(native.paths.log, "utf8");
+      fs.writeFileSync(path.join(output, "server.log"), log);
+      const maxima: Record<string, number> = {};
+      for (const line of log.split("\n")) {
+        const match = /union_slice (\S+) \d+ Duration: ([\d.]+)ms/.exec(line);
+        if (match) maxima[match[1]!] = Math.max(maxima[match[1]!] ?? 0, Number(match[2]));
+      }
+      expect(Object.keys(maxima).length === receipts.filter((row: any) => row.label).length, "missing isolated union timing");
+      record({ isolatedSliceMaximaMs: maxima });
+      expect(Object.entries(maxima).filter(([label]) => label.startsWith("candidate/"))
+        .every(([, ms]) => ms <= 8), "candidate union slice exceeded 8 ms");
+    } else {
+      fs.mkdirSync(path.join(native.dir, "saves"), { recursive: true });
+      for (const {stage, generators} of cases) for (const variant of ["legacy", "first", ...([10,13,15].includes(stage) ? ["second"] : [])]) {
+        const progress = await lua(`return mod("union_native").union_save(${stage},${generators},${variant === "second"},${variant === "legacy"})`);
+        const name = `union-${stage}-${generators}-${variant}`, save = path.join(native.dir, "saves", `${name}.zip`);
+        await lua(`game.server_save("${name}")`);
+        await until(async () => fs.existsSync(save) && fs.statSync(save).size > 0, "union native save");
+        await native.stop();
+        const saveSha = hash(fs.readFileSync(save));
+        await native.start({ save });
+        expect(await lua(`return game.tick_paused`), "union reload changed frozen observations");
+        const result = await lua(`return mod("union_native").union_resume()`);
+        const json = await readString("storage.union_json");
+        record({ variant, progress, result, saveSha, outputSha: hash(json) });
+      }
+      for (const stage of [10, 13, 14, 15]) {
+        const progress = await lua(`return mod("union_native").union_full_save(${stage})`);
+        const name = `union-full-${stage}`, save = path.join(native.dir, "saves", `${name}.zip`);
+        await lua(`game.server_save("${name}")`);
+        await until(async () => fs.existsSync(save) && fs.statSync(save).size > 0, "full union native save");
+        await native.stop();
+        const saveSha = hash(fs.readFileSync(save));
+        await native.start({ save });
+        expect(await lua(`return game.tick_paused`), "full union reload changed frozen observations");
+        const result = await until(async () => {
+          const value = await lua(`return mod("union_native").union_full_resume()`);
+          return value.done ? value : false;
+        }, "full pending-root summary reload");
+        const json = await readString("storage.union_json");
+        record({ variant: "full-job", progress, result, saveSha, outputSha: hash(json) });
+      }
+    }
+  } else if (mode === "equivalence") {
     for (const detail of ["aggregate", "full"]) {
       let expected: string | undefined;
       for (const source of ["baseline", "candidate"]) for (const work of [1, 7, 600]) {

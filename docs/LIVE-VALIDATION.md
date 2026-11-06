@@ -3314,3 +3314,216 @@ Final revised native receipt identities:
 - Candidate serialized-input receipt: `fb11ba75a36d36e7bc45a6d471ae485b944358313b4e25deaf4c1a049e80f15c`.
 - Complete candidate-prefix policy receipt: `3b05d15615356eca0550c582a37ab51bf46cb8e6d7cb26b7eee0beee6a7d0355`.
 - Native fixture source: `46d97c9a506c3bca0f5e21e32b4a16e043ce239ee61bfbdbc623c37ab0c30bc5`.
+
+### Union-root continuation (2026-11-06)
+
+The reassessment for VK-12495 uses baseline
+`5e3d90f93f218440be98d5c14cd6ba458dc2d353`. Generator marking and generator-list
+iteration already yield after the earlier generator correction above. The
+remaining indivisible work was the parent-chain walk in both material-component
+and belt-run union roots. This investigation does not attribute the earlier
+allocation excursions to those walks.
+
+A native causal probe constructs a retained chain before timing only one
+`graph_components` callback, at work allowance 1. The callback advances one node
+in the baseline regardless of chain length. Each repetition rebuilds the chain;
+fixture construction and output inspection are outside the measured callback.
+The official Factorio 2.0.77 headless archive has SHA-256
+`c4efc11529f74d37c96933e291e0db73fd9f5aa4738913d9301b24680b3e947f`, and its executable
+has SHA-256 `c9ac91d318bdbcce5afaac30d48f4b71dc38af257712a5d4d4c4feb625737198`.
+
+| Chain nodes | Baseline callback ms, three repetitions | Candidate callback ms, three repetitions |
+| --- | --- | --- |
+| 2,400 | 0.415, 0.470, 0.293 | 0.014, 0.022, 0.014 |
+| 24,000 | 2.839, 3.015, 2.893 | 0.013, 0.011, 0.011 |
+| 240,000 | 23.287, 23.951, 24.234 | 0.016, 0.016, 0.017 |
+
+The independent VM probe counts 8,800, 87,600 and 875,100 instructions for the
+baseline first callback at these sizes. Each candidate first callback is below
+its 100-instruction sampling interval and leaves node 1 pending at the next
+root hop. These are isolated callback measurements, not complete scheduler/RPC
+or physical-factory timings. The 240,000-node case establishes a concrete
+native consequence of leaving the walk indivisible; it does not describe the
+size of an installed factory.
+
+The repair retains path halving, union direction, representatives and existing
+stage numbers. It charges each parent hop against the unchanged shared budget
+and saves a scalar next-hop cursor in the existing flow state. Two-root callers
+also retain the first representative. The existing `each` iterator resumes an
+unfinished callback without recharging its entry cost; a first hop can overrun
+that entry charge by one fixed hop so allowance 1 still makes progress. Callers
+commit adjacency rows, component counts, transfers and diagnostics only after
+their required roots resolve. Completion clears pending fields. Generator joins
+use the same root continuation while retaining their existing network/list
+cursors.
+
+Union by rank would change representative selection and would not repair an
+already retained chain. Flattening only before component construction would
+leave belt joins, material joins and retained later stages exposed. Resuming
+the existing root operation therefore preserves more behavior with less added
+machinery. No new stage, production export, RPC, engine read, entity scan,
+service or gameplay decision is introduced.
+
+The shared `tests/mod/union_root_fixture.lua` supplies two independent chains,
+each with 2,400 or 24,000 nodes. `job_budget_test.lua` exercises every root caller
+at allowances 1, 7 and 600, including both roots of an edge join, generator joins,
+consumer/dead-end lookups, component construction, electrical adjacency,
+transfers and diagnostics. It checks exact representatives and material effects,
+all component node identities, completion of pending fields, zero engine calls
+and growing completion slices. At work 600:
+
+| Stage / operation | Peak VM instructions, small / large | Completion slices, small / large |
+| --- | ---: | ---: |
+| 10 / belt join | 15,100 / 15,100 | 3 / 21 |
+| 11 / belt consumer | 15,000 / 15,000 | 2 / 11 |
+| 12 / belt dead end | 25,000 / 25,000 | 5 / 50 |
+| 13 / material join | 15,100 / 15,100 | 3 / 21 |
+| 13 / generator join | 15,000 / 15,000 | 3 / 21 |
+| 14 / components and indexes | 15,000 / 15,000 | 90 / 899 |
+| 15 / electrical adjacency | 15,000 / 15,000 | 3 / 21 |
+| 16 / transfer attribution | 15,000 / 15,000 | 2 / 11 |
+| 23 / diagnostic attribution | 15,000 / 15,000 | 2 / 11 |
+
+Complete native `map_summary` JSON from the existing physical fixture is
+byte-identical between baseline and candidate at frozen tick 32, for both
+details and allowances 1, 7 and 600. The native production encoder produces:
+
+| Detail | Bytes | SHA-256 |
+| --- | ---: | --- |
+| aggregate | 14,660 | `25959a54e7dbb362256deedcd8f77da956298d8616f522637dd174bc754dc499` |
+| full | 47,810 | `079d44c6483ee12d8443f238753f6aa1ec84f924d1981c1f96c8af12c05228f9` |
+
+The native union reload proof saves through Factorio and restarts the disposable
+server. Its 22 plain-state cases cover nine baseline-created partially completed
+stages, nine candidate first-root interruptions and four candidate second-root
+interruptions. Legacy cases assert cursor 2 or generator index 3 and absence of
+new fields before switching the same pending state to candidate. Every resumed
+complete projected result equals the uninterrupted baseline, and serialized
+pending state remains unchanged across each restart. A fresh unstarted stage
+alone is not counted as legacy partial-continuation proof.
+
+Reproduction uses the existing disposable native runner, with `FACTORIO_BIN`
+set to Factorio 2.0.x and a task-owned SSD `TMPDIR`:
+
+```sh
+agent-io-scope-run --heavy -- texlua tests/mod/job_budget_test.lua
+agent-io-scope-run --heavy -- npm run test:live:walks -w companion -- --baseline 5e3d90f93f218440be98d5c14cd6ba458dc2d353 --mode unions --version both
+agent-io-scope-run --heavy -- npm run test:live:walks -w companion -- --baseline 5e3d90f93f218440be98d5c14cd6ba458dc2d353 --mode union-reload
+agent-io-scope-run --heavy -- npm run test:live:walks -w companion -- --baseline 5e3d90f93f218440be98d5c14cd6ba458dc2d353 --mode equivalence
+```
+
+The new fixture is loaded only into the disposable copied mod. Its local-stage
+exports and raw console setup never enter production source or the MCP surface.
+The frozen direct-stage timing mode measures each stage call independently;
+construction, deserialization, complete result projection/encoding and transport
+are outside those profiler intervals. Those setup RPCs are not evidence of
+scheduler timing-policy compliance.
+
+Four additional actual registered `map_summary` jobs save a pending root in
+stages 10, 13, 14 and 15. After a real server restart they verify their saved
+continuation and finish through `jobs.get`, including the normal deferred
+encoder. Each complete full-detail result is 47,810 bytes and matches that
+case's uninterrupted baseline byte for byte, SHA-256
+`2f89fd8b90cee3212c50d8853221e4c1554fed0276167f007aeb0bde14e92f96`. These four jobs
+are separate from the 22 isolated stage reloads and from the earlier complete
+summary comparison: each proof freezes and compares its own observations.
+
+The full offline suite passes all 636 unit tests, all Lua suites, contract
+extraction and package verification. Source type checking, build, strict
+standalone checking of the native runner/harness, and source/built MCP smoke
+checks pass. The complete native smoke suite also passes: 153 RPCs, 144 job
+ticks, 275 measured ticks, a 3.95 ms maximum, no nominal-budget excursions and
+32 on_tick windows with a worst average of 0.269 ms/tick. This is a separate
+scheduler/RPC policy check from the frozen direct-stage timing trials.
+
+Five fresh read-only review lenses cover correctness, persistence/wiring,
+security/privacy/authorization, scope/simplicity and tests/evidence. Review
+found two proof defects: combined timing runs initially omitted the candidate
+threshold, and legacy reload cases initially saved only stage-entry state.
+Independent skeptic checks retained both. Combined runs now enforce the limit
+for every candidate-labelled slice, and legacy cases save asserted partially
+completed baseline states. Independent re-review closes both and verifies all
+26 final reload receipts; no production defect was identified. The community
+Semgrep security-audit scan reports zero findings or errors for all five changed
+code files; its generic rules do not establish Lua-specific security coverage.
+The local scanner required its supported POSIX I/O backend and one worker after
+its default Linux I/O backend failed to initialize; the failed attempt is not a
+passing scan. The first offline run also failed because extensionless CommonJS
+fixtures inherited this repository's ES-module setting from a scratch directory;
+setting that scratch directory's package type to CommonJS restored the normal
+fixture semantics before the successful full rerun.
+
+Fresh native generator-network verification also covers the current root code,
+rather than relying only on the inherited generator repair's earlier receipt.
+It measures stage 13 on one shared network, independent pairs, and singleton
+networks, at 2,400 and 24,000 total generators, work 600. Each fixture starts
+with self-parented generators and is serialized once, then independently
+deserialized for baseline and candidate. Three repetitions alternate
+baseline/candidate, candidate/baseline and baseline/candidate. Every completed
+trial checks every generator's exact expected representative outside the timed
+stage calls. All 36 trials pass:
+
+| Network shape | Generators | Baseline / candidate maximum slice ms | Baseline / candidate slices |
+| --- | ---: | ---: | ---: |
+| shared | 2,400 | 0.675 / 0.701 | 3 / 3 |
+| shared | 24,000 | 0.854 / 1.027 | 21 / 21 |
+| pairs | 2,400 | 0.433 / 0.444 | 3 / 3 |
+| pairs | 24,000 | 0.522 / 0.520 | 21 / 21 |
+| singletons | 2,400 | 0.269 / 0.295 | 3 / 3 |
+| singletons | 24,000 | 0.318 / 0.399 | 21 / 21 |
+
+This focused disposable probe exports only the existing stage table in its copied
+mod. Its harness SHA-256 is
+`56313cf56bbe121337e7a990883c07ea62e7bd4fb73dccef8c44834b96a8b50b`, and its complete
+receipt SHA-256 is `8286369b7b5bd7222dc0862717ebbe7e619331bb227d63963c828cf4412f9ff5`.
+The tracked offline generator cases additionally verify per-step instruction
+growth and exact output at allowances 7 and 600. These network fixtures and the
+two-chain generator-join fixture exercise different responsibilities: wide list
+iteration and interrupted union-root traversal, respectively.
+
+The complete growing-chain native run finishes all 108 trials: nine stage/path
+cases, two populations, baseline and candidate, and three alternating
+repetitions. Each population supplies two chains of that many nodes. Every
+trial compares the complete projected stage result, and each six-trial group
+uses the same serialized input digest. Re-reading the complete retained log
+confirms every slice number from 1 through each recorded completion count,
+all 108 trial identities, identical output digests within each group, and the
+final candidate-only 8 ms assertion without removing any interval. The maximum
+candidate slice is **1.598521 ms**.
+
+| Stage / operation | Baseline maximum ms, 2,400 / 24,000 | Candidate maximum ms, 2,400 / 24,000 | Baseline slices, small / large | Candidate slices, small / large |
+| --- | ---: | ---: | ---: | ---: |
+| 10 / belt join | 0.628 / 4.770 | 0.349 / 0.464 | 1 / 1 | 3 / 21 |
+| 11 / belt consumer | 0.368 / 3.185 | 0.384 / 0.483 | 1 / 1 | 2 / 11 |
+| 12 / belt dead end | 0.445 / 3.494 | 0.342 / 0.547 | 4 / 40 | 5 / 50 |
+| 13 / material join | 0.587 / 4.890 | 0.455 / 0.468 | 1 / 1 | 3 / 21 |
+| 13 / generator join | 0.577 / 5.206 | 0.515 / 1.599 | 1 / 1 | 3 / 21 |
+| 14 / components and indexes | 0.465 / 4.347 | 0.403 / 0.892 | 80 / 800 | 90 / 899 |
+| 15 / electrical adjacency | 0.628 / 5.170 | 0.330 / 0.473 | 1 / 1 | 3 / 21 |
+| 16 / transfer attribution | 0.303 / 3.297 | 0.357 / 0.478 | 1 / 1 | 2 / 11 |
+| 23 / diagnostic attribution | 0.317 / 3.229 | 0.419 / 0.464 | 1 / 1 | 2 / 11 |
+
+The collector was started before the timing-assertion and legacy/full-reload
+proof fixes. Its measured input builder, stage-call path, projection and
+production candidate are unchanged; its entire log was subsequently checked
+against the final candidate-labelled timing assertion. The revised reload
+proof ran separately with its final fixture and all 26 cases. Independent
+review checks the generator probe's complete raw log against every receipt
+maximum and slice count, in addition to the earlier source/reload reviews.
+
+Final evidence identities (SHA-256):
+
+- Baseline production source: `cba1fad81b5749aea552a1b1340beb2de52b64f61f37e8611f459695df965b55`.
+- Candidate production source: `ae54cd53546e7ddd60f304d0274f8e6e2b3b6f694f248950b39b0da1673a622d`.
+- Shared union fixture: `16abe4a6ef20960d95ff3fcae70817a30ebc9afe1f57dde88cd1738671d07484`.
+- Final native union fixture: `3e18768748c46ec6479e5275586f5a57dd6a5c8c5756b34700733b18b9e7736c`.
+- Final native runner: `791234d6edf4bd0f2d11ae5737981ba51eacb1e60b9dc9f272faee80316f4183`.
+- Complete 108-trial receipt: `4e4c72196a61302bce8bf4e7ddce086ffc823b3d72f364bf5b0bb4152cbf3910`.
+- Complete growing-chain log: `b6d4f8cdb1e799874ccf0ab0bab2a2f16a8507f317c36c6ddb66da66b41b6f1f`.
+- Final 26-case reload receipt: `2466fd282f852c81c27554ee46d61a92644c43f6366b9e69d1921e9e31a9828e`.
+
+These measurements cover the stated synthetic graph shapes, populations,
+allowances, native version and machine. They establish the demonstrated root
+walk correction, not a universal latency bound for arbitrary factories,
+allocation/GC states or other hardware. No installed gameplay server was
+changed or deployed as part of this source verification.

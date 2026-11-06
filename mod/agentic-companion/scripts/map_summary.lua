@@ -403,13 +403,15 @@ local function add_edge(F, from_entity, to_entity, kind, from_box, to_box)
 end
 
 -- Calls fn(i) for i from F.cursor up to n while the budget lasts, charging
--- cost each (fn may charge more). True once all are done.
+-- cost each (fn may charge more). A false callback resumes the same item,
+-- without charging its entry cost again. True once all are done.
 local function each(F, budget, n, cost, fn)
   local i = F.cursor or 1
   while i <= n do
     if budget.left <= 0 then F.cursor = i; return false end
-    budget.left = budget.left - cost
-    fn(i)
+    if not F.each_pending then budget.left = budget.left - cost end
+    if fn(i) == false then F.cursor, F.each_pending = i, true; return false end
+    F.each_pending = nil
     i = i + 1
   end
   F.cursor = nil
@@ -661,16 +663,39 @@ local function flow_standby(F, budget)
   end)
 end
 
-local function run_root(F, id)
-  local parent = F.run_parent
-  while parent[id] ~= id do parent[id] = parent[parent[id]]; id = parent[id] end
+-- A retained or newly joined tree can be a chain. Keep path halving and
+-- the exact representative, but save the next hop rather than finishing an
+-- arbitrary chain inside one item. The first hop may overrun the entry
+-- charge so even a one-unit slice makes progress.
+local function root(F, id, budget, parent)
+  parent = parent or F.parent
+  id = F.root_cursor or id
+  while parent[id] ~= id do
+    parent[id] = parent[parent[id]]
+    id = parent[id]
+    budget.left = budget.left - LUA_ITEM
+    if budget.left <= 0 then F.root_cursor = id; return nil end
+  end
+  F.root_cursor = nil
   return id
 end
 
-local function root(F, id)
-  local parent = F.parent
-  while parent[id] ~= id do parent[id] = parent[parent[id]]; id = parent[id] end
-  return id
+-- Two-root callers retain their first answer while the second walk yields.
+local function roots(F, a, b, budget, parent)
+  a = F.root_first or root(F, a, budget, parent)
+  if not a then return nil end
+  F.root_first = a
+  b = root(F, b, budget, parent)
+  if not b then return nil end
+  F.root_first = nil
+  return a, b
+end
+
+local function join(F, a, b, budget, parent)
+  a, b = roots(F, a, b, budget, parent)
+  if not a then return false end
+  if a ~= b then (parent or F.parent)[b] = a end
+  return true
 end
 
 -- The graph from the edges, without engine reads, in stages a budget at a
@@ -708,8 +733,7 @@ local function graph_run_joins(F, budget)
   return each(F, budget, #F.edges, LUA_ITEM, function(i)
     local edge = F.edges[i]
     if edge.kind == "belt_direction" and F.run_parent[edge.from] and F.run_parent[edge.to] then
-      local a, b = run_root(F, edge.from), run_root(F, edge.to)
-      if a ~= b then F.run_parent[b] = a end
+      return join(F, edge.from, edge.to, budget, F.run_parent)
     end
   end)
 end
@@ -717,24 +741,27 @@ end
 local function graph_run_consumers(F, budget)
   return each(F, budget, #F.edges, LUA_ITEM, function(i)
     local edge = F.edges[i]
-    if edge.kind ~= "belt_direction" and F.run_parent[edge.from] then F.run_consumed[run_root(F, edge.from)] = true end
+    if edge.kind ~= "belt_direction" and F.run_parent[edge.from] then
+      local r = root(F, edge.from, budget, F.run_parent)
+      if not r then return false end
+      F.run_consumed[r] = true
+    end
   end)
 end
 
 local function graph_dead_ends(F, budget)
   if not each(F, budget, #F.nodes, LUA_ITEM, function(i)
     local node = F.nodes[i]
-    if node._belt_outputs == 0 and not F.run_consumed[run_root(F, node.id)] then
-      diagnostic(F, node, "belt_dead_end_without_consumer", nil, "structural", { kind = "belt_or_pickup" })
+    if node._belt_outputs == 0 then
+      local r = root(F, node.id, budget, F.run_parent)
+      if not r then return false end
+      if not F.run_consumed[r] then
+        diagnostic(F, node, "belt_dead_end_without_consumer", nil, "structural", { kind = "belt_or_pickup" })
+      end
     end
   end) then return false end
   F.run_parent, F.run_consumed = nil, nil
   return true
-end
-
-local function join(F, a, b)
-  a, b = root(F, a), root(F, b)
-  if a ~= b then F.parent[b] = a end
 end
 
 -- Power is a dependency, not a material path: a consumer keeps its own
@@ -744,7 +771,7 @@ local function graph_joins(F, budget)
   if not F.join_edges_done then
     if not each(F, budget, #F.edges, LUA_ITEM, function(i)
       local edge = F.edges[i]
-      if edge.kind ~= "electrical_dependency" then join(F, edge.from, edge.to) end
+      if edge.kind ~= "electrical_dependency" then return join(F, edge.from, edge.to, budget) end
     end) then return false end
     F.join_edges_done = true
   end
@@ -762,7 +789,7 @@ local function graph_joins(F, budget)
     while F.join_generator <= #list do
       if budget.left <= 0 then return false end
       budget.left = budget.left - LUA_ITEM
-      join(F, list[1].id, list[F.join_generator].id)
+      if not join(F, list[1].id, list[F.join_generator].id, budget) then return false end
       F.join_generator = F.join_generator + 1
     end
     F.join_generator = nil
@@ -780,7 +807,8 @@ local function graph_components(F, budget)
   if not F.component_map then
     if not each(F, budget, #F.nodes, 4, function(i)
       local node = F.nodes[i]
-      local r = root(F, node.id)
+      local r = root(F, node.id, budget)
+      if not r then return false end
       local component = F.by_root[r]
       if not component then
         component = { node_ids = {}, roles = {}, status_counts = {}, edge_count = 0,
@@ -812,11 +840,15 @@ local function graph_adjacency(F, budget)
   local by_root = F.by_root
   return each(F, budget, #F.edges, LUA_ITEM, function(i)
     local edge = F.edges[i]
+    local from, to
+    if edge.kind == "electrical_dependency" then from, to = roots(F, edge.from, edge.to, budget)
+    else from = root(F, edge.from, budget) end
+    if not from then return false end
     local from_list, to_list = F.edges_of[edge.from], F.edges_of[edge.to]
     from_list[#from_list + 1] = edge
     if edge.to ~= edge.from then to_list[#to_list + 1] = edge end
     if edge.kind ~= "electrical_dependency" then
-      local component = by_root[root(F, edge.from)]
+      local component = by_root[from]
       component.edge_count = component.edge_count + 1
       component._edges[#component._edges + 1] = edge
       F.incoming[edge.to][#F.incoming[edge.to] + 1] = edge.from
@@ -825,8 +857,8 @@ local function graph_adjacency(F, budget)
     else
       -- Electrical dependents outside the supplying component, one edge
       -- (and so one entry) per consumer.
-      local supplier = by_root[root(F, edge.from)]
-      if by_root[root(F, edge.to)] ~= supplier then supplier._electrical[#supplier._electrical + 1] = edge end
+      local supplier = by_root[from]
+      if by_root[to] ~= supplier then supplier._electrical[#supplier._electrical + 1] = edge end
     end
   end)
 end
@@ -840,7 +872,9 @@ local function graph_transfers(F, budget)
         event.target.position.x, event.target.position.y)
       local node = F.retained[key]
       if node then
-        local component = F.by_root[root(F, node.id)]
+        local r = root(F, node.id, budget)
+        if not r then return false end
+        local component = F.by_root[r]
         component.character_transfer_actions = component.character_transfer_actions + 1
         component.last_character_transfer_tick = math.max(component.last_character_transfer_tick or 0,
           tonumber(event.tick) or 0)
@@ -1234,7 +1268,9 @@ end
 local function diagnostics_assign(F, budget)
   return each(F, budget, #F.diagnostics, LUA_ITEM, function(i)
     local row = F.diagnostics[i]
-    local component = F.by_root[root(F, row.node_id)]
+    local r = root(F, row.node_id, budget)
+    if not r then return false end
+    local component = F.by_root[r]
     component._diagnostics[#component._diagnostics + 1] = row
   end)
 end

@@ -286,6 +286,63 @@ do
   end
 end
 
+-- Retained unbalanced trees must yield inside a root walk, including the
+-- second root of a join and both belt and material graphs.
+do
+  local function upvalue(fn, wanted)
+    for i = 1, 100 do
+      local name, value = debug.getupvalue(fn, i)
+      if name == wanted then return value end
+      if not name then break end
+    end
+    error("missing upvalue " .. wanted)
+  end
+  local stages = upvalue(upvalue(map_summary.summary_job.step, "flow_step"), "FLOW_STAGES")
+  local fixture = dofile(here .. "/union_root_fixture.lua")
+  for _, stage in ipairs({ 10, 11, 12, 13, 14, 15, 16, 23 }) do
+    for _, generator in ipairs(stage == 13 and { false, true } or { false }) do
+      for _, work in ipairs({ 1, 7, jobs.WORK_PER_TICK }) do
+        local previous
+        for _, n in ipairs({ 2400, 24000 }) do
+          local definition = {
+            start = function() return { stage = "union-" .. stage, F = fixture.build(stage, n, generator) } end,
+            step = function(S, budget) if stages[stage](S.F, budget) then return S.F end end,
+          }
+          local F, steps, engine, _, instructions = measure(definition, { work = work, max_ticks = 500000 })
+          local exact = F ~= nil and not F.root_cursor and not F.root_first and not F.each_pending
+          if stage == 10 or stage == 13 then
+            local parent = stage == 10 and F.run_parent or F.parent
+            exact = exact and parent["b" .. n] == "a" .. n
+          elseif stage == 11 then exact = exact and F.run_consumed["a" .. n] == true
+          elseif stage == 12 then exact = exact and #F.diagnostics == 1 and F.diagnostics[1].node_id == "a1"
+          elseif stage == 14 then
+            exact = exact and #F.component_list == 2
+            for index, prefix in ipairs({ "a", "b" }) do
+              local component = F.component_list[index]
+              exact = exact and #component.node_ids == n and component.roles.transport == n
+              for i = 1, n do exact = exact and component.node_ids[i] == prefix .. i end
+            end
+          elseif stage == 15 then
+            exact = exact and #F.edges_of.a1 == 1 and #F.edges_of.b1 == 1
+              and #F.by_root["a" .. n]._electrical == 1 and F.by_root["a" .. n].edge_count == 0
+          elseif stage == 16 then
+            exact = exact and F.by_root["a" .. n].character_transfer_actions == 1
+              and F.by_root["a" .. n].last_character_transfer_tick == 27
+          elseif stage == 23 then exact = exact and #F.by_root["a" .. n]._diagnostics == 1 end
+          check(exact, string.format("union stage %d generators=%s n=%d work=%g preserves exact result", stage, tostring(generator), n, work))
+          if previous then
+            check(flat(previous.instructions, instructions) and instructions <= previous.instructions * 1.5 + 2000
+              and steps > previous.steps and engine == 0,
+              string.format("union stage %d generators=%s work=%g bounds growth: %d/%d instructions, %d/%d steps",
+                stage, tostring(generator), work, previous.instructions, instructions, previous.steps, steps))
+          end
+          previous = { instructions = instructions, steps = steps }
+        end
+      end
+    end
+  end
+end
+
 -- Isolate the two generator fan-outs through their existing stage functions.
 -- No production export or test-only execution path is needed.
 do

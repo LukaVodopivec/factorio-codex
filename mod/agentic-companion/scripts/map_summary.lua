@@ -872,8 +872,7 @@ local function graph_sources(F, budget)
   return true
 end
 
--- Graph walks (pure Lua). Each returns how many nodes it visited as its
--- last value, which the caller charges.
+-- Product matching for a directly observed producer (no graph traversal).
 local function product_matches(node, ingredient, fuel_only)
   for _, product in ipairs(node.products or {}) do
     if fuel_only and product.fuel_category and ingredient[product.fuel_category] then return true end
@@ -882,71 +881,105 @@ local function product_matches(node, ingredient, fuel_only)
   return false
 end
 
-local function upstream_proven(F, start_id, ingredient, fuel_only)
-  local queue, seen, head = {}, { [start_id] = true }, 1
-  for _, id in ipairs(F.incoming[start_id]) do queue[#queue + 1] = id end
-  while head <= #queue do
-    local id = queue[head]; head = head + 1
-    -- A burner source may physically refuel itself from its own output
-    -- (a coal drill feeding back through transport): that loop is fuel
-    -- provenance. Its own product never stands in for another input.
-    if id == start_id and fuel_only and F.node_by_id[id].role == "source"
-      and product_matches(F.node_by_id[id], ingredient, true) then return true, head end
-    if not seen[id] then
-      seen[id] = true
+-- A walk lives beside its caller's phase in the saved job. Seeding a
+-- queue, visiting a node, testing a product and expanding one adjacency
+-- entry each spend one work item; no graph-sized operation precedes a yield.
+local function graph_walk(F, owner, kind, start_id, budget, ingredient, fuel_only)
+  local W = owner.walk
+  if not W then
+    W = { kind = kind, start = start_id, ingredient = ingredient, fuel_only = fuel_only,
+      queue = {}, seen = {}, head = 1, values = {}, phase = "visit" }
+    if kind == "upstream_proven" or kind == "material_upstream" then
+      W.seen[start_id], W.id, W.phase, W.index = true, start_id, "seed", 1
+    else
+      W.queue[1] = start_id
+      if kind == "first_reached" then W.seen[start_id] = true end
+    end
+    owner.walk = W
+  end
+  local function finish(value)
+    owner.walk = nil
+    return true, value, W.head
+  end
+  local function expand(direction)
+    W.direction, W.index, W.phase = direction, 1, "expand"
+  end
+  while budget.left > 0 do
+    budget.left = budget.left - 1
+    if W.phase == "seed" or W.phase == "expand" then
+      local list = W.phase == "seed" and F.incoming[W.start]
+        or (W.direction == "incoming" and F.incoming[W.id] or F.outgoing[W.id])
+      local id = (list or {})[W.index]
+      if not id then W.phase = "visit"
+      else
+        W.index = W.index + 1
+        if kind == "first_reached" then
+          local node = F.node_by_id[id]
+          if not W.seen[id] and node then
+            W.seen[id] = true
+            if node.role == "transport" and not (node.type == "inserter" and F.pickup_of[id] ~= W.id) then
+              W.queue[#W.queue + 1] = id
+            else W.values[#W.values + 1] = node end
+          end
+        elseif kind == "ancestors" then
+          if not W.seen[id] then W.seen[id] = true; W.queue[#W.queue + 1] = id end
+        else W.queue[#W.queue + 1] = id end
+      end
+    elseif W.phase == "products" then
+      local node = F.node_by_id[W.id]
+      local product = (node.products or {})[W.index]
+      if product then
+        W.index = W.index + 1
+        if kind == "upstream_products" then
+          W.values[product.type .. ":" .. product.name] = product
+        elseif kind == "material_upstream" then
+          if not product.fuel_category then return finish(true) end
+        elseif (W.fuel_only and product.fuel_category and W.ingredient[product.fuel_category])
+          or (not W.fuel_only and product.name == W.ingredient.name and product.type == W.ingredient.type) then
+          return finish(true)
+        end
+      elseif kind == "upstream_proven" and not W.self_source
+        and (node.role == "transport" or node.role == "buffer") then expand("incoming")
+      else W.phase = "visit" end
+    else
+      if W.head > #W.queue then
+        if kind == "ancestors" then return finish(W.seen) end
+        return finish((kind == "first_reached" or kind == "upstream_products") and W.values or false)
+      end
+      local id = W.queue[W.head]
+      W.head, W.id = W.head + 1, id
       local node = F.node_by_id[id]
-      if node and node.role ~= "buffer" and product_matches(node, ingredient, fuel_only) then return true, head end
-      -- A processor transforms its inputs; an ancestor's product cannot
-      -- stand in for this node's different physical output.
-      if node and (node.role == "transport" or node.role == "buffer") then
-        for _, parent_id in ipairs(F.incoming[id] or {}) do queue[#queue + 1] = parent_id end
+      if kind == "first_reached" then expand("outgoing")
+      elseif kind == "ancestors" then expand("incoming")
+      else
+        -- A source's own output can refuel that source through a loop,
+        -- while its own product never establishes another material input.
+        W.self_source = kind == "upstream_proven" and id == W.start and W.fuel_only
+          and node.role == "source"
+        if W.self_source then W.phase, W.index = "products", 1
+        elseif not W.seen[id] then
+          W.seen[id] = true
+          if kind == "reaches_downstream" then
+            if id ~= W.start and node and (node.role == "sink" or node._downstream_buffer) then return finish(true) end
+            expand("outgoing")
+          elseif kind == "upstream_proven" then
+            if node and node.role ~= "buffer" then W.phase, W.index = "products", 1
+            elseif node and node.role == "buffer" then expand("incoming") end
+          elseif kind == "material_upstream" then
+            if node and (node.role == "source" or node.role == "processor") then W.phase, W.index = "products", 1
+            elseif node and (node.role == "transport" or node.role == "buffer") then expand("incoming") end
+          elseif node.role == "source" or node.role == "processor" then W.phase, W.index = "products", 1
+          elseif node.type == "inserter" then
+            -- Only pickup cargo is relayed; incoming fuel does not enter a hand.
+            if F.pickup_of[id] then W.queue[#W.queue + 1] = F.pickup_of[id] end
+          elseif node.role == "transport" or node.role == "buffer" or node.type == "lab" or id == W.start then
+            expand("incoming")
+          end
+        end
       end
     end
   end
-  return false, head
-end
-
-local function reaches_downstream(F, start_id)
-  local queue, seen, head = { start_id }, {}, 1
-  while head <= #queue do
-    local id = queue[head]; head = head + 1
-    if not seen[id] then
-      seen[id] = true
-      local node = F.node_by_id[id]
-      if id ~= start_id and node and (node.role == "sink" or node._downstream_buffer) then return true, head end
-      for _, next_id in ipairs(F.outgoing[id] or {}) do queue[#queue + 1] = next_id end
-    end
-  end
-  return false, head
-end
-
--- The nodes a node's output reaches first, through transport only.
-local function first_reached(F, start_id)
-  local reached, queue, seen, head = {}, { start_id }, { [start_id] = true }, 1
-  while head <= #queue do
-    local id = queue[head]; head = head + 1
-    for _, next_id in ipairs(F.outgoing[id] or {}) do
-      local next_node = F.node_by_id[next_id]
-      if not seen[next_id] and next_node then
-        seen[next_id] = true
-        if next_node.role == "transport" and not (next_node.type == "inserter" and F.pickup_of[next_id] ~= id) then
-          queue[#queue + 1] = next_id
-        else reached[#reached + 1] = next_node end
-      end
-    end
-  end
-  return reached, head
-end
-
-local function ancestors(F, start_id)
-  local queue, seen, head = { start_id }, {}, 1
-  while head <= #queue do
-    local id = queue[head]; head = head + 1
-    for _, parent_id in ipairs(F.incoming[id] or {}) do
-      if not seen[parent_id] then seen[parent_id] = true; queue[#queue + 1] = parent_id end
-    end
-  end
-  return seen, head
+  return false
 end
 
 -- A burner takes these products only as fuel: one burns in its
@@ -964,166 +997,161 @@ local function fuel_inlet(products, target)
   return fuel
 end
 
--- Whether a producer upstream through transport and buffers makes
--- something that is not fuel: material that will give a furnace that has
--- not smelted yet its recipe.
-local function material_upstream(F, start_id)
-  local queue, seen, head = {}, { [start_id] = true }, 1
-  for _, id in ipairs(F.incoming[start_id]) do queue[#queue + 1] = id end
-  while head <= #queue do
-    local id = queue[head]; head = head + 1
-    local node = F.node_by_id[id]
-    if node and not seen[id] then
-      seen[id] = true
-      if node.role == "source" or node.role == "processor" then
-        for _, product in ipairs(node.products) do if not product.fuel_category then return true, head end end
-      elseif node.role == "transport" or node.role == "buffer" then
-        for _, parent_id in ipairs(F.incoming[id] or {}) do queue[#queue + 1] = parent_id end
-      end
-    end
-  end
-  return false, head
-end
-
--- The products that physically reach a node: its own when it produces,
--- otherwise its producers' through transport, buffers and labs (an
--- inserter relays a lab's packs into the next lab of a chain).
-local function upstream_products(F, start_id)
-  local products, queue, seen, head = {}, { start_id }, {}, 1
-  while head <= #queue do
-    local id = queue[head]; head = head + 1
-    if not seen[id] then
-      seen[id] = true
-      local upstream = F.node_by_id[id]
-      if upstream.role == "source" or upstream.role == "processor" then
-        for _, product in ipairs(upstream.products) do products[product.type .. ":" .. product.name] = product end
-      elseif upstream.type == "inserter" then
-        -- Another inserter drops into this burner's fuel inventory, never
-        -- its hand. Only the pickup target supplies cargo relayed onward.
-        if F.pickup_of[id] then queue[#queue + 1] = F.pickup_of[id] end
-      elseif upstream.role == "transport" or upstream.role == "buffer" or upstream.type == "lab" or id == start_id then
-        for _, parent_id in ipairs(F.incoming[id]) do queue[#queue + 1] = parent_id end
-      end
-    end
-  end
-  return products, head
-end
-
--- Walk lengths are charged at this many nodes per work item.
-local WALK_NODES_PER_ITEM = 16
-
 -- A replenishment inserter may wait at the ordinary fuel target while
 -- the burner continues working and its fuel inventory still has space.
 -- Prove the specific held fuel and physical supply, never infer a limit
 -- from a hard-coded stock count or exempt other full-output entities.
 local function fuel_return(F, node, budget)
-  local pickup, destination
-  for _, edge in ipairs(F.edges_of[node.id]) do
-    if edge.from == node.id and edge.kind == "inserter_drop" then destination = F.node_by_id[edge.to] end
-    if edge.to == node.id and edge.kind == "inserter_pickup" then pickup = F.node_by_id[edge.from] end
+  local P = F.fuel
+  if not P then P = { edge = 1 }; F.fuel = P end
+  if not P.observed then
+    local edges = F.edges_of[node.id]
+    while P.edge <= #edges do
+      if budget.left <= 0 then return false end
+      budget.left = budget.left - 1
+      local edge = edges[P.edge]
+      if edge.from == node.id and edge.kind == "inserter_drop" then P.destination = F.node_by_id[edge.to] end
+      if edge.to == node.id and edge.kind == "inserter_pickup" then P.pickup = F.node_by_id[edge.from] end
+      P.edge = P.edge + 1
+    end
+    local pickup, destination = P.pickup, P.destination
+    if not (pickup and destination and destination._fuel_destination_proven
+      and destination.requires_fuel and destination.status == "working") then return true end
+    if budget.left <= 0 then return false end
+    budget.left = budget.left - 12
+    local ok, fuel, quality, identity = pcall(function()
+      local held = node._entity.held_stack
+      local burner = destination._entity.burner
+      -- Factorio 2.0 ItemIDAndQualityIDPair: name and quality are prototypes.
+      local burning = burner.currently_burning
+      if not burning or type(burning.name.name) ~= "string" or type(burning.quality.name) ~= "string"
+        or not destination.fuel_categories[item_fuel_category(burning.name.name)]
+        or not (burner.remaining_burning_fuel > 0) then return end
+      local inventory = destination._entity.get_fuel_inventory()
+      local name, quality_name, identity_source
+      if held.valid_for_read == true then
+        if held.count <= 0 then return end
+        name, quality_name, identity_source = held.name, held.quality.name, "held_stack"
+      elseif held.valid_for_read == false then
+        -- An empty stack's identity is unreadable; require one stocked
+        -- pair matching the burning pair (inventory contents carry names).
+        local contents = inventory.get_contents()
+        if type(contents) ~= "table" or #contents ~= 1 then return end
+        for index in pairs(contents) do if index ~= 1 then return end end
+        local stock = contents[1]
+        if type(stock) ~= "table" or type(stock.count) ~= "number" or stock.count <= 0
+          or stock.name ~= burning.name.name or stock.quality ~= burning.quality.name then return end
+        name, quality_name, identity_source = stock.name, stock.quality, "burning_and_stocked_fuel"
+      else return end
+      if type(name) ~= "string" or name == "" or type(quality_name) ~= "string" or quality_name == "" then return end
+      local category = item_fuel_category(name)
+      if not category or not destination.fuel_categories[category] then return end
+      -- A fuel that is also a recipe ingredient could be waiting on
+      -- material input instead; the destination compartment is ambiguous.
+      for _, ingredient in ipairs(destination.ingredients) do
+        if ingredient.type == "item" and ingredient.name == name then return end
+      end
+      local item = { name = name, quality = quality_name, count = 1 }
+      if inventory.get_item_count({ name = item.name, quality = item.quality }) > 0
+        and inventory.can_insert(item) == true then
+        return name, quality_name, identity_source
+      end
+    end)
+    P.ok, P.fuel, P.quality, P.identity, P.observed = ok, fuel, quality, identity, true
   end
-  if not (pickup and destination and destination._fuel_destination_proven
-    and destination.requires_fuel and destination.status == "working") then return end
-  budget.left = budget.left - 12
-  local ok, fuel, quality, identity = pcall(function()
-    local held = node._entity.held_stack
-    local burner = destination._entity.burner
-    -- Factorio 2.0 ItemIDAndQualityIDPair: name and quality are prototypes.
-    local burning = burner.currently_burning
-    if not burning or type(burning.name.name) ~= "string" or type(burning.quality.name) ~= "string"
-      or not destination.fuel_categories[item_fuel_category(burning.name.name)]
-      or not (burner.remaining_burning_fuel > 0) then return end
-    local inventory = destination._entity.get_fuel_inventory()
-    local name, quality_name, identity_source
-    if held.valid_for_read == true then
-      if held.count <= 0 then return end
-      name, quality_name, identity_source = held.name, held.quality.name, "held_stack"
-    elseif held.valid_for_read == false then
-      -- An empty stack's identity is unreadable; require one stocked
-      -- pair matching the burning pair (inventory contents carry names).
-      local contents = inventory.get_contents()
-      if type(contents) ~= "table" or #contents ~= 1 then return end
-      for index in pairs(contents) do if index ~= 1 then return end end
-      local stock = contents[1]
-      if type(stock) ~= "table" or type(stock.count) ~= "number" or stock.count <= 0
-        or stock.name ~= burning.name.name or stock.quality ~= burning.quality.name then return end
-      name, quality_name, identity_source = stock.name, stock.quality, "burning_and_stocked_fuel"
-    else return end
-    if type(name) ~= "string" or name == "" or type(quality_name) ~= "string" or quality_name == "" then return end
-    local category = item_fuel_category(name)
-    if not category or not destination.fuel_categories[category] then return end
-    -- A fuel that is also a recipe ingredient could be waiting on
-    -- material input instead; the destination compartment is ambiguous.
-    for _, ingredient in ipairs(destination.ingredients) do
-      if ingredient.type == "item" and ingredient.name == name then return end
-    end
-    local item = { name = name, quality = quality_name, count = 1 }
-    if inventory.get_item_count({ name = item.name, quality = item.quality }) > 0
-      and inventory.can_insert(item) == true then
-      return name, quality_name, identity_source
-    end
-  end)
-  local product = { name = fuel, type = "item" }
-  local supplied, visited = false, 0
+  local pickup = P.pickup
+  local product = { name = P.fuel, type = "item" }
+  local supplied = false
   if pickup.role == "source" or pickup.role == "processor" then
     supplied = product_matches(pickup, product, false)
   elseif pickup.role == "transport" or pickup.role == "buffer" then
-    supplied, visited = upstream_proven(F, pickup.id, product, false)
+    local done
+    done, supplied = graph_walk(F, P, "upstream_proven", pickup.id, budget, product, false)
+    if not done then return false end
   end
-  budget.left = budget.left - math.ceil(visited / WALK_NODES_PER_ITEM)
-  if ok and fuel and supplied then
-    node.fuel_return_saturation = { destination_node_id = destination.id, fuel = fuel, quality = quality,
-      identity_source = identity, observed_status = "waiting_for_space_in_destination",
+  if P.ok and P.fuel and supplied then
+    node.fuel_return_saturation = { destination_node_id = P.destination.id, fuel = P.fuel, quality = P.quality,
+      identity_source = P.identity, observed_status = "waiting_for_space_in_destination",
       evidence = "supplied_working_burner_with_fuel_inventory_space" }
   end
+  return true
 end
 
 local function flow_fuel(F, budget)
-  return each(F, budget, #F.nodes, 1, function(i)
+  local i = F.cursor or 1
+  while i <= #F.nodes do
+    if budget.left <= 0 then F.cursor = i; return false end
     local node = F.nodes[i]
-    if node.type == "inserter" and node._waiting_for_destination and node._entity.valid then fuel_return(F, node, budget) end
-  end)
+    if not F.fuel then budget.left = budget.left - 1 end
+    if F.fuel or (node.type == "inserter" and node._waiting_for_destination and node._entity.valid) then
+      if not fuel_return(F, node, budget) then F.cursor = i; return false end
+    end
+    F.fuel, i = nil, i + 1
+  end
+  F.cursor = nil
+  return true
 end
 
 -- Which buffers and sinks are terminal, accept what reaches them, or block.
 local function buffer_or_sink(F, node, budget)
-  local products, visited = upstream_products(F, node.id)
-  budget.left = budget.left - math.ceil(visited / WALK_NODES_PER_ITEM)
-  -- A buffer is terminal when nothing leaves it, or when everything that
-  -- leaves only refuels producers upstream of it: a self-fuelling loop's
-  -- chest is where its surplus ends, not an intermediate stage.
-  node._downstream_buffer = false
-  if node.role == "buffer" then
-    local reached, walked = first_reached(F, node.id)
-    local upstream = nil
-    budget.left = budget.left - math.ceil(walked / WALK_NODES_PER_ITEM)
-    node._downstream_buffer = #F.outgoing[node.id] == 0 or #reached > 0
-    for _, target in ipairs(reached) do
-      if not upstream then
-        upstream, walked = ancestors(F, node.id)
-        budget.left = budget.left - math.ceil(walked / WALK_NODES_PER_ITEM)
-      end
-      if not (upstream[target.id] and fuel_inlet(products, target)) then node._downstream_buffer = false end
-    end
+  local P = F.buffer
+  if not P then P = { phase = 1 }; F.buffer = P end
+  if P.phase == 1 then
+    local done, products = graph_walk(F, P, "upstream_products", node.id, budget)
+    if not done then return false end
+    P.products, P.phase = products, 2
+    node._downstream_buffer = false
   end
-  budget.left = budget.left - 4
-  -- A lab waiting for science packs consumes only when the line supplies
-  -- every pack its current research needs; otherwise it never starts.
-  -- Any lab with research in progress, whatever its status, needs that
-  -- supply: hand-stocked packs only defer the wait.
-  local lab_waiting = node.type == "lab" and node._raw_status == "missing_science_packs"
-  if node.type == "lab" and node._raw_status ~= "no_research_in_progress" then
-    local ok, ingredients = pcall(function() return node._entity.force.current_research.research_unit_ingredients end)
-    local readable = ok and type(ingredients) == "table" and next(ingredients) ~= nil
-    if not readable then lab_waiting = false end
-    for _, ingredient in pairs(readable and ingredients or {}) do
-      if type(ingredient) ~= "table" or not products[(ingredient.type or "item") .. ":" .. tostring(ingredient.name)] then
-        lab_waiting, node._missing_science_pack = false, true
+  if P.phase == 2 then
+    if node.role == "buffer" then
+      local done, reached = graph_walk(F, P, "first_reached", node.id, budget)
+      if not done then return false end
+      P.reached = reached
+      node._downstream_buffer = #F.outgoing[node.id] == 0 or #reached > 0
+    end
+    P.phase = 3
+  end
+  if P.phase == 3 then
+    if P.reached and #P.reached > 0 then
+      local done, upstream = graph_walk(F, P, "ancestors", node.id, budget)
+      if not done then return false end
+      P.upstream = upstream
+    end
+    P.phase, P.target = 4, 1
+  end
+  local products = P.products
+  if P.phase == 4 then
+    while P.reached and P.target <= #P.reached do
+      if budget.left <= 0 then return false end
+      budget.left = budget.left - 1
+      local target = P.reached[P.target]
+      if not (P.upstream[target.id] and fuel_inlet(products, target)) then node._downstream_buffer = false end
+      P.target = P.target + 1
+    end
+    if budget.left <= 0 then return false end
+    budget.left = budget.left - 4
+    -- A lab waiting for science packs consumes only when the line supplies
+    -- every pack its current research needs; otherwise it never starts.
+    -- Any lab with research in progress, whatever its status, needs that
+    -- supply: hand-stocked packs only defer the wait.
+    local lab_waiting = node.type == "lab" and node._raw_status == "missing_science_packs"
+    if node.type == "lab" and node._raw_status ~= "no_research_in_progress" then
+      local ok, ingredients = pcall(function() return node._entity.force.current_research.research_unit_ingredients end)
+      local readable = ok and type(ingredients) == "table" and next(ingredients) ~= nil
+      if not readable then lab_waiting = false end
+      for _, ingredient in pairs(readable and ingredients or {}) do
+        if type(ingredient) ~= "table" or not products[(ingredient.type or "item") .. ":" .. tostring(ingredient.name)] then
+          lab_waiting, node._missing_science_pack = false, true
+        end
       end
     end
+    node._accepting = next(products) ~= nil and (node.role == "buffer" or node.status == "working" or lab_waiting)
+    P.phase = 5
   end
-  node._accepting = next(products) ~= nil and (node.role == "buffer" or node.status == "working" or lab_waiting)
-  for _, product in pairs(products) do
+  while true do
+    local key, product = next(products, P.product_key)
+    if not key then return true end
+    if budget.left <= 0 then return false end
     budget.left = budget.left - 2
     -- Unsupported fluid endpoints remain unproven rather than guessing capacity.
     local ok, count, accepting = pcall(function()
@@ -1163,14 +1191,23 @@ local function buffer_or_sink(F, node, budget)
         if node._downstream_buffer or (node.role == "sink" and not node._standby) then node._blocked_output = true end
       end
     end
+    P.product_key = key
   end
 end
 
 local function flow_buffers(F, budget)
-  return each(F, budget, #F.nodes, 1, function(i)
+  local i = F.cursor or 1
+  while i <= #F.nodes do
+    if budget.left <= 0 then F.cursor = i; return false end
     local node = F.nodes[i]
-    if node.role == "buffer" or node.role == "sink" then buffer_or_sink(F, node, budget) end
-  end)
+    if not F.buffer then budget.left = budget.left - 1 end
+    if node.role == "buffer" or node.role == "sink" then
+      if not buffer_or_sink(F, node, budget) then F.cursor = i; return false end
+    end
+    F.buffer, i = nil, i + 1
+  end
+  F.cursor = nil
+  return true
 end
 
 -- Diagnostics in order, each on its component.
@@ -1227,90 +1264,120 @@ end
 -- One node's share of its component's state and signature.
 local function component_node(F, C, id, budget)
   local node = F.node_by_id[id]
-  local walked = 0
-  local function walk(found, visited)
-    walked = walked + (visited or 0)
-    return found
-  end
-  if FLUID_TYPES[node.type] or node._power_consumer then
-    sign(C, node._key .. ":network:" .. tostring(node._power_network), budget)
-    if node._generator then
-      for _, field in ipairs({ "default_temperature", "heat_capacity", "effectivity", "maximum_temperature" }) do
-        sign(C, node._key .. ":generator:" .. field .. ":" .. tostring(node._generator[field]), budget)
+  if not C.node_phase then
+    if FLUID_TYPES[node.type] or node._power_consumer then
+      sign(C, node._key .. ":network:" .. tostring(node._power_network), budget)
+      if node._generator then
+        for _, field in ipairs({ "default_temperature", "heat_capacity", "effectivity", "maximum_temperature" }) do
+          sign(C, node._key .. ":generator:" .. field .. ":" .. tostring(node._generator[field]), budget)
+        end
       end
     end
-  end
-  sign(C, node._key .. ":" .. tostring(node.direction) .. ":"
-    .. tostring(node._unit) .. ":" .. tostring(node.recipe), budget)
-  for _, box in ipairs(node._fluid_boxes or {}) do
-    sign(C, table.concat({ node._key, "box", tostring(box.index),
-      tostring(box.segment), tostring(box.production_type), tostring(box.filter), tostring(box.name),
-      tostring(box.minimum_temperature), tostring(box.maximum_temperature), tostring(box.capacity) }, ":"), budget)
-  end
-  for _, connection in ipairs(node._fluid_connections or {}) do
-    sign(C, table.concat({ node._key, "connection",
-      tostring(connection.fluidbox_index), tostring(connection._pipe_connection_index),
-      tostring(connection.connection_type), tostring(connection.flow_direction),
-      tostring(connection.position.x), tostring(connection.position.y),
-      tostring(connection.target_position.x), tostring(connection.target_position.y),
-      tostring(connection._target_key), tostring(connection._target_fluidbox_index),
-      tostring(connection._target_pipe_connection_index) }, ":"), budget)
-  end
-  for _, product in ipairs(node.products) do
-    if product.type == "fluid" then sign(C, node._key .. ":temperature:" .. tostring(product.temperature), budget) end
-  end
-  for _, ingredient in ipairs(node.ingredients) do sign(C, node._key .. ":input:" .. ingredient.type .. ":" .. ingredient.name, budget) end
-  for _, product in ipairs(node.products) do sign(C, node._key .. ":output:" .. product.type .. ":" .. product.name, budget) end
-  if node.role == "sink" then
-    C.consumers = C.consumers + 1
-    -- A lab with no research selected consumes nothing until one is.
-    if node.type == "lab" and node._raw_status == "no_research_in_progress" then
-      block(C, node, "consumer_idle_no_research", "evidence", nil, "readiness")
-    elseif node._missing_science_pack then
-      block(C, node, "consumer_missing_required_science_pack", "evidence", nil, "readiness")
+    sign(C, node._key .. ":" .. tostring(node.direction) .. ":"
+      .. tostring(node._unit) .. ":" .. tostring(node.recipe), budget)
+    for _, box in ipairs(node._fluid_boxes or {}) do
+      sign(C, table.concat({ node._key, "box", tostring(box.index),
+        tostring(box.segment), tostring(box.production_type), tostring(box.filter), tostring(box.name),
+        tostring(box.minimum_temperature), tostring(box.maximum_temperature), tostring(box.capacity) }, ":"), budget)
     end
-    C.endpoints[#C.endpoints + 1] = node
-  elseif node._downstream_buffer then
-    C.buffers = C.buffers + 1
-    C.endpoints[#C.endpoints + 1] = node
-    if node._accepting then C.accepting_sinks = C.accepting_sinks + 1 end
-  end
-  -- Only an inventory that cannot accept the item proves blocked output.
-  if node._blocked_output then C.blocked_output = true; block(C, node, "blocked_output", "structural") end
-  if node.role == "source" or node.role == "processor" then
-    C.producing_nodes = C.producing_nodes + 1
-    if node.role == "source" and not node._source_production.working then
-      block(C, node, "source_not_locally_operating", "transient")
+    for _, connection in ipairs(node._fluid_connections or {}) do
+      sign(C, table.concat({ node._key, "connection",
+        tostring(connection.fluidbox_index), tostring(connection._pipe_connection_index),
+        tostring(connection.connection_type), tostring(connection.flow_direction),
+        tostring(connection.position.x), tostring(connection.position.y),
+        tostring(connection.target_position.x), tostring(connection.target_position.y),
+        tostring(connection._target_key), tostring(connection._target_fluidbox_index),
+        tostring(connection._target_pipe_connection_index) }, ":"), budget)
     end
-    -- A furnace before its first smelt has no recipe yet: with material
-    -- arriving from upstream, that is a later start, not a defect.
-    if #node.products == 0 and node.type == "furnace" and walk(material_upstream(F, id)) then
-      block(C, node, "furnace_recipe_not_yet_established", "evidence", { kind = "material_input" }, "readiness")
-    elseif #node.products == 0 then block(C, node, "output_identity_unproven", "structural") end
-    if not walk(reaches_downstream(F, id)) then
-      C.unreached[#C.unreached + 1] = node
-      if node._output_pending then
-        block(C, node, "drill_output_target_pending_first_output", "evidence", { kind = "machine_output" }, "readiness")
-      else
-        block(C, node, "downstream_acceptance_path_unproven", "structural",
-          { kind = "downstream_path" }, "readiness")
+    for _, product in ipairs(node.products) do
+      if product.type == "fluid" then sign(C, node._key .. ":temperature:" .. tostring(product.temperature), budget) end
+    end
+    for _, ingredient in ipairs(node.ingredients) do sign(C, node._key .. ":input:" .. ingredient.type .. ":" .. ingredient.name, budget) end
+    for _, product in ipairs(node.products) do sign(C, node._key .. ":output:" .. product.type .. ":" .. product.name, budget) end
+    if node.role == "sink" then
+      C.consumers = C.consumers + 1
+      -- A lab with no research selected consumes nothing until one is.
+      if node.type == "lab" and node._raw_status == "no_research_in_progress" then
+        block(C, node, "consumer_idle_no_research", "evidence", nil, "readiness")
+      elseif node._missing_science_pack then
+        block(C, node, "consumer_missing_required_science_pack", "evidence", nil, "readiness")
+      end
+      C.endpoints[#C.endpoints + 1] = node
+    elseif node._downstream_buffer then
+      C.buffers = C.buffers + 1
+      C.endpoints[#C.endpoints + 1] = node
+      if node._accepting then C.accepting_sinks = C.accepting_sinks + 1 end
+    end
+    -- Only an inventory that cannot accept the item proves blocked output.
+    if node._blocked_output then C.blocked_output = true; block(C, node, "blocked_output", "structural") end
+    if node.role == "source" or node.role == "processor" then
+      C.producing_nodes = C.producing_nodes + 1
+      if node.role == "source" and not node._source_production.working then
+        block(C, node, "source_not_locally_operating", "transient")
       end
     end
+    C.node_phase = 2
   end
-  if node.role == "sink" and node._accepting then C.accepting_sinks = C.accepting_sinks + 1 end
-  for _, ingredient in ipairs(node.ingredients or {}) do
-    if not walk(upstream_proven(F, id, ingredient, false)) then
-      block(C, node, "material_input_provenance_unresolved:" .. ingredient.type .. ":" .. ingredient.name, "structural",
-        { kind = "material_input" })
+  if C.node_phase == 2 then
+    if node.role == "source" or node.role == "processor" then
+      local material = false
+      if #node.products == 0 and node.type == "furnace" then
+        local done
+        done, material = graph_walk(F, C, "material_upstream", id, budget)
+        if not done then return false end
+      end
+      if material then
+        block(C, node, "furnace_recipe_not_yet_established", "evidence", { kind = "material_input" }, "readiness")
+      elseif #node.products == 0 then block(C, node, "output_identity_unproven", "structural") end
     end
+    C.node_phase = 3
   end
-  if node.requires_fuel and not walk(upstream_proven(F, id, node.fuel_categories or {}, true)) then
+  if C.node_phase == 3 then
+    if node.role == "source" or node.role == "processor" then
+      local done, reached = graph_walk(F, C, "reaches_downstream", id, budget)
+      if not done then return false end
+      if not reached then
+        C.unreached[#C.unreached + 1] = node
+        if node._output_pending then
+          block(C, node, "drill_output_target_pending_first_output", "evidence", { kind = "machine_output" }, "readiness")
+        else
+          block(C, node, "downstream_acceptance_path_unproven", "structural", { kind = "downstream_path" }, "readiness")
+        end
+      end
+    end
+    C.node_phase = 4
+  end
+  if C.node_phase == 4 then
+    if node.role == "sink" and node._accepting then C.accepting_sinks = C.accepting_sinks + 1 end
+    C.ingredient, C.node_phase = 1, 5
+  end
+  if C.node_phase == 5 then
+    while C.ingredient <= #(node.ingredients or {}) do
+      local ingredient = node.ingredients[C.ingredient]
+      local done, proven = graph_walk(F, C, "upstream_proven", id, budget, ingredient, false)
+      if not done then return false end
+      if not proven then
+        block(C, node, "material_input_provenance_unresolved:" .. ingredient.type .. ":" .. ingredient.name,
+          "structural", { kind = "material_input" })
+      end
+      C.ingredient = C.ingredient + 1
+    end
+    C.ingredient, C.node_phase = nil, 6
+  end
+  if C.node_phase == 6 then
+    local proven = true
+    if node.requires_fuel then
+      local done
+      done, proven = graph_walk(F, C, "upstream_proven", id, budget, node.fuel_categories or {}, true)
+      if not done then return false end
+    end
+    C.node_phase = proven and 8 or 7
+  end
+  if C.node_phase == 7 then
     local related_edge = { kind = "fuel_input" }
-    -- A burner inserter refuels only from fuel it carries. When its
-    -- produced cargo is known and none of it burns here, say so: it needs
-    -- a fuel feed of its own.
     if node.role == "transport" then
-      local cargo = walk(upstream_products(F, id))
+      local done, cargo = graph_walk(F, C, "upstream_products", id, budget)
+      if not done then return false end
       if next(cargo) then
         related_edge.transport_cargo_fuel = false
         for _, product in pairs(cargo) do
@@ -1322,13 +1389,15 @@ local function component_node(F, C, id, budget)
     end
     block(C, node, next(node.fuel_categories or {}) and "fuel_input_provenance_unresolved" or "fuel_compatibility_unproven",
       "structural", related_edge, "readiness")
+    C.node_phase = 8
   end
   if node.status == "no_power" or node.status == "low_power" or node.status == "no_fuel"
     or node.status == "insufficient_input" or node.status == "full_output" and not node.fuel_return_saturation
     or node.status == "disabled" or node.status == "no_resources" then
     block(C, node, "nonproductive_status:" .. node.status, status_class(node))
   end
-  budget.left = budget.left - math.ceil(walked / WALK_NODES_PER_ITEM)
+  C.node_phase = nil
+  return true
 end
 
 -- A component's signature rows from its edges and electrical dependents
@@ -1475,8 +1544,8 @@ local function flow_components(F, budget)
     end
     while C.node <= #component.node_ids do
       if budget.left <= 0 then return false end
-      budget.left = budget.left - 2
-      component_node(F, C, component.node_ids[C.node], budget)
+      if not C.node_phase then budget.left = budget.left - 2 end
+      if not component_node(F, C, component.node_ids[C.node], budget) then return false end
       C.node = C.node + 1
     end
     if not component_edges(F, component, C, budget) then return false end

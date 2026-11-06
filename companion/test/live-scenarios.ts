@@ -20,20 +20,16 @@
 // only per window, so the setup also times this server's job work (jobs
 // advanced on_tick) per tick; one slow tick of another handler inside a
 // quiet window is not caught here.
-import { spawn, type ChildProcess } from "node:child_process";
 import crypto from "node:crypto";
-import dgram from "node:dgram";
 import fs from "node:fs";
-import net from "node:net";
 import os from "node:os";
-import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Bridge } from "../src/bridge.js";
 import { assertRuntimeCompatibility } from "../src/compatibility.js";
 import { companionVersion } from "../src/config.js";
 import { RconClient } from "../src/rcon.js";
 import { bodySummary, parseRunSnapshot, runEvents } from "../src/runs/telemetry.js";
-import { MAP_GEN_SETTINGS, SERVER_SETTINGS, createArgs, prepareMods, runPaths } from "../src/server/server.js";
+import { LiveHarness } from "./live-harness.js";
 import { factorioBinary } from "../src/setup/locate.js";
 import { describeTick, evaluateTiming, profile } from "./live-timing.js";
 
@@ -48,102 +44,20 @@ if (!bin) {
   process.exit(0);
 }
 
-const freeTcpPort = () => new Promise<number>((resolve, reject) => {
-  const server = net.createServer().once("error", reject);
-  server.listen(0, "127.0.0.1", () => { const { port } = server.address() as net.AddressInfo; server.close(() => resolve(port)); });
-});
-const freeUdpPort = () => new Promise<number>((resolve, reject) => {
-  const socket = dgram.createSocket("udp4").once("error", reject);
-  socket.bind(0, "127.0.0.1", () => { const { port } = socket.address(); socket.close(() => resolve(port)); });
-});
-
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), "factorio-codex-live-"));
-const paths = runPaths(dir);
-const configIni = path.join(dir, "config.ini");
-// The Factorio process running now: --create first, then the server.
-let server: ChildProcess | null = null;
+const native = new LiveHarness(bin!, SEED);
+const { dir, paths } = native;
 let rcon: RconClient | null = null;
-
-// One cleanup for every caller (each signal and the main flow's finally): all
-// wait for the same server exit before the dir is removed. The handlers stay
-// registered (not once): tsx relays a signal to this process a second time,
-// and with no listener left that second one would end it mid-cleanup.
-let cleaning: Promise<void> | undefined;
-const cleanup = () => (cleaning ??= (async () => {
-  rcon?.close();
-  const child = server;
-  if (child && child.exitCode === null && child.signalCode === null) {
-    const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
-    child.kill("SIGINT");
-    if (await Promise.race([exited.then(() => true), sleep(30_000).then(() => false)]) === false) {
-      child.kill("SIGKILL");
-      await exited;
-    }
-  }
-  fs.rmSync(dir, { recursive: true, force: true });
-})());
+const cleanup = () => native.cleanup();
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.on(signal, () => { void cleanup().finally(() => process.exit(128 + os.constants.signals[signal])); });
 }
-
 async function startServer(): Promise<Bridge> {
-  fs.writeFileSync(configIni, `[path]\nread-data=__PATH__executable__/../../data\nwrite-data=${dir}\n`);
-  prepareMods(paths.mods);
-  fs.writeFileSync(paths.mapGen, JSON.stringify({ ...MAP_GEN_SETTINGS, seed: SEED }));
-  fs.writeFileSync(paths.serverSettings, JSON.stringify({ ...SERVER_SETTINGS, description: "Factorio Codex live smoke suite",
-    visibility: { public: false, lan: false }, auto_pause: false }));
-  // Not spawnSync: a blocked event loop would never run the signal handler.
-  const create = server = spawn(bin!, ["-c", configIni, ...createArgs(paths)], { stdio: ["ignore", "pipe", "pipe"] });
-  let output = "";
-  create.stdout!.on("data", (chunk) => { output += chunk; });
-  create.stderr!.on("data", (chunk) => { output += chunk; });
-  const status = await new Promise<number | null>((resolve, reject) => create.once("error", reject).once("close", resolve));
-  if (status !== 0 || !fs.existsSync(paths.save)) {
-    throw new Error(`factorio --create failed (exit ${status}): ${output.trim().split("\n").slice(-5).join(" | ")}`);
-  }
-  const password = crypto.randomBytes(12).toString("hex");
-  const [gamePort, rconPort] = [await freeUdpPort(), await freeTcpPort()];
-  if (cleaning) throw new Error("interrupted");
-  const log = fs.openSync(paths.log, "w");
-  server = spawn(bin!, ["-c", configIni, "--start-server", paths.save, "--server-settings", paths.serverSettings,
-    "--mod-directory", paths.mods, "--bind", "127.0.0.1", "--port", String(gamePort),
-    "--rcon-bind", `127.0.0.1:${rconPort}`, "--rcon-password", password], { cwd: dir, stdio: ["ignore", log, log] });
-  fs.closeSync(log);
-  for (const deadline = Date.now() + 180_000; ; await sleep(1000)) {
-    if (server.exitCode !== null) throw new Error(`server exited with ${server.exitCode}: ${logTail()}`);
-    const client = new RconClient({ host: "127.0.0.1", port: rconPort, password, timeoutMs: 20_000 });
-    try {
-      await client.connect();
-      const bridge = new Bridge(client);
-      await bridge.unlock();
-      rcon = client;
-      return bridge;
-    } catch (error) {
-      client.close();
-      // Only a server still starting is retried (as server.ts does); a refused
-      // unlock or a wrong password will not clear by waiting.
-      if (!(error instanceof Error) || !/cannot connect to RCON|auth timed out|ECONNRESET|closed/i.test(error.message)) throw error;
-      if (Date.now() > deadline) throw new Error(`server did not accept RCON in 180 s: ${error instanceof Error ? error.message : error}`);
-    }
-  }
+  const bridge = await native.start();
+  rcon = native.rcon;
+  return bridge;
 }
-
-const logTail = () => { try { return fs.readFileSync(paths.log, "utf8").trim().split("\n").slice(-5).join(" | "); } catch { return "(no log)"; } };
-
-// One console command in the mod's Lua state: body is a function body whose
-// return value comes back through the mod's own NaN-safe rpc.to_json. mod(n)
-// is the loaded scripts/<n>.lua. One line: no Lua `--` comments.
-const PRELUDE = 'local function mod(n) return package.loaded["__agentic-companion__/scripts/" .. n .. ".lua"] end local rpc = mod("rpc")';
-async function lua<T = any>(body: string): Promise<T> {
-  const code = body.split("\n").map((line) => line.trim()).filter(Boolean).join(" ");
-  if (code.includes("--")) throw new Error("scenario Lua must not contain -- (one console line)");
-  const raw = (await rcon!.exec(`/silent-command __agentic-companion__ ${PRELUDE} local ok, res = pcall(function() ${code} end)`
-    + " rcon.print(rpc.to_json({ ok = ok, result = ok and res or nil, error = not ok and tostring(res) or nil }))")).trim();
-  let reply: { ok: boolean; result?: T; error?: string };
-  try { reply = JSON.parse(raw); } catch { throw new Error(`console reply is not JSON: ${raw.slice(0, 300)}`); }
-  if (!reply.ok) throw new Error(`Lua error: ${reply.error}`);
-  return reply.result as T;
-}
+const logTail = () => native.logTail();
+const lua = <T = any>(body: string) => native.lua<T>(body);
 
 async function until<T>(what: string, read: () => Promise<T | undefined | null | false>, timeoutMs = 30_000): Promise<T> {
   for (const deadline = Date.now() + timeoutMs; ; await sleep(500)) {
@@ -897,7 +811,7 @@ const scenarios: Scenario[] = [
       expect(final.holds?.count === 1 && episode?.cause === "live-test" && episode.end_tick! > episode.start_tick
         && final.holds.total_ticks === episode.end_tick! - episode.start_tick, "the hold is one closed episode with its cause", final.holds);
       const events = runEvents(baseline, final);
-      expect(events.milestones?.rocket_launched?.tick === m.rocket_launched_tick && events.milestones.rocket_launched.elapsed_s > 0
+      expect(events.milestones?.rocket_launched?.tick === m.rocket_launched_tick && (events.milestones?.rocket_launched?.elapsed_s ?? 0) > 0
         && events.holds?.count === 1 && events.handler_errors === 0, "runEvents summarises the window", events);
       const body = bodySummary(baseline, final);
       expect(body !== null && body.window_ticks === final.tick - baseline.tick, "bodySummary reads the window", body);

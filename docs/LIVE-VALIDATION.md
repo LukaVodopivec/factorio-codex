@@ -2998,3 +2998,319 @@ matching dependencies and Node 22; its exact commit and command receipts belong
 to the completion result. Source publication and deployment are separate:
 no installed mod update, active-game validation, server replacement or gameplay
 deployment was performed.
+
+### Reachability walk baseline — targeted attribution (2026-11-06)
+
+At source `d3baebeea747f63ad5f49e8297af04d121f61f95`, six inherited
+reachability searches remain synchronous. This evidence concerns those searches
+individually, separate from the earlier allocation and generator repairs.
+Production `scripts/map_summary.lua` SHA-256 is
+`16578132b051c7f2932c24c30ac303f2a415aaab1e0c7cd4ce89b7ae3e3fc907`.
+
+`tests/mod/flow_walk_fixture.lua` constructs a root and 2,400 or 24,000
+transport-path nodes. `path` places the answer at the final node; `cycle`
+closes the transport tail onto its first node without an answer; `branch`
+also links each path node to its successor's successor, preserving insertion
+order while introducing reconvergence. Upstream fixtures reverse the edges.
+For ancestry, the first upstream node is a processor with no output, so the
+caller's product query stops there while ancestry still walks the path; a
+direct downstream source forces the buffer caller to request ancestry.
+Fixture construction happens outside the measured invocation.
+
+The existing `job_budget_test.lua` VM-instruction hook and engine-access
+counter measure all six individual functions and their actual callers in flow
+stages 19, 20 and 24, at work allowances 7 and 600. Functions and stage tables
+are recovered through debug upvalues, with no production export. All 144 new
+result/caller checks pass under `texlua`, including exact terminal identity,
+ancestor/product counts, fuel-return evidence, terminal-buffer decisions and
+component blocker presence. The complete existing summary suite also passes.
+These baseline probes currently record graph-sized work; they are not yet
+candidate boundedness assertions. Individual walk instruction counts are
+separate from the stage caller maxima.
+
+For the native attribution run, a disposable copy alone exports the six local
+functions and `FLOW_STAGES` immediately before the module's final `return M`.
+The existing live-suite server setup, console transport, registered job
+scheduler, RPC encoder, job profiler and unmodified `evaluateTiming` are reused.
+A fixture-only `walk_probe` definition takes its already-built graph from
+storage, yields the start slice, and invokes exactly one exported function on
+the next job slice. A nested native profiler logs `walk_only` around only that
+function; result reduction and JSON encoding are outside that nested interval.
+Each `(function, shape, size, allowance)` runs once: 72 trials, not repeated
+statistical samples. Work allowances are probe labels for these indivisible
+baseline calls; neither the original function nor its post-call charge can
+yield midway through a walk. Every trial verifies its visited count reaches
+the path size. Native exact-result assertions beyond that completion check,
+serialized-input identity comparison, and native stage-caller measurements
+remain pending.
+
+| Individual function | Path/shape maximum VM instructions, 2,400 / 24,000 (work 600, branch) | Native individual maximum ms, 2,400 / 24,000 (all shapes and allowances) |
+| --- | ---: | ---: |
+| `upstream_proven` | 132,500 / 1,325,000 | 4.268291 / 46.243830 |
+| `reaches_downstream` | 92,500 / 925,000 | 3.712199 / 43.595646 |
+| `first_reached` | 80,000 / 800,000 | 2.360776 / 30.205911 |
+| `ancestors` | 55,000 / 550,000 | 2.077305 / 37.740860 |
+| `material_upstream` | 102,400 / 1,024,900 | 3.692170 / 45.996642 |
+| `upstream_products` | 95,000 / 950,000 | 5.992402 / 60.608955 |
+
+Every 24,000-node individual trial exceeds 10 ms, including trials without an
+observed GC heap decrease. The complete scheduled-server prefix fails policy:
+146 RPCs, 144 job ticks, four complete windows, 36 ticks above 8 ms and a
+maximum of 60.715426 ms. The worst complete-window average is
+1.945329 ms/tick. GC remains included. The failed policy is retained;
+it is not converted to a pass by filtering slow ticks or adjusting thresholds.
+The earlier start-RPC-only collector also fails: 36 excursions and missing
+job-tick evidence. A subsequent first scheduled attempt stopped on a collector
+bug: the bridge does not automatically await an unregistered test method's
+pending marker. Explicit polling of its exact `get_job` receipt repaired the
+collector; that failed attempt is not a measurement pass.
+
+Offline commands executed:
+
+```sh
+agent-io-scope-run --heavy -- texlua tests/mod/job_budget_test.lua
+agent-io-scope-run --heavy -- texlua tests/mod/map_summary_v9_test.lua
+git diff --check
+```
+
+The requested `lua5.4` invocation first failed because that executable is
+absent in this worker; the repository's existing mod-test runner explicitly
+supports the installed `texlua` fallback. The official Factorio 2.0.77 headless
+archive matches SHA-256
+`c4efc11529f74d37c96933e291e0db73fd9f5aa4738913d9301b24680b3e947f`.
+The fixture-only native collector and full receipt identities are:
+
+- Shared graph fixture: `c1874dd27fc2a1ca77611ddbfe6a9d189241cdf7f7c9c1d15e1d72bdf43377e8`.
+- Native collector: `8209eb3150cd27c0721335be96b88462ae9bf6324c5af8729f07150eb47f2627`.
+- Fixture-only job definition: `3431f4dd07f102d26fe39936fba8089718bd362528066ffb9d3fe6907a2a7db8`.
+- Complete scheduled-server log: `6638cd67a32f62154f4fbd30821898e02fef31988a7dccb65a64a57690e55767`.
+- Complete timing policy receipt: `34549e4729901339421b6965fe9c5fac54764ed23c0da3a1e6cb033b79dd5350`.
+- Native traversal result receipt: `8ef9bf3d7ec363589247f85aae8f31a7c6be8600a4cbc84a855b15e4673be1cf`.
+
+At the baseline checkpoint, production changes, bounded candidate slices,
+complete aggregate/full JSON equivalence at allowances 1/7/600, real pending
+save/load continuation, full/live readiness and fresh independent review were
+unfinished. No installed mod or active gameplay server was changed.
+
+#### Resumable reachability candidate (2026-11-06)
+
+The candidate replaces all six synchronous implementations with one
+`graph_walk` cursor in the caller's existing saved flow/component state.
+Queue seeding, each visit, each product test and each adjacency entry spend
+one work item. The BFS queue, seen set, adjacency/product indices and partial
+result survive yields. Fuel and buffer callers retain their own phase and
+observed data; component-node phases retain signature/count/diagnostic progress
+and the current ingredient. The traversal never restarts its caller.
+
+The original three graph shapes pass bounded-slice assertions at allowances
+7 and 600 and populations 2,400 and 24,000. An added `fanout` shape puts the
+entire adjacency at the root, checking bounded queue initialization/expansion
+as well as node visits. The ancestry check also verifies every expected member.
+For example, branching `upstream_products` at allowance 600 has the same
+22,300-instruction peak at both populations, while direct and caller completion
+grow from 21 to 201 slices. At allowance 7 the same direct walk grows from
+1,715 to 17,143 slices; its peak remains 300 instructions. Fixed total engine
+access assertions protect the one fuel observation and inventory reads from
+replay across these yields.
+
+A separate native baseline caller run uses the registered scheduler and
+real chest, lab, drill and inserter entities for engine-dependent caller
+observations. It executes the same 72 cases through stages 19, 20 and 24.
+Its complete log fails the unchanged policy: 146 RPCs, 144 job ticks,
+218 measured ticks, four complete windows, 36 excursions and a 47.887764 ms
+maximum (GC observed); the worst window average is 1.943034 ms/tick.
+This aggregate caller measurement is separate from the individual timings
+above.
+
+The candidate runs all 72 corresponding native caller cases at allowances
+7 and 600. Each definition caps its slice to the requested allowance, leaving
+shared scheduler policy unchanged. Disposable simulation speed 64 accelerates
+completion of the many small slices; budgets and profilers still measure
+each game tick without any threshold change. The baseline ran at normal speed;
+these are policy checks and result comparisons, not controlled timing-ratio
+estimates. The complete candidate log passes: 336 RPCs, 255,736 job ticks,
+255,810 measured ticks, zero excursions above 8 ms, a 7.885804 ms maximum,
+and 577 complete windows with a worst average of 0.129768 ms/tick. GC remains
+included. Every caller result matches its baseline after excluding only the
+completion-slice count. This comparison checks decoded native result fields;
+it is not the pending complete-summary production-JSON byte comparison.
+
+A capture of all existing complete `rpc.to_json` comparisons in
+`map_summary_v9_test.lua` is byte-identical at baseline and candidate:
+307,656 bytes, SHA-256
+`ebc76effe9a44e460e12e23ef8a6b691ad9fbf90b4b9260ea5342fbc3768d70a`.
+Its helper encoder is the suite's native-JSON stand-in. At this checkpoint,
+full native aggregate/full equivalence, reloads, input identities, reproducible
+commands, readiness and fresh independent review were still pending; the
+following subsection records subsequent native proofs.
+
+Candidate production source and native caller evidence identities:
+
+- Production map-summary source: `cba1fad81b5749aea552a1b1340beb2de52b64f61f37e8611f459695df965b55`.
+- Baseline caller collector: `32bb9fbef284d4811ece9da9fae28eeaac877951946b5aa242d730ee385822b1`.
+- Fixture-only caller job definition: `8b538b53cdebb255e32cf2365442a6a0f3dedaef3ec17adceb6d7f88bed43073`.
+- Candidate caller collector: `c9a9e8a020154331e78283fe17bc490ce2c363e676127f727d18d7dacb4e0c21`.
+- Complete baseline caller log: `7c21294fae785bb98bfb842863baf61483ca84da861cff1b1ccbf4130946ebc9`.
+- Complete candidate caller log: `422937921828e1c0e0f1d4ca4a91a9ceb00bfdde6ca0694f38059ee184109f15`.
+- Candidate policy receipt: `467a7575e892d5ba833f7b75dfd8b4ac98323c88a72169be4d0d531497e7430f`.
+
+#### Frozen native JSON and actual pending-state reloads
+
+The reproducible entry point is now `companion/test/live-walks.ts`, exposed as
+`npm run test:live:walks -w companion`. It uses the same disposable server
+lifecycle as the existing smoke suite, extracted into `live-harness.ts`.
+`fixtures/summary-walks.lua` contains test-only exports, fixtures and registered
+probe definitions copied into that disposable mod directory. The baseline
+module comes from `git show` at the explicit 40-character baseline revision;
+no baseline implementation, export, fixture flag or raw-console surface is
+added to the production mod.
+
+The physical fixture has 110 actual entities: an 80-belt transport path,
+a burner drill with ore and fuel, inserter/chest endpoint, a furnace, a
+transport cycle, a lab relay with science packs and disconnected stock.
+The simulation is frozen before construction. Native aggregate/full outputs
+from both production definitions match byte-for-byte at work allowances
+1, 7 and 600. The tracked entry point's equivalence tick is 31; an earlier temporary
+collector used tick 30, so its otherwise identical outputs have different
+hashes. Neither observation is substituted for another.
+
+| Detail, tracked equivalence collector at tick 31 | Complete bytes | SHA-256 (baseline and candidate, all three allowances) |
+| --- | ---: | --- |
+| aggregate | 14,660 | `ad2a4bccc81fc4d2e522223b97d80c334599097d110c9daeeb328d970a582d1e` |
+| full | 47,810 | `af0a8b9a1366d9564a89232b56aa9c665160905a3b5833d0ad478f40bfe3fb07` |
+
+Reload mode adds four real inactive engine-observation entities and prepares
+19 pending cases in groups of eight, eight and three, respecting the native job limit.
+It saves the actual Factorio game, stops only its owned disposable server,
+restarts the saved game with the candidate definitions, checks that the tick
+is still frozen, and resumes the exact registered jobs through `jobs.get`.
+All 19 resumed outputs are byte-identical to uninterrupted baseline results:
+
+- Each of the six walks is saved after at least two queue entries were read,
+  with its actual caller phase and pending adjacency/product index retained.
+- Three caller-transition cases save the captured fuel observation, completed
+  upstream-product query before first-reached work, or initialized component
+  signature/counters before material work.
+- Three additional component cases save phases 5, 6 and 7: the second
+  ingredient (`C.ingredient == 2`), fuel provenance, and fallback transport
+  cargo. Saved pending state, including prior rows, signature sums, counters,
+  observations and queue/cursors, must match before any resumed work.
+- A buffer saves after its first product inventory check with the `next` key
+  retained, then resumes the remaining product.
+- Three complete native `map_summary` jobs resume pre-change states at stage
+  boundaries 19, 20 and 24, without candidate cursor fields.
+- Three complete native `map_summary` jobs resume pending physical-fixture
+  `reaches_downstream`, `upstream_products` and `first_reached` walks.
+
+The isolated stage-state and caller-transition cases compare all public
+node, edge, component and diagnostic fields through native `rpc.to_json`.
+They are distinct from the six complete-summary job reloads. The complete
+summary reload result is 48,831 bytes because this fixture includes the four
+additional observation entities. Stage-state probes are not represented as
+complete physical-summary results. The tracked collector retains frozen tick
+32 across all three real reloads; its save hashes and every pending cursor are in
+the receipt. An earlier temporary collector also passes all 16 at tick 30.
+
+A further same-server run reconstructs each growing stage graph from one
+native serialized JSON input, restores explicit entity bindings and node
+aliases, and executes both definitions at work 7 and 600. All 144 results
+across 36 input identities have identical complete public-stage JSON. Each
+receipt records input byte length/SHA-256, output length/SHA-256 and actual
+completion slices. This closes the input-identity gap in the earlier
+separately constructed caller fixtures. Its temporary collector omitted the
+on-tick job wrapper, so its timing receipt fails for missing job evidence;
+that run proves serialized-input/result equality only. The tracked growth
+mode includes the wrapper and returns exit 2 on a failed whole-prefix policy,
+including a mixed baseline/candidate failure. The candidate-only policy run
+and final repository readiness/review remain separate required evidence.
+
+Reproduce from the repository root, with Factorio 2.0.x installed and
+`FACTORIO_BIN` set when needed. Use a task-owned SSD `TMPDIR` when native
+scratch would otherwise use a RAM mount. Baseline is the admitted revision:
+
+```sh
+agent-io-scope-run --heavy -- npm run test:live:walks -w companion -- --baseline d3baebeea747f63ad5f49e8297af04d121f61f95 --mode equivalence
+agent-io-scope-run --heavy -- npm run test:live:walks -w companion -- --baseline d3baebeea747f63ad5f49e8297af04d121f61f95 --mode reload
+agent-io-scope-run --heavy -- npm run test:live:walks -w companion -- --baseline d3baebeea747f63ad5f49e8297af04d121f61f95 --mode growth --version both
+agent-io-scope-run --heavy -- npm run test:live:walks -w companion -- --baseline d3baebeea747f63ad5f49e8297af04d121f61f95 --mode growth --version candidate
+```
+
+The default mode is equivalence. Growth uses disposable simulation speed 64;
+all policy thresholds, per-game-tick allowances and GC inclusion stay fixed.
+Receipts and complete JSON outputs are retained in the repository's local
+excluded artifact area; the source, fixture construction and commands needed
+to reproduce them are tracked. The entire existing native smoke suite also
+passes through the extracted shared lifecycle (153 RPCs, 144 job ticks,
+275 measured ticks, zero excursions, 32 complete windows, worst average
+0.242 ms/tick); final exact-candidate readiness is still required.
+
+Native proof receipt identities:
+
+- Tracked equivalence receipt: `70d2131701afbc09abbecb56a3c3d95f0b045c08d095913f30e16e4ae2a82bf3`.
+- Tracked reload receipt: `08029bf032ea401cc4157012ac79133b0bf45d1a0e0f2398d7d149a07ca9883f`.
+- Matched serialized-input receipt: `4c46b425f46569bc6da44a0b4ab2df4b6d18a879b9a18a2167ba61a42da52a8d`.
+
+The first independent review found no introduced production defect. It did
+identify four proof/runner issues, each retained by three independent skeptic
+checks: the isolated oracle omitted derived buffer decisions, component
+phases 5/6/7 lacked pending reload cases, the equivalence tick was mislabeled,
+and reload collection could poll indefinitely. The fixture now compares
+`downstream_buffer`, `accepting`, `blocked_output` and `missing_science_pack`
+explicitly; the expanded 19-case reload run passes, collection uses the
+existing bounded polling helper, and equivalence tick 31 is distinguished
+from reload tick 32. Growth receipts made with the earlier projection remain
+limited to the fields they actually observed. Focused independent re-review
+closes all four findings, verifies all 19 actual/expected reload pairs and the
+new partial phase/cursor evidence, and reports no new concrete issue.
+
+The revised tracked growth run includes the derived buffer decisions in every
+isolated output. Both definitions and both allowances produce identical bytes
+for all 36 serialized inputs (144 results). Its complete mixed-server prefix
+is retained as a **failure**, exit 2: 1,031 RPCs, 255,880 job ticks,
+256,026 measured ticks, 36 excursions and a 57.660194 ms maximum
+(GC observed). No baseline tick is removed from that receipt.
+
+The separate final candidate-only run passes the same unmodified policy,
+exit 0: 880 RPCs, 255,736 job ticks, 255,810 measured ticks, zero excursions,
+3.038123 ms maximum and 488 complete windows with a worst average
+of 0.110857358 ms/tick. GC is included throughout. It uses the same 36 input
+identities and returns the same corrected stage-result bytes. Its final
+window wait starts at tick 291,265, requires 292,200 and explicitly observes
+292,364 before collecting the log.
+
+A final harness review found that the inherited console envelope maps a false
+Lua predicate to an absent JavaScript result. The new runner had treated
+anything except literal false as success, so its final-window wait could end
+early. Three independent skeptics retained this additional timing-proof gap.
+The runner now uses the existing smoke suite's truthy wait convention, admits
+nullish pending results in its type, and asserts/records the reached boundary.
+The final run above includes that fix. Earlier prefixes still prove their
+recorded tick work and complete windows, but are not claimed to establish the
+later requested boundary. This is a test-harness fix; production source is
+unchanged.
+
+These are measured limits for the selected graph shapes, populations, budgets,
+native version, harness and hardware. Neighboring inherited work and arbitrary
+factories are not established universally bounded.
+
+Five independent read-only review lenses cover correctness, compatibility/
+persistence/wiring, security/privacy/authorization, scope/simplicity and tests/
+evidence. Three independent skeptics assess every proposed finding; the four
+validated findings above are fixed and independently re-reviewed. The standard
+Semgrep community security-audit scan reports no findings or errors and lists
+all nine candidate paths as scanned; a second scan of the three review-fix
+paths also reports none. This does not establish Lua-specific semantic rule
+coverage. Strict TypeScript checking of both native runners and their shared
+harness passes. Full offline and isolated live readiness must pass on the clean
+committed candidate; its exact commit and final command receipts are reported
+with the completion result. Source publication remains the trusted host's
+separate exact-main step. No installed mod, gameplay client or active server
+was upgraded or restarted.
+
+Final revised native receipt identities:
+
+- Mixed serialized-input receipt: `1d6c1e96ae6b5008f87c53c21e7d885d5ddd68bf0aa7520a3778e7270bc14501`.
+- Complete mixed-prefix policy receipt: `6d0fa3181dd3e72faf9a7e0417d480c889b177e3e3fa5f4b2a6cf0659e2c7096`.
+- Candidate serialized-input receipt: `fb11ba75a36d36e7bc45a6d471ae485b944358313b4e25deaf4c1a049e80f15c`.
+- Complete candidate-prefix policy receipt: `3b05d15615356eca0550c582a37ab51bf46cb8e6d7cb26b7eee0beee6a7d0355`.
+- Native fixture source: `46d97c9a506c3bca0f5e21e32b4a16e043ce239ee61bfbdbc623c37ab0c30bc5`.

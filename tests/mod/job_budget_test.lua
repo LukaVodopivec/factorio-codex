@@ -374,6 +374,136 @@ do
   end
 end
 
+-- Individual reachability costs and their actual stage callers. These are
+-- resumable probes: the separately retained native baseline attributes the
+-- overruns; these assertions protect bounded slices and exact results.
+do
+  local fixture = dofile(here .. "/flow_walk_fixture.lua")
+  local function lookup(fn, wanted, seen)
+    seen = seen or {}
+    if seen[fn] then return end
+    seen[fn] = true
+    for i = 1, 100 do
+      local name, value = debug.getupvalue(fn, i)
+      if not name then break end
+      if name == wanted then return value end
+      if type(value) == "function" then
+        local found = lookup(value, wanted, seen)
+        if found then return found end
+      end
+    end
+  end
+  local stages = assert(lookup(map_summary.summary_job.step, "FLOW_STAGES"))
+  local kinds = { "upstream_proven", "reaches_downstream", "first_reached", "ancestors",
+    "material_upstream", "upstream_products" }
+  local coal = prototypes.item.coal
+  prototypes.item.coal = object({ fuel_category = "chemical", fuel_value = 4000000 })
+  local function prepare(kind, n, shape)
+    local F = fixture.build(kind, n, shape)
+    local root = F.node_by_id.root
+    local inventory = object({ get_item_count = function() return 1 end, can_insert = function() return true end })
+    root._entity = object({ valid = true, get_inventory = function() return inventory end })
+    if kind == "upstream_proven" then
+      local destination = { id = "destination", requires_fuel = true, fuel_categories = { chemical = true },
+        status = "working", ingredients = {}, _fuel_destination_proven = true,
+        _entity = object({ burner = object({ currently_burning = { name = { name = "coal" }, quality = { name = "normal" } },
+          remaining_burning_fuel = 1 }), get_fuel_inventory = function() return inventory end }) }
+      local inserter = { id = "return-inserter", type = "inserter", _waiting_for_destination = true,
+        _entity = object({ valid = true, held_stack = object({ valid_for_read = true, count = 1,
+          name = "coal", quality = { name = "normal" } }) }) }
+      F.nodes = { inserter }
+      F.node_by_id[destination.id], F.node_by_id[inserter.id] = destination, inserter
+      F.edges_of[inserter.id] = { { from = "root", to = inserter.id, kind = "inserter_pickup" },
+        { from = inserter.id, to = destination.id, kind = "inserter_drop" } }
+    end
+    return F
+  end
+  for _, kind in ipairs(kinds) do
+    local stage = kind == "upstream_proven" and 19
+      or (kind == "reaches_downstream" or kind == "material_upstream") and 24 or 20
+    local walk = assert(lookup(stages[stage], "graph_walk"), kind)
+    for _, shape in ipairs({ "path", "cycle", "branch", "fanout" }) do
+      for _, work in ipairs({ 7, 600 }) do
+        local previous
+        for _, n in ipairs({ 2400, 24000 }) do
+          local direct = {
+            start = function() return { stage = kind, F = prepare(kind, n, shape), owner = {} } end,
+            step = function(state, budget)
+              local done, value, visited = walk(state.F, state.owner, kind, "root", budget,
+                { name = "coal", type = "item" }, false)
+              if done then return { value = value, visited = visited } end
+            end,
+          }
+          local answer, steps, engine, _, instructions = measure(direct, { work = work, max_ticks = 100000 })
+          local correct, result
+          if kind == "ancestors" then
+            local count = 0
+            for _ in pairs(answer.value) do count = count + 1 end
+            correct, result = count == n, "ancestors=" .. count
+            for i = 1, n do correct = correct and answer.value["path-" .. i] == true end
+          elseif kind == "first_reached" then
+            correct = #answer.value == (shape == "cycle" and 0 or 1)
+              and (shape == "cycle" or answer.value[1].id == "path-" .. n)
+            result = "first=" .. (answer.value[1] and answer.value[1].id or "none")
+          elseif kind == "upstream_products" then
+            local count = 0
+            for _ in pairs(answer.value) do count = count + 1 end
+            correct = count == (shape == "cycle" and 0 or 2)
+              and (shape == "cycle" or answer.value["item:coal"] and answer.value["item:iron-ore"])
+            result = "products=" .. count
+          else
+            correct, result = answer.value == (shape ~= "cycle"), tostring(answer.value)
+          end
+          check(correct and answer.visited >= n, string.format(
+            "walk %s %s n=%d work=%d: %s visited=%d peak=%d instructions/%d engine steps=%d",
+            kind, shape, n, work, result, answer.visited, instructions, engine, steps))
+          local caller = { start = function() return { stage = "caller-" .. stage, F = prepare(kind, n, shape) } end,
+            step = function(state, budget) if stages[stage](state.F, budget) then return state.F end end }
+          local F, ticks, accesses, total, peak = measure(caller, { work = work, max_ticks = 100000 })
+          -- One fuel observation, or one inventory check per distinct product:
+          -- resuming graph work must never repeat these engine reads.
+          local expected_calls = kind == "upstream_proven" and 16
+            or kind == "upstream_products" and shape ~= "cycle" and 4
+            -- Fanout also connects the producer directly to this chest:
+            -- each of two products reads its inventory, count and capacity.
+            or kind == "ancestors" and shape == "fanout" and 6 or 0
+          local exact = F ~= nil and total == expected_calls
+          if kind == "upstream_proven" then
+            exact = exact and (F.nodes[1].fuel_return_saturation ~= nil) == (shape ~= "cycle")
+          elseif kind == "first_reached" or kind == "ancestors" then
+            exact = exact and F.nodes[1]._downstream_buffer == false
+          elseif kind == "upstream_products" then
+            exact = exact and F.nodes[1]._accepting == (shape ~= "cycle")
+          elseif kind == "reaches_downstream" then
+            local unresolved = false
+            for _, reason in ipairs(F.components[1].state.autonomy_blockers) do
+              if reason == "downstream_acceptance_path_unproven" then unresolved = true end
+            end
+            exact = exact and unresolved == (shape == "cycle")
+          elseif kind == "material_upstream" then
+            local pending = false
+            for _, reason in ipairs(F.components[1].state.autonomy_blockers) do
+              if reason == "furnace_recipe_not_yet_established" then pending = true end
+            end
+            exact = exact and pending == (shape ~= "cycle")
+          end
+          check(exact, string.format("caller stage %d %s %s n=%d work=%d: peak=%d instructions/%d engine total=%d engine steps=%d",
+            stage, kind, shape, n, work, peak, accesses, total, ticks))
+          if previous then
+            check(flat(previous.instructions, instructions) and flat(previous.peak, peak)
+              and steps > previous.steps * 5 and ticks > previous.ticks * 5,
+              string.format("walk/caller %s %s work=%d bound slices as paths grow: direct %d/%d, caller %d/%d instructions; %d/%d and %d/%d slices",
+                kind, shape, work, previous.instructions, instructions, previous.peak, peak,
+                previous.steps, steps, previous.ticks, ticks))
+          end
+          previous = { instructions = instructions, peak = peak, steps = steps, ticks = ticks }
+        end
+      end
+    end
+  end
+  prototypes.item.coal = coal
+end
+
 -- observe_local: a dense ore field under the body, compact and full, small
 -- and large radius.
 world = {}

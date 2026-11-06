@@ -433,7 +433,7 @@ end
 -- capacity sums its sampled member boxes; an unsampled member only makes it
 -- look fuller.
 local function flow_prepare(F, budget)
-  return each(F, budget, #F.nodes, LUA_ITEM, function(index)
+  return each(F, budget, #F.nodes, 2, function(index)
     local node = F.nodes[index]
     node.id = "node-" .. index
     F.retained[node._key] = node
@@ -567,10 +567,13 @@ end
 local function flow_consumers(F, budget)
   if not F.touches then
     -- Nodes on a non-fluid edge (computed before any electrical edge exists).
-    F.touches = {}
-    for _, edge in ipairs(F.edges) do
-      if edge.kind ~= "fluid_connection" then F.touches[edge.from], F.touches[edge.to] = true, true end
-    end
+    local touches = F.touch_build or {}
+    F.touch_build = touches
+    if not each(F, budget, #F.edges, LUA_ITEM, function(i)
+      local edge = F.edges[i]
+      if edge.kind ~= "fluid_connection" then touches[edge.from], touches[edge.to] = true, true end
+    end) then return false end
+    F.touches, F.touch_build = touches, nil
   end
   return each(F, budget, #F.nodes, 3, function(i)
     local node = F.nodes[i]
@@ -602,12 +605,13 @@ end
 -- buffer draws more than its constant drain.
 local function flow_demand(F, budget)
   if not F.demand then
-    F.demand = {}
-    for _, node in ipairs(F.nodes) do
+    if not each(F, budget, #F.nodes, LUA_ITEM, function(i)
+      local node = F.nodes[i]
       if node.type == "generator" and not node._power_delivery then
         diagnostic(F, node, "electrical_material_consumer_unproven", "unsupported")
       end
-    end
+    end) then return false end
+    F.demand = {}
   end
   return each(F, budget, #F.nodes, 1, function(i)
     local node = F.nodes[i]
@@ -674,7 +678,7 @@ end
 -- pick up anywhere along it (inserter pickup, loader container), so a dead
 -- end is decided per run, after every exact edge exists, at its last tile.
 local function graph_run_tiles(F, budget)
-  return each(F, budget, #F.nodes, LUA_ITEM, function(i)
+  return each(F, budget, #F.nodes, 2, function(i)
     local node = F.nodes[i]
     F.parent[node.id] = node.id
     if node._belt_outputs then F.run_parent[node.id] = node.id end
@@ -731,23 +735,38 @@ local function graph_joins(F, budget)
 end
 
 local function graph_components(F, budget)
-  return each(F, budget, #F.nodes, LUA_ITEM, function(i)
-    local node = F.nodes[i]
-    local r = root(F, node.id)
-    local component = F.by_root[r]
-    if not component then
-      component = { node_ids = {}, roles = {}, status_counts = {}, edge_count = 0,
-        products_finished_total = 0, character_transfer_actions = 0, last_character_transfer_tick = nil,
-        _edges = {}, _diagnostics = {}, _electrical = {} }
-      F.by_root[r] = component
-      F.component_list[#F.component_list + 1] = component
-    end
-    component.node_ids[#component.node_ids + 1] = node.id
-    component.roles[node.role] = (component.roles[node.role] or 0) + 1
-    component.status_counts[node.status] = (component.status_counts[node.status] or 0) + 1
-    component.products_finished_total = component.products_finished_total + (node.products_finished or 0)
-    F.node_by_id[node.id], F.incoming[node.id], F.outgoing[node.id], F.edges_of[node.id] = node, {}, {}, {}
-  end)
+  -- Index growth is allocation work, not a scalar Lua item. Build each
+  -- adjacency index in its own pass so their native table growth does not
+  -- coincide on one node (and therefore in one indivisible callback).
+  if not F.component_map then
+    if not each(F, budget, #F.nodes, 4, function(i)
+      local node = F.nodes[i]
+      local r = root(F, node.id)
+      local component = F.by_root[r]
+      if not component then
+        component = { node_ids = {}, roles = {}, status_counts = {}, edge_count = 0,
+          products_finished_total = 0, character_transfer_actions = 0, last_character_transfer_tick = nil,
+          _edges = {}, _diagnostics = {}, _electrical = {} }
+        F.by_root[r] = component
+        F.component_list[#F.component_list + 1] = component
+      end
+      component.node_ids[#component.node_ids + 1] = node.id
+      component.roles[node.role] = (component.roles[node.role] or 0) + 1
+      component.status_counts[node.status] = (component.status_counts[node.status] or 0) + 1
+      component.products_finished_total = component.products_finished_total + (node.products_finished or 0)
+      F.node_by_id[node.id] = node
+    end) then return false end
+    F.component_map = 1
+  end
+  local fields = { "incoming", "outgoing", "edges_of" }
+  while F.component_map <= #fields do
+    local index = F.component_map
+    local target = F[fields[index]]
+    if not each(F, budget, #F.nodes, 2, function(i) target[F.nodes[i].id] = {} end) then return false end
+    F.component_map = index + 1
+  end
+  F.component_map = nil
+  return true
 end
 
 local function graph_adjacency(F, budget)

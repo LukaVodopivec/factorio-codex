@@ -201,6 +201,91 @@ for _, detail in ipairs({ "aggregate", "full" }) do
     string.format("map_summary %s spreads a large factory's %d calls over %d ticks", detail, large_total, large_ticks))
 end
 
+-- The consumer touch index and undelivering-generator diagnostics used to
+-- scan the entire graph before checking the first work allowance. Exercise
+-- those passes directly: disconnected edges and generators still grow even
+-- when no engine relationship or later reachability walk needs to be read.
+-- The component pass also checks every node and each newly split adjacency index.
+do
+  local function pass(stage, n)
+    local definition = {
+      start = function()
+        local state = map_summary.summary_job.start({ detail = "aggregate" })
+        state.stage = "flow"
+        local flow = { stage = stage, nodes = {}, edges = {}, diagnostics = {} }
+        for i = 1, n do
+          if stage == 5 then
+            flow.edges[i] = { from = "from-" .. i, to = "to-" .. i,
+              kind = i % 4 == 0 and "fluid_connection" or "belt_direction" }
+          else flow.nodes[i] = { id = "node-" .. i, type = "generator" } end
+        end
+        if stage == 14 then
+          flow.parent, flow.by_root, flow.component_list = {}, {}, {}
+          flow.node_by_id, flow.incoming, flow.outgoing, flow.edges_of = {}, {}, {}, {}
+          for _, node in ipairs(flow.nodes) do
+            node.role, node.status = "power", "working"
+            flow.parent[node.id] = node.id
+          end
+        end
+        state.flow = flow
+        return state
+      end,
+      step = function(state, budget)
+        map_summary.summary_job.step(state, budget)
+        local flow = state.flow
+        if stage == 5 and flow.touches then
+          return { touches = flow.touches }
+        elseif stage == 6 and flow.demand then
+          return { diagnostics = flow.diagnostics }
+        elseif stage == 14 and flow.stage > 14 then
+          return { flow = flow }
+        end
+      end,
+    }
+    return measure(definition, {})
+  end
+  factory(40)
+  for _, stage in ipairs({ 5, 6, 14 }) do
+    local small, small_ticks, small_calls, _, small_lua = pass(stage, 2400)
+    local large, large_ticks, large_calls, _, large_lua = pass(stage, 24000)
+    local exact = true
+    for index, result in ipairs({ small, large }) do
+      local n = index == 1 and 2400 or 24000
+      if stage == 5 then
+        local count = 0
+        for _ in pairs(result.touches) do count = count + 1 end
+        exact = exact and count == n * 1.5
+        for i = 1, n do
+          local expected = i % 4 ~= 0 or nil
+          exact = exact and result.touches["from-" .. i] == expected
+            and result.touches["to-" .. i] == expected
+        end
+      elseif stage == 14 then
+        local flow = result.flow
+        exact = exact and #flow.component_list == n
+        for i, node in ipairs(flow.nodes) do
+          local component = flow.component_list[i]
+          exact = exact and flow.node_by_id[node.id] == node
+            and #flow.incoming[node.id] == 0 and #flow.outgoing[node.id] == 0 and #flow.edges_of[node.id] == 0
+            and #component.node_ids == 1 and component.node_ids[1] == node.id
+            and component.roles.power == 1 and component.status_counts.working == 1
+        end
+      else
+        exact = exact and #result.diagnostics == n
+        for i, row in ipairs(result.diagnostics) do
+          exact = exact and row.node_id == "node-" .. i
+            and row.reason == "electrical_material_consumer_unproven"
+        end
+      end
+    end
+    check(exact, "flow pass " .. stage .. " produces every expected entry with its exact identity")
+    check(flat(small_lua, large_lua) and small_calls <= BOUND and large_calls <= BOUND
+      and large_ticks >= 9 * small_ticks,
+      string.format("flow pass %d bounds each slice as its graph grows (small %d, large %d instructions)",
+        stage, small_lua, large_lua))
+  end
+end
+
 -- observe_local: a dense ore field under the body, compact and full, small
 -- and large radius.
 world = {}

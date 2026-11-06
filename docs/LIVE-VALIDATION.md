@@ -2618,3 +2618,179 @@ check is weakened and the unrelated canonical checkout is unchanged. The final
 candidate's full-profile result belongs to its completion receipt; an initial
 prerequisite failure is not a pass. Source publication and gameplay deployment
 remain separate from these experiments.
+
+
+### Bounded flow allocation — isolated native evidence (2026-11-06)
+
+The flow-budget follow-up reassessed the shoreline repair and its validation
+record at `b13927823a99c18300c482a3983d4d8a03f5f000`. It retains bounded native
+chart discovery, one tile query per charted chunk, chart boundaries, shoreline
+ordering and truncation. Changes stay in the existing summary stages:
+consumer-edge indexing and the generator-diagnostic prepass now yield through
+`each`; component membership and each of its three adjacency indexes run in
+separate resumable passes. Local charges for retained-node preparation,
+run-parent indexing and component allocation reflect their allocation work.
+Shared job allowances and the global scalar-item charge are unchanged.
+
+The unchanged upstream public save identified above was copied into disposable
+Factorio **2.0.77 headless** servers. Of its 15,876 genuinely charted chunks,
+native `unchart_chunk` retained the central 196 (`x=-7..6, y=-7..6`), containing
+200,704 tiles and 11,322 player entities; radars were deactivated. No terrain
+was generated or newly charted, and no all-charted adapter was used. A test-only
+body adapter exposed this read-only surface without a client. The prepared save
+was frozen at tick **27,535,046** and copied before every server start, because
+shutdown may overwrite the input save. No active gameplay server or installed
+mod was changed.
+
+The harness reuses `RconClient`, `Bridge` and `evaluateTiming` from the existing
+live suite. A first-tick gate starts the asynchronous summary from the same
+frozen tick before releasing simulation. It measures actual `jobs.on_tick`
+work, retains production RPC samples, sums RPC and job time on the same tick,
+and evaluates the logged 600-tick handler aggregates. The initial aggregate
+starts partway through its 600-tick period but retains the native denominator;
+there is no final partial-window flush. Per-tick RPC/job samples cover the
+remaining interval through job completion. Within-slice
+phase instrumentation wraps each stage invocation and measures the work actually
+performed there; it does not label a whole slice by its entry stage. Host load,
+CPU/memory pressure, heap-decrease observations, full logs, results and executable,
+input, source, harness and mod-file identities were retained. No GC time is
+subtracted. Trial identity plus tick identifies a distinct sample across resets.
+
+Both campaigns ran serially: three baseline/candidate pairs and three
+candidate/baseline pairs, resetting each trial to the identical frozen save.
+Baseline is `b13927823a99c18300c482a3983d4d8a03f5f000`. Campaign 1 used the
+initial flow correction; its failure led to the separated allocation passes.
+Campaign 2 used the final production source. Maxima include same-tick RPC and
+job work; an excursion is a distinct measured tick above 8 ms.
+
+| Campaign / order / pair | Baseline maximum ms (excursions) | Candidate maximum ms (excursions) |
+| --- | ---: | ---: |
+| 1 / BC / 1 | 20.183565 (4) | 7.634896 (0) |
+| 1 / CB / 1 | 6.017082 (0) | 7.651440 (0) |
+| 1 / BC / 2 | 8.264227 (1) | 4.803744 (0) |
+| 1 / CB / 2 | 7.419667 (0) | 5.482472 (0) |
+| 1 / BC / 3 | 7.347969 (0) | 12.381149 (2) |
+| 1 / CB / 3 | 9.081674 (1) | 9.623856 (2) |
+| 2 / BC / 1 | 14.736314 (3) | 7.925870 (0) |
+| 2 / CB / 1 | 10.026180 (1) | 5.786084 (0) |
+| 2 / BC / 2 | 7.349530 (0) | 3.697269 (0) |
+| 2 / CB / 2 | 9.311974 (1) | 8.503156 (1) |
+| 2 / BC / 3 | 9.592582 (2) | 7.269865 (0) |
+| 2 / CB / 3 | 5.065566 (0) | 6.480786 (0) |
+
+Campaign 1 failed: baseline 10,734 job ticks / 10,215.701 ms total job CPU;
+candidate 11,202 / 9,892.338 ms. Baseline had six excursions (20.184 ms maximum),
+candidate four (12.381 ms). Their worst window averages were 1.171 and
+1.135 ms/tick. Failures were retained rather than retried away.
+
+Campaign 2 meets the declared workload policy across the **complete six-trial
+candidate log**: 12,138 job ticks, 12,144 distinct measured ticks, one excursion
+at **8.503156 ms**, none above 10 ms, and all 24 windows at or below
+**1.102743 ms/tick**. Independently derived sliding 600-tick RPC-plus-job
+averages peak at 1.034213 ms/tick; the final partial intervals, using their
+actual tick counts, peak at 1.029758 ms/tick. These derived checks cover the
+unflushed tail but do not measure other handlers there. Baseline had 10,734 job ticks, 10,740 measured ticks, seven
+excursions and a **14.736314 ms** maximum; its 18 windows peaked at
+1.148072 ms/tick. Total job CPU was **9,635.775 ms baseline / 9,847.005 ms
+candidate**; RPC CPU was **57.589 / 59.952 ms**. Median job CPU per call was
+1,595.571 / 1,649.078 ms. The correction spreads work rather than establishing
+a total-CPU speedup. Each baseline/candidate job used 1,789 / 2,023 ticks and
+finished at tick 27,536,834 / 27,537,068 (result ticks 27,536,826 / 27,537,060).
+Poll receipt ticks are later and are not job completion ticks.
+
+All balanced-campaign excursions are listed below. `heap down` means only that
+a heap decrease was observed during that tick; it is not proof of sole cause.
+
+| Campaign / role / order / pair | Tick | Combined ms | Heap down |
+| --- | ---: | ---: | --- |
+| 1 / B / BC / 1 | 27,535,982 | 15.091707 | yes |
+| 1 / B / BC / 1 | 27,536,252 | 8.449905 | no |
+| 1 / B / BC / 1 | 27,536,503 | 10.199630 | yes |
+| 1 / B / BC / 1 | 27,536,507 | 20.183565 | yes |
+| 1 / B / BC / 2 | 27,536,252 | 8.264227 | no |
+| 1 / C / BC / 3 | 27,535,959 | 9.244771 | no |
+| 1 / C / BC / 3 | 27,536,571 | 12.381149 | no |
+| 1 / C / CB / 3 | 27,535,955 | 9.623856 | yes |
+| 1 / C / CB / 3 | 27,536,481 | 8.143367 | yes |
+| 1 / B / CB / 3 | 27,536,597 | 9.081674 | no |
+| 2 / B / BC / 1 | 27,536,505 | 8.906698 | no |
+| 2 / B / BC / 1 | 27,536,507 | 14.736314 | yes |
+| 2 / B / BC / 1 | 27,536,508 | 8.818467 | yes |
+| 2 / B / CB / 1 | 27,536,603 | 10.026180 | no |
+| 2 / C / CB / 2 | 27,536,624 | 8.503156 | yes |
+| 2 / B / CB / 2 | 27,536,500 | 9.311974 | no |
+| 2 / B / BC / 3 | 27,536,679 | 8.841201 | no |
+| 2 / B / BC / 3 | 27,535,955 | 9.592582 | yes |
+
+Campaign 2 host observations had one-minute load 8.20–12.07, CPU `some avg10`
+0–2.03%, and memory `some avg10` 0–1.02%; all measurements retain that ambient
+load. A separate within-slice final-source probe measured 2,023 job ticks,
+7.67 ms maximum and no excursion. Individual-assignment diagnosis of the prior
+candidate found four component indexes growing together at node 8,193: native
+assignments took 1.132, 0.889, 0.897 and 0.952 ms at the same simulation
+tick in the diagnostic replay as a failed campaign sample. Retained-node table growth coincided with its other non-GC
+excursion. This evidence selected separated passes and local allocation charges,
+rather than a shared budget reduction. Per-assignment diagnostic logging itself
+caused 11 excursions and an 18.36 ms maximum; it is diagnostic overhead, not a
+passing verification trial. An earlier central-fixture reproduction reached
+16.24 ms. A separate 196-densest-chunk fixture (55,116 entities) did not finish
+within its initial 120-second diagnostic limit and reached 45.63 ms. These
+explorations, and an incomplete first-tick-gate harness attempt corrected before
+the balanced campaigns, remain failures/limits rather than acceptance evidence.
+
+At identical save state and tick 27,535,046, baseline and final candidate
+produce byte-identical complete production `rpc.to_json` summaries:
+
+| Detail | Bytes | SHA-256 |
+| --- | ---: | --- |
+| aggregate | 22,330 | `ac78d4a2c42df2cd896123b778a8c4ef4e5c26598f568fc703ba4a74ab7200d3` |
+| full | 60,834 | `27ba6bcac9d9262c23c4be7290afff8a1d9444489d4a43ce500caaaafe6c6f21` |
+
+Native save/reload preserved that full result and frozen tick for partial
+consumer-edge and diagnostic scans, all three new adjacency passes, and an
+older baseline job interrupted within stage 14 before the new subpass marker
+existed. Existing stages and cursors remain usable. The offline summary suite
+also compares complete serialized output for 256-belt connected paths,
+disconnected graphs, cycles, aggregate/full detail, small/large budgets and
+retained shoreline-strip work with pending entity/resource queues. Ten complete
+offline outputs match the baseline; its JSON stand-in is separate from the
+native production-encoder proof above.
+
+The budget suite checks exact identities, no omitted/repeated entries, engine
+calls and per-step VM instructions for the corrected touch, diagnostic and
+component-index passes at 2,400 and 24,000 entries. Measured maxima remained
+26,800 / 54,000 / 13,200 instructions respectively, with no growing engine-call
+batch. Disconnected component fixtures isolate allocation work; they do not
+prove a bound for arbitrary inherited union-root or reachability walks.
+
+This is a measured-workload result, **not a universal timing guarantee**.
+Inherited synchronous root/reachability walks and generator-network fan-out
+still have graph-size-dependent indivisible work. They were not identified as
+the failed allocation samples' cause and are recorded separately for follow-up.
+Arbitrary denser factories, all graph shapes, other hardware, graphical client
+frame time, network latency and matching installed client/server mod sets are
+not established by these experiments. Installation, active gameplay validation,
+deployment and server replacement were **not performed**.
+
+Reproduction identities (SHA-256):
+
+- Official archive: `c4efc11529f74d37c96933e291e0db73fd9f5aa4738913d9301b24680b3e947f`.
+- Executable: `c9ac91d318bdbcce5afaac30d48f4b71dc38af257712a5d4d4c4feb625737198`.
+- Public input: `15dbb1679dfc9ce565cb8cc9b560ac3d8d8e61f1b957fe1ca3a06b1c814989e2`.
+- Frozen central fixture: `46bdef8f6c11948fea79973d784d858cf6665b7c674ba025ac3e5ab5020ea599`.
+- Final production `scripts/map_summary.lua`: `875c6135c6ed593395620df03fef6a4e6ae58ee94a598bdf548408005440b4b4`.
+- Initial-correction source: `a4b63b0c43f3a5b60154183fab468cfd1672eef9f8cd01d55a9c9a8450a603a7`.
+- Final timing harness: `5cef1229c8c1aea1eb71566ca04d2a11cd2e989e2d947d98509cf8e1df58d703`.
+- Baseline / final instrumented mod-file manifests: `ea0ac51683b5971f521d8870e60f702f7dafcc5ed539a7b7d8568a0197a6dac8` / `7fb0fd1c0cc0f90063f9f854b4716da45b8f2f166b6cb32177c22849e209febf`.
+
+Focused Lua suites passed on the final source. Fresh independent read-only review
+covers correctness/persistence, compatibility/wiring, security/scope/simplicity
+and tests/evidence. The Semgrep community security-audit invocation returned no
+findings or errors for all five selected candidate paths (four Lua files and
+this document), running two generic rules; this does not establish Lua-specific
+security-rule coverage. Repository-native full and isolated live
+profile outcomes and their exact clean candidate belong to the completion
+receipt. They use a clean candidate clone with matching dependencies and the
+native pinned Node 22.23.2 route; no check is weakened to accommodate unrelated
+canonical-checkout dependency residue. Source publication remains the trusted
+host's separate exact-SHA completion step.

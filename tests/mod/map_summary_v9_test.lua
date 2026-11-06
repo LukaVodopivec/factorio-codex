@@ -67,6 +67,7 @@ _G.prototypes = { tile = {
   water = { collision_mask = { layers = { water_tile = true, player = true } } },
 } }
 _G.game = { tick = 777, create_inventory = stacks.create_inventory }
+_G.helpers = { table_to_json = dofile(here .. "/table_to_json.lua") }
 _G.storage = {}
 _G.defines = { entity_status = { no_power = 1 }, flow_precision_index = { one_minute = 1 } }
 local summary = summarize({ detail = "full" })
@@ -781,6 +782,38 @@ do
     and detail.entity == "transport-belt" and detail.related_edge.kind == "belt_or_pickup"
     and #dead_state.blocker_details <= 3 and dead_state.blocker_details[1].reason == "downstream_acceptance_path_unproven",
     "a run with no consumer is flagged once at its last tile and readiness rows lead the located details")
+
+  -- A long connected path plus a disconnected run, with and without a cycle.
+  -- Compare complete production JSON across substantially different slices.
+  for _, cyclic in ipairs({ false, true }) do
+    local entities, path = {}, {}
+    for i = 1, 256 do
+      path[i] = belt((i - 1) % 16 + 0.5, math.floor((i - 1) / 16) + 0.5)
+      entities[#entities + 1] = path[i]
+      if i > 1 then link(path[i - 1], path[i]) end
+    end
+    if cyclic then link(path[#path], path[1]) end
+    entities[#entities + 1] = drill(0, 0, path[1])
+    local separate_a, separate_b = belt(28, 28), belt(28, 29)
+    link(separate_a, separate_b)
+    entities[#entities + 1], entities[#entities + 2] = separate_a, separate_b
+    surface.find_entities_filtered = function(filter) return filter.type == "resource" and {} or entities end
+    for _, detail in ipairs({ "aggregate", "full" }) do
+      local outputs = {}
+      for _, work in ipairs({ 7, 600 }) do
+        storage = {}
+        local job = require("scripts.map_summary").summary_job
+        local state, result, steps = job.start({ detail = detail }), nil, 0
+        repeat
+          result = job.step(state, { left = work })
+          steps = steps + 1
+          assert(steps < 20000, "long/cyclic summary did not finish")
+        until result
+        outputs[#outputs + 1] = require("scripts.rpc").to_json(result)
+      end
+      check(outputs[1] == outputs[2], "complete " .. detail .. " JSON preserves long/disconnected paths and cycle=" .. tostring(cyclic))
+    end
+  end
 end
 
 -- Readiness rows are located at the node where a repair starts.
@@ -1229,12 +1262,12 @@ do
   -- resources and entities still queued. The remaining rows are all water.
   state.stage, state.chunk_iterator, state.ci = "scan", nil, 1
   state.chunks, state.chunk_set, state.chunk_total = fixture_chunks, { ["0,0"] = true }, 1
-  state.water_strip, state.queue, state.rqueue = 1, {}, {}
+  state.visible_chunks = 1 -- The retained chunk was already fetched and counted.
+  state.water_strip, state.queue, state.rqueue, state.qi, state.ri = 1, { machine }, resources, 1, 1
   local actual
   repeat actual = job.step(state, { left = 600 }) until actual
-  check(canonical(actual.water_edges) == canonical(expected.water_edges)
-    and actual.omitted_water_edges == expected.omitted_water_edges,
-    "a saved partial strip scan resumes through the whole-chunk reader without missing shoreline")
+  check(require("scripts.rpc").to_json(actual) == require("scripts.rpc").to_json(expected),
+    "a saved partial strip scan preserves complete output including pending resources, entities and shoreline")
   fixture_chunks, tile_name = old_chunks, old_terrain
 end
 local source_file = assert(io.open(here .. "/../../mod/agentic-companion/scripts/map_summary.lua", "r"))

@@ -316,11 +316,9 @@ check(index_reads <= 6, "a summary's scan reads its surface's index a bounded nu
 
 -- A summary a 0.22.2 save left mid-job resumes on 0.22.3: one left at its
 -- finish reads its flows first; one in flows_all had listed every name.
-local function resume(S)
-  for _ = 1, 50 do
-    local done = map_summary.summary_job.step(S, { left = 600 })
-    if done then return done end
-  end
+local function resume(S, per_tick)
+  return jobs.run_now({ start = function() return S end, step = map_summary.summary_job.step },
+    {}, per_tick, 50 * 600)
 end
 -- Steps a new job a work item at a time until it stands at that stage.
 local function advance_to(S, stage)
@@ -357,11 +355,7 @@ check(all.factory.flow_surface == "all" and all.factory.force_flows[1].name == "
 calls.finds = {}
 local S = map_summary.summary_job.start({})
 body.surface, body.surface_index = vulcanus, 2
-local result
-for _ = 1, 50 do
-  result = map_summary.summary_job.step(S, { left = 4 })
-  if result then break end
-end
+local result = resume(S, 4)
 check(result and result.surface == "nauvis" and calls.finds.vulcanus == nil and (calls.finds.nauvis or 0) > 0,
   "a summary started on Nauvis keeps reading Nauvis when the body changes surface")
 body.surface, body.surface_index = nauvis, 1

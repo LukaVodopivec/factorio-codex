@@ -96,7 +96,7 @@ async function startupRun(mode = "ready", overrides: Record<string, unknown> = {
   const port = (reservation.address() as net.AddressInfo).port;
   await new Promise<void>((resolve, reject) => reservation.close((error) => error ? reject(error) : resolve()));
   const settings = { port, mode, password: startup.config.rcon.password, protocol: PROTOCOL_VERSION, version: companionVersion(), ...overrides };
-  const fixture = path.join(dir, "factorio");
+  const fixture = path.join(dir, "factorio.cjs");
   fs.writeFileSync(fixture, `#!${process.execPath}\n${fs.readFileSync(new URL("fixtures/server.cjs", import.meta.url), "utf8")}`, { mode: 0o700 });
   fs.writeFileSync(path.join(dir, "fixture.json"), JSON.stringify(settings));
   fs.writeFileSync(runPaths(dir).save, "fixture save");

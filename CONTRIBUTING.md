@@ -18,6 +18,26 @@ npm run typecheck
 npm run build
 ```
 
+Prepare dependencies in the exact checkout that will be verified, including a
+managed Git worktree, with `npm ci` under Node 22. Then run
+`scripts/agent-app doctor --json` and `scripts/agent-app verify --profile full`.
+Verification never installs or fetches dependencies. It prefers the candidate's
+own `node_modules`; if that root exists but is invalid (including an unsafe
+symlink or missing required executables), verification fails without falling
+back to the owning checkout. Full verification also runs `npm ls --all` against
+the selected installed tree and reports its failure.
+
+Only when the candidate has no dependency root may verification reuse the owning
+checkout's dependencies. Both `package.json` and `package-lock.json` must match
+byte for byte, and the installed root must pass the same safety and executable
+checks. Thus a prepared worktree is independent of owner descriptor drift or
+missing owner dependencies; an unprepared worktree with different descriptors
+fails until its own dependencies are prepared. Doctor and verification use the
+same selection. Verification copies tracked candidate source and the selected
+dependencies to disposable scratch, preserving relative workspace links, and
+runs builds there without modifying either source checkout. Git-dependent
+contract tests run in the candidate checkout with its Git metadata.
+
 `scripts/dev-link.sh` links `mod/agentic-companion` into your local Factorio
 `mods/` folder, so a client picks up mod edits on restart.
 

@@ -261,10 +261,18 @@ def dependency_descriptors_match(native_root: Path | None) -> tuple[bool, list[s
     return all_match, evidence
 
 
-def owner_dependencies_ready(native_root: Path | None) -> bool:
-    if native_root is None:
+def dependency_source(native_root: Path | None) -> Path | None:
+    # An invalid or dangling candidate root is still selected: never hide its
+    # failure by falling back to a different checkout's installed tree.
+    if os.path.lexists(ROOT / "node_modules"):
+        return ROOT
+    return native_root
+
+
+def dependencies_ready(source: Path | None) -> bool:
+    if source is None:
         return False
-    modules = native_root / "node_modules"
+    modules = source / "node_modules"
     if not modules.is_dir() or modules.is_symlink():
         return False
     return all(
@@ -307,14 +315,16 @@ def doctor_payload() -> dict[str, object]:
             ["source:git-common-dir"],
         )
     )
-    descriptors_match, descriptor_evidence = dependency_descriptors_match(native_root)
+    source = dependency_source(native_root)
+    source_label = "candidate-checkout" if source == ROOT else "owning-repository"
+    descriptors_match, descriptor_evidence = dependency_descriptors_match(source)
     checks.append(
         check(
             "dependency-descriptors",
             descriptors_match,
             "Snapshot package.json and package-lock.json "
             + ("match" if descriptors_match else "do not match")
-            + " the owning repository.",
+            + " the selected dependency source.",
             descriptor_evidence,
         )
     )
@@ -360,17 +370,17 @@ def doctor_payload() -> dict[str, object]:
                 [f"path:{relative}", f"available:{str(available).lower()}"],
             )
         )
-    dependencies_ready = descriptors_match and owner_dependencies_ready(native_root)
+    ready = descriptors_match and dependencies_ready(source)
     checks.append(
         check(
-            "owner-node-dependencies",
-            dependencies_ready,
-            "Owning-repository Node dependencies are "
-            + ("prepared for the exact descriptors." if dependencies_ready else "missing, stale, or unsafe."),
+            "node-dependencies",
+            ready,
+            "Selected Node dependencies are "
+            + ("prepared for the exact descriptors." if ready else "missing, stale, or unsafe."),
             [
-                "source:owning-repository",
+                f"source:{source_label}",
                 "required:.bin/tsc|.bin/tsup|.bin/tsx|.bin/vitest",
-                f"available:{str(dependencies_ready).lower()}",
+                f"available:{str(ready).lower()}",
             ],
         )
     )
@@ -401,12 +411,12 @@ def validate_target(target: str | None) -> None:
     raise ValueError("this repository does not support targeted verification")
 
 
-def prepare_workspace(destination: Path, native_root: Path) -> Path:
-    descriptors_match, _ = dependency_descriptors_match(native_root)
+def prepare_workspace(destination: Path, dependency_root: Path) -> Path:
+    descriptors_match, _ = dependency_descriptors_match(dependency_root)
     if not descriptors_match:
-        raise RuntimeError("snapshot dependency descriptors do not match the owning repository")
-    if not owner_dependencies_ready(native_root):
-        raise RuntimeError("owning-repository Node dependencies are unavailable or stale")
+        raise RuntimeError("snapshot dependency descriptors do not match the selected dependency source")
+    if not dependencies_ready(dependency_root):
+        raise RuntimeError("selected Node dependencies are unavailable or unsafe")
     try:
         tracked = subprocess.run(
             ["git", "ls-files", "-z", "--cached"],
@@ -447,7 +457,7 @@ def prepare_workspace(destination: Path, native_root: Path) -> Path:
     # development projects, incorrectly requiring their own devDependencies.
     # Copy the installed tree, retaining its native relative .bin/workspace links.
     try:
-        shutil.copytree(native_root / "node_modules", workspace / "node_modules", symlinks=True)
+        shutil.copytree(dependency_root / "node_modules", workspace / "node_modules", symlinks=True)
     except OSError as exc:
         raise RuntimeError("installed dependency tree could not be copied") from exc
     return workspace
@@ -584,6 +594,7 @@ def verify_payload(profile: str, target: str | None) -> tuple[dict[str, object],
         npm_bin: Path | None = None
         if profile in ("quick", "full", "live"):
             native_root = resolve_native_root()
+            source = dependency_source(native_root)
             npm = resolve_npm_command()
             try:
                 if native_root is None:
@@ -591,7 +602,7 @@ def verify_payload(profile: str, target: str | None) -> tuple[dict[str, object],
                 if npm is None:
                     raise RuntimeError("Node 22 npm prerequisite is unavailable")
                 npm_command, npm_bin = npm
-                execution_root = prepare_workspace(temporary, native_root)
+                execution_root = prepare_workspace(temporary, source)
             except RuntimeError as exc:
                 summary = str(exc)
                 return (
@@ -607,7 +618,8 @@ def verify_payload(profile: str, target: str | None) -> tuple[dict[str, object],
                                 "prerequisites",
                                 False,
                                 summary,
-                                ["acquisition:not-attempted", "source:owning-repository"],
+                                ["acquisition:not-attempted",
+                                 "source:candidate-checkout" if source == ROOT else "source:owning-repository"],
                             )
                         ],
                         "failure_summary": [summary],
@@ -635,7 +647,7 @@ def verify_payload(profile: str, target: str | None) -> tuple[dict[str, object],
                 if command == ["python3", "-m", "unittest", "tests/test_agent_app.py"]:
                     command_root = ROOT
                 elif command == ["npm", "ls", "--all"]:
-                    command_root = native_root
+                    command_root = source
             last_exit = execute_command(resolved, environment, command_root)
             duration = int((time.monotonic() - started) * 1000)
             summary = f"Verification command {index} {'passed' if last_exit == 0 else 'failed'} with exit {last_exit}."

@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -222,15 +223,21 @@ class AgentAppContractTests(unittest.TestCase):
 
     def test_full_routes_checkout_checks_and_propagates_failures(self) -> None:
         app = load_agent_app()
-        owner = ROOT / "owning-checkout"
-        prepared = ROOT / "prepared-snapshot"
         npm = (["/node", "/npm-cli.js"], Path("/npm-bin"))
-        for failing_index in (None, 0, 1):
-            with self.subTest(failing_index=failing_index):
+        for candidate_prepared, failing_index in ((False, None), (True, None), (True, 0), (True, 1)):
+            with self.subTest(candidate_prepared=candidate_prepared, failing_index=failing_index), tempfile.TemporaryDirectory() as name:
+                candidate = Path(name) / "candidate"
+                owner = Path(name) / "owner"
+                prepared = Path(name) / "prepared"
+                candidate.mkdir()
+                if candidate_prepared:
+                    (candidate / "node_modules").mkdir()
+                selected = candidate if candidate_prepared else owner
                 exits = [0] * len(app.PROFILE_COMMANDS["full"])
                 if failing_index is not None:
                     exits[failing_index] = 1
                 with (
+                    mock.patch.object(app, "ROOT", candidate),
                     mock.patch.object(app, "resolve_native_root", return_value=owner),
                     mock.patch.object(app, "resolve_npm_command", return_value=npm),
                     mock.patch.object(app, "prepare_workspace", return_value=prepared) as prepare,
@@ -238,8 +245,9 @@ class AgentAppContractTests(unittest.TestCase):
                 ):
                     payload, code = app.verify_payload("full", None)
                 prepare.assert_called_once()
+                self.assertEqual(prepare.call_args.args[1], selected)
                 self.assertEqual([call.args[2] for call in execute.call_args_list],
-                                 [ROOT, owner, *([prepared] * 8)])
+                                 [candidate, selected, *([prepared] * 8)])
                 self.assertEqual([call.args[0] for call in execute.call_args_list],
                                  [[*npm[0], *command[1:]] if command[0] == "npm" else command
                                   for command in app.PROFILE_COMMANDS["full"]])
@@ -321,6 +329,78 @@ class AgentAppContractTests(unittest.TestCase):
             self.assertNotIn("private scratch details", json.dumps(payload))
             self.assertEqual(self.git(snapshot, "status", "--porcelain=v1").stdout, "")
 
+            # Reuse the real linked-worktree fixture for candidate selection,
+            # owner drift, unavailable owner dependencies, and invalid roots.
+            candidate_modules = snapshot / "node_modules"
+            shutil.copytree(owner / "node_modules", candidate_modules, symlinks=True)
+            (candidate_modules / "dependency" / "marker").write_text("candidate dep\n")
+            for scenario in (*app.DEPENDENCY_DESCRIPTORS, "owner-missing", "npm-failure",
+                             "missing-executable", "non-executable", "symlink", "dangling", "file", "all-missing"):
+                with self.subTest(scenario=scenario):
+                    invalid = scenario in ("missing-executable", "non-executable", "symlink", "dangling", "file", "all-missing")
+                    descriptor = owner / scenario
+                    if scenario in app.DEPENDENCY_DESCRIPTORS:
+                        descriptor.write_text("owner drift\n")
+                    elif scenario == "owner-missing":
+                        (owner / "node_modules").rename(owner / "saved-modules")
+                    elif scenario == "all-missing":
+                        candidate_modules.rename(snapshot / "saved-modules")
+                        (owner / "node_modules").rename(owner / "saved-modules")
+                    elif scenario == "missing-executable":
+                        (candidate_modules / ".bin" / "tsx").unlink()
+                    elif scenario == "non-executable":
+                        (candidate_modules / ".bin" / "tsx").chmod(0o644)
+                    elif scenario in ("symlink", "dangling", "file"):
+                        candidate_modules.rename(snapshot / "saved-modules")
+                        if scenario == "file":
+                            candidate_modules.write_text("unsafe root\n")
+                        else:
+                            candidate_modules.symlink_to(owner / ("node_modules" if scenario == "symlink" else "absent"))
+                    before = [self.git(root, "status", "--porcelain=v1").stdout for root in (owner, snapshot)]
+
+                    def execute_selected(command, environment, cwd):
+                        if cwd != snapshot:
+                            self.assertEqual((cwd / "node_modules" / "dependency" / "marker").read_text(), "candidate dep\n")
+                            self.assertEqual((cwd / "node_modules" / "factorio-codex").resolve(), (cwd / "companion").resolve())
+                        return int(scenario == "npm-failure" and command[2:] == ["ls", "--all"])
+
+                    with (
+                        mock.patch.object(app, "ROOT", snapshot),
+                        mock.patch.object(app, "resolve_npm_command", return_value=(["/node", "/npm-cli.js"], Path("/npm-bin"))),
+                        mock.patch.object(app, "execute_command", side_effect=execute_selected) as execute,
+                    ):
+                        doctor = app.doctor_payload()
+                        payload, code = app.verify_payload("full", None)
+                    findings = {item["id"]: item for item in doctor["checks"]}
+                    self.assertEqual(findings["dependency-descriptors"]["status"], "pass")
+                    self.assertEqual(findings["node-dependencies"]["status"], "fail" if invalid else "pass")
+                    self.assertIn("source:owning-repository" if scenario == "all-missing" else "source:candidate-checkout",
+                                  findings["node-dependencies"]["evidence"])
+                    self.assertEqual(code, int(invalid or scenario == "npm-failure"))
+                    if invalid:
+                        execute.assert_not_called()
+                        self.assertEqual(payload["failure_summary"], ["selected Node dependencies are unavailable or unsafe"])
+                    else:
+                        self.assertEqual(len(payload["checks"]), 10)
+                        self.assertEqual([item["status"] for item in payload["checks"]],
+                                         ["pass", "fail" if scenario == "npm-failure" else "pass", *(["pass"] * 8)])
+                        self.assertEqual([call.args[2] for call in execute.call_args_list[:2]], [snapshot, snapshot])
+                    self.assertEqual([self.git(root, "status", "--porcelain=v1").stdout for root in (owner, snapshot)], before)
+                    if scenario in app.DEPENDENCY_DESCRIPTORS:
+                        descriptor.write_bytes((snapshot / scenario).read_bytes())
+                    elif scenario == "owner-missing":
+                        (owner / "saved-modules").rename(owner / "node_modules")
+                    elif scenario == "all-missing":
+                        (snapshot / "saved-modules").rename(candidate_modules)
+                        (owner / "saved-modules").rename(owner / "node_modules")
+                    elif scenario == "missing-executable":
+                        shutil.copy2(owner / "node_modules" / ".bin" / "tsx", candidate_modules / ".bin" / "tsx")
+                    elif scenario == "non-executable":
+                        (candidate_modules / ".bin" / "tsx").chmod(0o755)
+                    elif scenario in ("symlink", "dangling", "file"):
+                        candidate_modules.unlink()
+                        (snapshot / "saved-modules").rename(candidate_modules)
+
     def test_each_dependency_descriptor_mismatch_blocks_reuse(self) -> None:
         app = load_agent_app()
         with tempfile.TemporaryDirectory() as temporary_name:
@@ -340,6 +420,8 @@ class AgentAppContractTests(unittest.TestCase):
                         matched, evidence = app.dependency_descriptors_match(owner)
                         self.assertFalse(matched)
                         self.assertIn(f"{relative}:missing-or-mismatch", evidence)
+                        with self.assertRaisesRegex(RuntimeError, "descriptors do not match"):
+                            app.prepare_workspace(temporary / "unused", app.dependency_source(owner))
                         (owner / relative).write_text("same\n", encoding="utf-8")
 
     def test_targeted_verification_is_rejected_without_running_checks(self) -> None:
@@ -376,7 +458,7 @@ class AgentAppContractTests(unittest.TestCase):
         findings = {item["id"]: item for item in payload["checks"]}
         self.assertEqual(payload["status"], "fail")
         self.assertEqual(findings["dependency-descriptors"]["status"], "fail")
-        self.assertEqual(findings["owner-node-dependencies"]["status"], "fail")
+        self.assertEqual(findings["node-dependencies"]["status"], "fail")
 
     def test_doctor_uses_the_sealed_verification_path(self) -> None:
         app = load_agent_app()

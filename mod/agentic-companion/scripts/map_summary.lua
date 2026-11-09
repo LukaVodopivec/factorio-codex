@@ -2441,9 +2441,18 @@ local function scan_resource(S, entity, c)
 end
 
 -- One bounded native query per charted chunk; at most 1024 tile results.
--- Classification is request-local and independent of native result order.
+-- Replace only this chunk's classification, including a retained partial read.
+-- Shared rows may also contain neighboring chunks; never replace whole rows.
 local function fetch_water(S, chunk, c, budget)
   local x0, y0 = chunk.x * 32, chunk.y * 32
+  for y = y0, y0 + 31 do
+    budget.left = budget.left - 1
+    local row = S.water[y]
+    if row then
+      budget.left = budget.left - 32
+      for x = x0, x0 + 31 do row[x] = nil end
+    end
+  end
   local tiles = c.surface.find_tiles_filtered({ area = { { x0, y0 }, { x0 + 32, y0 + 32 } }, name = S.water_names })
   budget.left = budget.left - 1 - #tiles
   for _, tile in ipairs(tiles) do

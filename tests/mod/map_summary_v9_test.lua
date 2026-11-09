@@ -1253,21 +1253,56 @@ do
 end
 do
   local old_chunks, old_terrain = fixture_chunks, tile_name
-  fixture_chunks = { { x = 0, y = 0 } }
-  tile_name = function(_, y) return y >= 8 and "water" or "land" end
-  local expected = summarize({ detail = "full" })
-  local job = require("scripts.map_summary").summary_job
-  local state = job.start({ detail = "full" })
-  -- A pre-upgrade save just after its first eight all-land rows, with
-  -- resources and entities still queued. The remaining rows are all water.
-  state.stage, state.chunk_iterator, state.ci = "scan", nil, 1
-  state.chunks, state.chunk_set, state.chunk_total = fixture_chunks, { ["0,0"] = true }, 1
-  state.visible_chunks = 1 -- The retained chunk was already fetched and counted.
-  state.water_strip, state.queue, state.rqueue, state.qi, state.ri = 1, { machine }, resources, 1, 1
-  local actual
-  repeat actual = job.step(state, { left = 600 }) until actual
-  check(require("scripts.rpc").to_json(actual) == require("scripts.rpc").to_json(expected),
-    "a saved partial strip scan preserves complete output including pending resources, entities and shoreline")
+  for _, coordinate in ipairs({ 0, -1 }) do
+    local x0, y0 = coordinate * 32, coordinate * 32
+    fixture_chunks = { { x = 0, y = 0 } }
+    if coordinate < 0 then
+      fixture_chunks = { { x = -2, y = -1 }, { x = 0, y = -1 },
+        { x = -1, y = -2 }, { x = -1, y = 0 }, { x = 0, y = 0 }, { x = -1, y = -1 } }
+    end
+    tile_name = function(x, y)
+      if x >= x0 and x < x0 + 32 and y >= y0 and y < y0 + 32 then
+        return y >= y0 + 8 and "water" or "land"
+      end
+      return (x + y) % 3 == 0 and "water" or "land"
+    end
+    local expected = summarize({ detail = "full" })
+    local job = require("scripts.map_summary").summary_job
+    local state = job.start({ detail = "full" })
+    -- A pre-upgrade save just after its first eight all-land rows, with
+    -- resources and entities still queued. The remaining rows are all water.
+    state.stage, state.chunk_iterator, state.ci = "scan", nil, #fixture_chunks
+    state.chunks, state.chunk_set, state.chunk_total = fixture_chunks, {}, #fixture_chunks
+    state.visible_chunks = 1 -- Only (0,0) is visible in this fixture; already counted.
+    for index, chunk in ipairs(fixture_chunks) do
+      state.chunk_set[chunk.x .. "," .. chunk.y] = true
+      if index < #fixture_chunks then
+        for y = chunk.y * 32, chunk.y * 32 + 31 do
+          for x = chunk.x * 32, chunk.x * 32 + 31 do
+            if tile_name(x, y) == "water" then
+              state.water[y] = state.water[y] or {}
+              state.water[y][x] = true
+            end
+          end
+        end
+      end
+    end
+    state.water_strip, state.queue, state.rqueue, state.qi, state.ri = 1, { machine }, resources, 1, 1
+    if coordinate == 0 then state.water[0] = { [0] = true } -- Previously water, now land.
+    else state.water[y0][x0], state.water[y0 + 7][x0 + 31] = true, true end
+    tile_queries = 0
+    local budget = { left = 1 }
+    -- Charge 24 water rows, 32 row inspections and at least one stale row's
+    -- clearing, and leave pending entities/resources untouched.
+    check(job.step(state, budget) == nil and budget.left <= -(24 * 32 + 32 + 32) and tile_queries == 1
+      and state.qi == 1 and state.ri == 1,
+      "retained chunk replacement charges clearing and yields before pending work at " .. coordinate)
+    local actual
+    repeat actual = job.step(state, { left = 600 }) until actual
+    check(require("scripts.rpc").to_json(actual) == require("scripts.rpc").to_json(expected),
+      "a saved partial strip scan preserves complete output including pending resources, entities and shoreline at " .. coordinate)
+    check(tile_queries == 1, "retained chunk reread uses one tile query at " .. coordinate)
+  end
   fixture_chunks, tile_name = old_chunks, old_terrain
 end
 local source_file = assert(io.open(here .. "/../../mod/agentic-companion/scripts/map_summary.lua", "r"))

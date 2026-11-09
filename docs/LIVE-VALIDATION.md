@@ -1668,6 +1668,109 @@ temporary surface, emergency `stop`, teleport, and server or client
 replacement. The supervisor yields its own turn between recorder checkpoints
 and records the structural-growth deltas defined in `AGENTS.md` at each one.
 
+#### Supervisor preparation, failed turns and checkpoint deadline
+
+The deploying session owns recovery when the supervisor cannot execute another
+turn. Before `GO`, include the following in the supervisor's preparation prompt,
+with the exact identities and objective filled from this run's existing session
+and run evidence (these placeholders are not launchable defaults):
+
+> Recovery owner: <deploying session>. Supervisor: <exact supervisor session>.
+> Unfinished native Goal objective: <verbatim objective>.
+> Follow AGENTS.md's Supervisor continuity contract. After any failed supervisor
+> turn, the recovery owner reads this supervisor's native Goal, recreates it
+> only when absent with this unchanged unfinished objective, and reads back the
+> matching active Goal before relying on continuation. Preserve an existing
+> matching active Goal. Never resume an explicitly stopped/cancelled run, a
+> paused Goal or an exhausted budget, and never overwrite a different Goal.
+> Record explicit supervisor checkpoints; recorder samples are not checkpoints.
+> The deploying session's existing watch alerts after 15 minutes without one,
+> measured from GO receipt until the first checkpoint and from checkpoint
+> receipt thereafter. Recovery does not authorize gameplay intervention.
+
+Keep this responsibility in the existing deployment watch and native session
+path; do not add a model loop, orchestration service, gameplay writer, ledger
+or recorder heartbeat. Before `GO`, confirm the named owner can read and, when
+absent, set the exact supervisor's Goal through the installed native mechanism.
+If the owner exits, explicitly hand off and record a new owner before relying
+on further recovery; preserve the existing deadline across that handoff.
+
+On **every failed supervisor turn**, record the exact turn's failure and receipt
+time. Read native `thread/goal/get {threadId:S}` (or the installed equivalent
+for that exact supervisor) even for a stopped run, and check this run's
+stop/cancellation and Goal lifecycle evidence. Only for an authorized unfinished
+run with no lifecycle restriction does a null Goal permit
+`thread/goal/set {threadId:S, objective:<saved verbatim objective>,
+status:"active"}`; a matching active Goal needs no set. Then read it back and
+record the objective, active status and receipt time. A failed or ambiguous
+read is not absence; reconcile it, a mismatching Goal, or a paused/budget-limited
+Goal without replacing or reactivating it. A stopped run stays stopped even
+when its Goal is null. A successful set alone does not prove recovery, and an
+active readback alone does not prove a new checkpoint. Reconcile accepted
+physical work through the existing structured reads; never replay it merely
+because a model turn failed.
+
+A qualifying checkpoint is an explicit entry by the exact supervisor in this
+run's existing evidence: run/session identity, structured observations with
+their receipt times, the required structural-growth deltas, an idle/human-hold
+assessment (including unknown when evidence is insufficient), and interventions
+or why none is due. The deploying session records when it receives the entry
+using its own clock, retaining the entry's reference and authored time
+separately. Re-reading an entry never refreshes its receipt. At `GO`, record
+the GO receipt on the same clock; a pre-GO entry does not satisfy the first
+post-GO checkpoint. Alert when elapsed time from the latest qualifying receipt,
+or GO receipt if none, reaches **900 seconds**. Record the alert and its receipt
+in the existing deployment evidence, identifying the run, last checkpoint (or
+"none since GO"), elapsed time and recovery owner. Keep the deadline overdue
+until a new qualifying checkpoint arrives; an alert or recovery attempt never
+resets it. Recorder samples, game ticks and continuing gameplay cannot postpone
+the alert. An unknown receipt time is a monitoring gap to report and reconcile,
+not proof of liveness.
+
+The alert concerns supervisor liveness, not pilot idleness or factory growth.
+It authorizes neither a pilot nudge/replacement nor a gameplay mutation. Keep
+benchmark non-intervention intact; record and exclude any assisted trial under
+the benchmark rules. Debug game interventions still require the existing
+fresh-state checks and `runs mark-assisted` recording above.
+
+#### Bounded supervisor recovery rehearsal
+
+Use a disposable non-gameplay session through the same native session mechanism,
+with Factorio MCP disabled and no live run attached, as in the native delivery
+rehearsal. Record the binary/schema identity, exact session/turn, requests,
+responses and receipt times in existing validation evidence. Bound the exercise
+to one failed turn, one absent-Goal recovery and one existing-Goal check; do not
+interrupt an unrelated live run or induce provider overload.
+
+1. Assign a harmless unfinished objective. Exercise a failed turn using the
+   installed isolated failure fixture where available. Otherwise label a
+   simulated failure explicitly; it is not an observed provider failure. If
+   the runtime retains the Goal, clear only this disposable test Goal to
+   establish the absent-Goal fixture, recording that intervention separately.
+2. Apply the recovery contract: read null, set the exact unchanged objective
+   active, then read back the matching active Goal. Retain the separate set
+   and get receipts. Recheck with that matching Goal already present: confirm
+   it is preserved with no set and no reset of its accounting. Also exercise
+   an explicitly stopped test run with a null Goal: no recreation is allowed.
+3. Feed controlled receipt times to the deploying session's existing watch:
+   GO at 0, no supervisor entry, continuing recorder samples through 900 s.
+   Expect no stale alert at 899 s and an alert at 900 s, naming "none since
+   GO". With a qualifying checkpoint received at 300 s, expect no alert at
+   1199 s and an alert at 1200 s despite intervening recorder samples, Goal
+   readbacks and repeated reads of that same entry. A new qualifying receipt
+   at 1201 s moves the next deadline to 2101 s. Record actual watch alerts,
+   not merely a calculation of the expected deadline; do not wait 15 real
+   minutes or change the system clock when controlled timestamps are supported.
+4. Pause/retire the disposable session and confirm it cannot continue; stop
+   any owned fixture and clean its scratch after all consumers exit. Report
+   each case as observed, simulated, failed or not run, separately from offline
+   repository checks. Missing fixtures or native access leave that rehearsal
+   unverified; they do not justify touching a live supervisor.
+
+These instruction changes require no mod/server deployment. Repository offline
+verification and documentation review do not establish native Goal recovery or
+delivery of a deployment-watch alert; retain that distinction in the result.
+
 Watch the run through the ordinary viewer client, which the mod makes a
 characterless spectator that follows Codex, not through the native `Codex`
 client window. The `Codex` client's own character is moved by the mod, and

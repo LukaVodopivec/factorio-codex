@@ -243,6 +243,31 @@ lines, running and self-sustaining lines, hand-fed lines, and production. The st
 not the supervisor, turns low growth into NOW; the supervisor never replaces a
 pilot for low growth alone.
 
+**Supervisor continuity.** Before `GO`, the deploying session includes this
+recovery contract in the supervisor's preparation prompt and records its own
+exact session identity as the recovery owner, the exact supervisor session,
+and the unchanged unfinished native Goal objective in the existing run
+evidence. After any failed supervisor turn, that owner checks the exact
+supervisor's native Goal, even when the supervisor cannot take another turn.
+Recreate it only if absent and the run is still authorized to continue, using
+that saved objective unchanged; preserve an existing matching active Goal.
+Read back the matching active Goal before relying on native continuation.
+Never overwrite a different Goal, resume a paused Goal, bypass a budget limit,
+or recreate/resume an explicitly stopped or cancelled run; reconcile uncertain
+state before acting. Recovery grants no new gameplay authority.
+
+The deploying session's existing watch alerts after 15 minutes without a
+supervisor-recorded checkpoint. A checkpoint is the exact supervisor's
+explicit run-evidence entry with the run identity, structured-state evidence,
+structural-growth deltas, idle/hold assessment and any intervention or reason
+none is due. The deploying session records its receipt time when it observes
+that entry; use that receipt, or the recorded `GO` receipt until the first
+checkpoint, as the deadline's start. Automatic recorder samples, advancing
+ticks, continuing gameplay, Goal readbacks and recovery messages never reset
+it. Follow `docs/LIVE-VALIDATION.md` for preparation, alerts and the bounded
+recovery rehearsal. Benchmark non-intervention and debug intervention
+recording remain in force.
+
 `stop` is the supervisor's recorded emergency cancellation (the pilot never
 calls it), used only for an explicit owner stop, retained-work reconciliation,
 or a replacement that cannot otherwise reach physical quiescence. It ends a
